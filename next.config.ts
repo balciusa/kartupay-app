@@ -1,7 +1,10 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from "next"
 
 const nextConfig: NextConfig = {
-  /* config options here */
-};
+  experimental: {
+    // Avoid bundling supabase-js into the server chunk to dodge invalid source map parsing in Turbopack
+    serverExternalPackages: ['@supabase/supabase-js'],
+  },
+}
 
-export default nextConfig;
+export default nextConfig

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { UserWidget } from "@/components/UserWidget";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -27,7 +28,15 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        <div className="min-h-screen bg-background text-foreground">
+          <header className="border-b bg-white">
+            <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+              <a href="/" className="text-lg font-semibold">KartuPay</a>
+              <UserWidget />
+            </div>
+          </header>
+          <div className="mx-auto max-w-6xl px-6 py-6">{children}</div>
+        </div>
       </body>
     </html>
   );
