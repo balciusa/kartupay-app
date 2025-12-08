@@ -4,11 +4,13 @@ import { Participants } from '@/components/Project/Participants'
 import { Discussions } from '@/components/Project/Discussions'
 import { Voting } from '@/components/Project/Voting'
 import { notFound } from 'next/navigation'
+import { getCurrentUserId } from '@/lib/supabaseServer'
+import { joinProject } from './actions'
 
 export default async function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
-  const supabase = createSupabaseServerClient()
   const { id } = await params
   const projectId = decodeURIComponent(id)
+  const supabase = createSupabaseServerClient()
 
   // Fetch project
   const { data: project, error: projectError } = await supabase
@@ -36,50 +38,55 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
     supabase.from('addons').select('*').eq('project_id', projectId),
     supabase.from('payments').select('participant_id, is_counted, created_at').eq('is_counted', true),
     supabase.from('late_join_transfers').select('*').eq('project_id', projectId),
-    supabase.from('payment_methods').select('*').eq('project_id', projectId),
+    supabase.from('payment_options').select('*').eq('project_id', projectId),
     supabase.from('addon_votes').select('addon_id')
   ])
 
   // Process participants and payment methods
-  const participantsList = participants ?? []
-  const participantIds = new Set(participantsList.map(p => p.id))
+  const participantsClean = (participants ?? []).filter(p => p.user_id !== null)
+  const participantsCount = participantsClean.length
+  const participantIds = new Set(participantsClean.map(p => p.id))
   const paymentMethodsList = paymentMethods ?? []
+  const uid = await getCurrentUserId()
+  const isMeParticipant = !!uid && (participantsClean.some(p => p.user_id === uid))
   
   // Filter payments to only those for participants in this project
   const payments = (allPayments ?? []).filter(p => participantIds.has(p.participant_id))
   
-  // Build preferred payment methods map
-  const preferred: Record<string, { label: string | null, value: string, type: string }> = {}
-  const allOptions: Record<string, Array<{ label: string | null, value: string, type: string, priority: number }>> = {}
+  // Build preferred payment methods map (as Map for component)
+  const preferred = new Map<string, { label: string | null, value: string, type: string }>()
+  const allOptions = new Map<string, Array<{ label: string | null, value: string, type: string, priority: number }>>()
   
-  for (const p of participantsList) {
+  for (const p of participantsClean) {
     const methods = paymentMethodsList.filter(pm => pm.participant_id === p.id)
     if (methods.length > 0) {
       // Sort by priority, find preferred (lowest priority number)
       const sorted = methods.sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999))
-      preferred[p.id] = {
+      preferred.set(p.id, {
         label: sorted[0].label,
         value: sorted[0].value,
         type: sorted[0].type
-      }
-      allOptions[p.id] = sorted.map(m => ({
+      })
+      allOptions.set(p.id, sorted.map(m => ({
         label: m.label,
         value: m.value,
         type: m.type,
         priority: m.priority ?? 999
-      }))
+      })))
     }
   }
 
-  // Process payments
+  // Process payments (as Sets for component)
   const paidIds = payments.map(p => p.participant_id)
+  const paidSet = new Set(paidIds)
   const deadline = new Date(project.deadline_at as any)
   const afterDeadlineIds = payments
     .filter(p => new Date(p.created_at) > deadline)
     .map(p => p.participant_id)
+  const afterDeadlineSet = new Set(afterDeadlineIds)
 
   // Calculate scenarios
-  const participantsNow = paidIds.length
+  const participantsNow = paidIds.length || participantsCount
   const totalCents = project.total_cents
   const scenarios = {
     now: Math.floor(totalCents / Math.max(1, participantsNow)),
@@ -96,7 +103,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
   }
 
   // Find organizer
-  const organizer = participantsList.find(p => p.role === 'organizer')
+  const organizer = participantsClean.find(p => p.role === 'organizer')
   const organizerId = organizer?.id ?? null
 
   return (
@@ -116,13 +123,23 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
         deadlineISO={project.deadline_at as string}
       />
 
+      {!isMeParticipant && uid && (
+        <div className="border rounded-xl p-4">
+          <div className="font-medium mb-2">Join this project</div>
+          <form action={async () => { 'use server'; await joinProject(projectId) }}>
+            <button className="px-3 py-1.5 rounded bg-black text-white">Join project</button>
+          </form>
+          <div className="text-xs opacity-60 mt-1">On join, your active payment links from Settings will be copied here.</div>
+        </div>
+      )}
+
       <Participants
         projectId={projectId}
-        participants={participantsList}
+        participants={participantsClean}
         preferred={preferred}
         allOptions={allOptions}
-        paidIds={paidIds}
-        afterDeadlineIds={afterDeadlineIds}
+        paidSet={paidSet}
+        afterDeadlineSet={afterDeadlineSet}
         transfers={transfers ?? []}
         organizerId={organizerId}
       />

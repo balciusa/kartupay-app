@@ -38,6 +38,9 @@ export function UserWidget() {
         <div className="font-medium leading-none">{user.email}</div>
         <div className="text-xs opacity-70">Signed in</div>
       </div>
+      <Link href="/settings" className="text-sm underline">
+        Settings
+      </Link>
       <Button size="sm" variant="outline" onClick={handleLogout}>
         Logout
       </Button>
