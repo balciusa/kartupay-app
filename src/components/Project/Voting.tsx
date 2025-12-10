@@ -1,31 +1,42 @@
-'use client'
 import { castVote } from '@/app/project/[id]/actions'
-import { useTransition } from 'react'
+import { Card } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 
-export function Voting({ addons, voteCount }: { addons: any[], voteCount: Record<string, number> }) {
-  const [pending, start] = useTransition()
+type Addon = {
+  id: string
+  title: string
+  description: string | null
+  extra_cents: number
+  required_votes: number
+  current_votes?: number
+}
+
+/**
+ * Server Component. No "use client".
+ * Renders a list of add-ons with a <form action=...> that calls castVote on submit.
+ */
+export default function Voting({ addons }: { addons: Addon[] }) {
   return (
-    <section className="border rounded-xl p-4 space-y-3">
-      <h2 className="text-lg font-semibold">Add-ons</h2>
-      <div className="space-y-2">
-        {(addons ?? []).map((a:any) => (
-          <div key={a.id} className="rounded border p-3">
+    <div className="space-y-3">
+      {addons.map((a) => (
+        <Card key={a.id} className="p-4 flex items-center justify-between gap-4">
+          <div className="min-w-0">
             <div className="font-medium">{a.title}</div>
-            {a.description && <div className="text-sm opacity-80">{a.description}</div>}
-            <div className="text-xs opacity-60 mt-1">+€{(a.extra_cents/100).toFixed(2)}</div>
-            <div className="flex items-center justify-between mt-2">
-              <div className="text-sm">Votes: {voteCount[a.id] ?? 0} / {a.required_votes}</div>
-              <button className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
-                disabled={pending}
-                onClick={() => start(async () => { await castVote(a.id) })}
-              >
-                {pending ? 'Voting…' : 'Vote'}
-              </button>
+            {a.description ? (
+              <div className="text-sm text-muted-foreground">{a.description}</div>
+            ) : null}
+            <div className="text-sm mt-1">
+              +€{(a.extra_cents / 100).toFixed(2)} · Need {a.required_votes}
+              {typeof a.current_votes === 'number' ? ` · Have ${a.current_votes}` : null}
             </div>
           </div>
-        ))}
-        {(!addons || addons.length === 0) && <div className="text-sm opacity-60">No add-ons yet.</div>}
-      </div>
-    </section>
+
+          {/* Server Action via form */}
+          <form action={castVote.bind(null, a.id)}>
+            <Button type="submit">Vote</Button>
+          </form>
+        </Card>
+      ))}
+    </div>
   )
 }
