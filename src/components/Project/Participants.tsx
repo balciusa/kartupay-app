@@ -217,7 +217,7 @@ export function Participants(props: {
                   <div className="space-y-1 mt-1">
                     {myTransfers.map(t => (
                       <div key={t.id} className="flex items-center justify-between text-sm">
-                        <div>Expected: ƒ'ª{(t.expected_cents/100).toFixed(2)} {t.received_at ? '- Received' : ''}</div>
+                        <div>Expected: €{(t.expected_cents/100).toFixed(2)} {t.received_at ? '- Received' : ''}</div>
                         {!t.received_at && (
                           <button className="px-2 py-1 rounded bg-black text-white text-xs"
                             onClick={() => start(async ()=>{ await confirmLateJoinReceipt(t.id) })}
