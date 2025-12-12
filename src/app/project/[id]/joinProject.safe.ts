@@ -8,6 +8,8 @@ export async function joinProjectSafe(projectId: string) {
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('You must be signed in')
 
+  console.log('[joinProjectSafe] start', { projectId, uid })
+
   // 1) Reuse existing participant if present
   const { data: existing, error: qErr } = await supabaseAdmin
     .from('participants')
@@ -48,6 +50,8 @@ export async function joinProjectSafe(projectId: string) {
 
     console.log('[joinProjectSafe] inserted participant', ins?.id, 'role=', ins?.role)
     participantId = ins!.id
+  } else {
+    console.log('[joinProjectSafe] participant already exists', { participantId })
   }
 
   // 3) Clone active user-level payment links into this participant (skip dups)
@@ -74,7 +78,6 @@ export async function joinProjectSafe(projectId: string) {
       .filter(x => x.is_active)
       .filter(x => !existingPairs.has(`${x.type}::${x.value}`))
       .map(x => ({
-        project_id: projectId,
         participant_id: participantId!,
         type: x.type as 'revolut' | 'swedbank' | 'iban',
         label: x.label,
@@ -97,4 +100,5 @@ export async function joinProjectSafe(projectId: string) {
   }
 
   revalidatePath(`/project/${projectId}`)
+  console.log('[joinProjectSafe] done', { projectId, participantId })
 }

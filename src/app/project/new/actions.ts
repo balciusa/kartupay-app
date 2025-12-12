@@ -100,7 +100,6 @@ export async function createProject(formData: FormData) {
     .filter(x => x.is_active)
     .filter(x => !existingPairs.has(`${x.type}::${x.value}`))
     .map(x => ({
-      project_id: proj.id,
       participant_id: part.id,
       type: x.type as 'revolut'|'swedbank'|'iban',
       label: x.label,

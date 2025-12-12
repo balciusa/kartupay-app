@@ -4,7 +4,7 @@ import { Participants } from '@/components/Project/Participants'
 import { Discussions } from '@/components/Project/Discussions'
 import Voting from '@/components/Project/Voting'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
-import { joinProject } from './actions'
+import { joinProjectFromForm } from './actions'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -106,7 +106,11 @@ export default async function ProjectPage({
     { data: transfers },
     { data: addonVotes }
   ] = await Promise.all([
-    supabase.from('participants').select('id, user_id, role, short_code').eq('project_id', projectId),
+    supabase
+      .from('participants')
+      .select('id, user_id, role, short_code, joined_at')
+      .eq('project_id', projectId)
+      .order('joined_at', { ascending: true }),
     supabase.from('messages').select('*').eq('project_id', projectId).order('created_at', { ascending: false }),
     supabase.from('addons').select('*').eq('project_id', projectId),
     supabase.from('payments').select('participant_id, is_counted, created_at').eq('is_counted', true),
@@ -128,11 +132,25 @@ export default async function ProjectPage({
   // Process participants and payment methods
   const rawParticipants = participants ?? []
   const uid = await getCurrentUserId()
-  const isMeParticipant = !!uid && rawParticipants.some(p => p.user_id === uid)
+
+  let isMeParticipant = false
+  let mineErrorMsg: string | null = null
+  if (uid) {
+    const { data: mine, error: mineErr } = await supabase
+      .from('participants')
+      .select('id') // minimal, RLS-friendly
+      .eq('project_id', projectId)
+      .eq('user_id', uid)
+      .limit(1)
+    console.log('[page] uid=', uid, 'projectId=', projectId, 'mineCount=', mine?.length ?? 0, 'mineErr=', mineErr?.message ?? null)
+    if (mineErr) mineErrorMsg = mineErr.message
+    isMeParticipant = !!(mine && mine.length > 0)
+  }
+
   const participantsClean = rawParticipants
   const participantsCount = participantsClean.length
   const participantIds = new Set(participantsClean.map(p => p.id))
-  const paymentMethodsList = paymentOptions ?? []
+  const paymentMethodsList = (paymentOptions ?? []).filter(pm => pm.is_active !== false)
   
   // Filter payments to only those for participants in this project
   const payments = (allPayments ?? []).filter(p => participantIds.has(p.participant_id))
@@ -155,7 +173,8 @@ export default async function ProjectPage({
         label: m.label,
         value: m.value,
         type: m.type,
-        priority: m.priority ?? 999
+        priority: m.priority ?? 999,
+        is_active: m.is_active !== false,
       })))
     }
   }
@@ -213,17 +232,23 @@ export default async function ProjectPage({
 
       <div className="border rounded-xl p-4">
         <div className="font-medium mb-2">Join this project</div>
-        <form action={async () => { 'use server'; await joinProject(projectId) }}>
-            <button
-              className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
-              disabled={!uid || isMeParticipant}
-              title={uid ? undefined : 'Sign in to join'}
-            >
-              {uid ? (isMeParticipant ? 'You are in' : 'Join project') : 'Sign in to join'}
-            </button>
-          </form>
-          <div className="text-xs opacity-60 mt-1">On join, your active payment links from Settings will be copied here.</div>
+        <form action={joinProjectFromForm}>
+          <input type="hidden" name="projectId" value={projectId} />
+          <button
+            className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
+            disabled={!uid || isMeParticipant}
+            title={uid ? undefined : 'Sign in to join'}
+          >
+            {uid ? (isMeParticipant ? 'You are in' : 'Join project') : 'Sign in to join'}
+          </button>
+        </form>
+        <pre className="text-[10px] opacity-60 mt-2">
+          {JSON.stringify({ uid, isMeParticipant, participantsLen: (participants ?? []).length, mineErrorMsg }, null, 2)}
+        </pre>
+        <div className="text-xs opacity-60 mt-1">
+          On join, your active payment links from Settings will be copied here.
         </div>
+      </div>
 
       <Participants
         projectId={projectId}

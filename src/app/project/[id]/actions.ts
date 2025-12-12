@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
 import { randomUUID } from 'crypto'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { getCurrentUserId } from '@/lib/supabaseServer'
@@ -8,6 +9,28 @@ import { joinProjectSafe } from './joinProject.safe'
 
 // Route all join calls to the clean implementation
 export async function joinProject(projectId: string) { return joinProjectSafe(projectId) }
+
+// FormData-based to avoid bind quirks
+export async function joinProjectFromForm(formData: FormData) {
+  'use server'
+  try {
+    const projectId = String(formData.get('projectId') || '')
+    if (!projectId) throw new Error('Missing projectId')
+
+    console.log('[joinProjectFromForm] start', { projectId })
+
+    await joinProjectSafe(projectId)
+
+    console.log('[joinProjectFromForm] success', { projectId })
+    revalidatePath(`/project/${projectId}`, 'page')
+    redirect(`/project/${projectId}`)
+  } catch (err: any) {
+    // Redirect is expected; surface it without logging as a failure.
+    if (err?.message === 'NEXT_REDIRECT' || err?.digest === 'NEXT_REDIRECT') throw err
+    console.error('[joinProjectFromForm] error', err?.message || err)
+    throw err
+  }
+}
 
 /**
  * Mark a participant's payment as received.
