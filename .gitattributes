@@ -1,0 +1,7 @@
+# Keep LF endings for code files on all OSes (avoid CRLF warnings)
+* text=auto
+*.ts  text eol=lf
+*.tsx text eol=lf
+*.js  text eol=lf
+*.css text eol=lf
+*.md  text eol=lf
