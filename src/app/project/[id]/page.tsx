@@ -132,20 +132,8 @@ export default async function ProjectPage({
   // Process participants and payment methods
   const rawParticipants = participants ?? []
   const uid = await getCurrentUserId()
-
-  let isMeParticipant = false
-  let mineErrorMsg: string | null = null
-  if (uid) {
-    const { data: mine, error: mineErr } = await supabase
-      .from('participants')
-      .select('id') // minimal, RLS-friendly
-      .eq('project_id', projectId)
-      .eq('user_id', uid)
-      .limit(1)
-    console.log('[page] uid=', uid, 'projectId=', projectId, 'mineCount=', mine?.length ?? 0, 'mineErr=', mineErr?.message ?? null)
-    if (mineErr) mineErrorMsg = mineErr.message
-    isMeParticipant = !!(mine && mine.length > 0)
-  }
+  // Determine membership from already-fetched participants to avoid RLS recursion
+  const isMeParticipant = !!(uid && rawParticipants.some(p => p.user_id === uid))
 
   const participantsClean = rawParticipants
   const participantsCount = participantsClean.length
@@ -243,7 +231,7 @@ export default async function ProjectPage({
           </button>
         </form>
         <pre className="text-[10px] opacity-60 mt-2">
-          {JSON.stringify({ uid, isMeParticipant, participantsLen: (participants ?? []).length, mineErrorMsg }, null, 2)}
+          {JSON.stringify({ uid, isMeParticipant, participantsLen: (participants ?? []).length }, null, 2)}
         </pre>
         <div className="text-xs opacity-60 mt-1">
           On join, your active payment links from Settings will be copied here.
