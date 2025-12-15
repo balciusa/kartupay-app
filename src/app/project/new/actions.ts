@@ -10,8 +10,8 @@ const schema = z.object({
   title: z.string().min(3).max(120),
   description: z.string().max(2000).optional().nullable(),
   totalEur: z.string().regex(/^\d+(\.\d{1,2})?$/),
-  minParticipants: z.coerce.number().int().min(1),
-  maxParticipants: z.coerce.number().int().min(1).optional().nullable(),
+  min_participants: z.string().optional().nullable(),
+  max_participants: z.string().optional().nullable(),
   deadlineDate: z.string().optional().nullable(),
   deadlineTime: z.string().optional().nullable(),
 })
@@ -26,8 +26,8 @@ export async function createProject(formData: FormData) {
     title: formData.get('title') as string,
     description: (formData.get('description') as string) || null,
     totalEur: (formData.get('totalEur') as string) ?? '',
-    minParticipants: formData.get('minParticipants') as any,
-    maxParticipants: formData.get('maxParticipants') as any,
+    min_participants: formData.get('min_participants') as any,
+    max_participants: formData.get('max_participants') as any,
     deadlineDate: (formData.get('deadlineDate') as string) ?? null,
     deadlineTime: (formData.get('deadlineTime') as string) ?? null,
   }
@@ -37,7 +37,22 @@ export async function createProject(formData: FormData) {
     throw new Error('Invalid form: ' + JSON.stringify(parsed.error.flatten().fieldErrors))
   }
 
-  const { title, description, totalEur, minParticipants, maxParticipants, deadlineDate, deadlineTime } = parsed.data
+  const { title, description, totalEur, min_participants, max_participants, deadlineDate, deadlineTime } = parsed.data
+
+  const minRaw = String(min_participants ?? '').trim()
+  const maxRaw = String(max_participants ?? '').trim()
+  const minParticipants = minRaw === '' ? null : Number(minRaw)
+  const maxParticipants = maxRaw === '' ? null : Number(maxRaw)
+
+  if (minParticipants !== null && (!Number.isFinite(minParticipants) || minParticipants < 1)) {
+    throw new Error('Min participants must be at least 1')
+  }
+  if (maxParticipants !== null && (!Number.isFinite(maxParticipants) || maxParticipants < 1)) {
+    throw new Error('Max participants must be at least 1')
+  }
+  if (minParticipants !== null && maxParticipants !== null && maxParticipants < minParticipants) {
+    throw new Error('Max participants must be greater than or equal to min participants')
+  }
 
   const normalizedAmount = totalEur.replace(',', '.').trim()
   const amountFloat = parseFloat(normalizedAmount)
@@ -61,8 +76,8 @@ export async function createProject(formData: FormData) {
       title,
       description,
       total_cents,
-      min_participants: Number(minParticipants),
-      max_participants: maxParticipants ?? null,
+      min_participants: minParticipants,
+      max_participants: maxParticipants,
       deadline_at,
       status: 'collecting',
     })

@@ -7,13 +7,14 @@ function eur(c: number) {
 
 export function SummaryCards(props: {
   totalCents: number
-  minParticipants: number
+  minParticipants: number | null
   participantsNow: number
   scenarios: { now: number, plus1: number, plus2: number }
   deadlineISO?: string | null
   maxParticipants?: number | null
 }) {
   const progress = useMemo(() => {
+    if (props.minParticipants == null) return 0
     const pct = Math.min(100, Math.round(100 * props.participantsNow / (props.minParticipants || 1)))
     return isFinite(pct) ? pct : 0
   }, [props.participantsNow, props.minParticipants])
@@ -41,13 +42,15 @@ export function SummaryCards(props: {
         )}
       </div>
 
-      <div className="border rounded-xl p-4">
-        <div className="text-xs uppercase opacity-60">Participant Threshold</div>
-        <div className="text-2xl font-semibold">{props.participantsNow} / {props.minParticipants}</div>
-        <div className="h-2 bg-black/10 rounded mt-2">
-          <div className="h-2 bg-black/70 rounded" style={{ width: `${progress}%` }} />
+      {props.minParticipants != null && (
+        <div className="border rounded-xl p-4">
+          <div className="text-xs uppercase opacity-60">Participant Threshold</div>
+          <div className="text-2xl font-semibold">{props.participantsNow} / {props.minParticipants}</div>
+          <div className="h-2 bg-black/10 rounded mt-2">
+            <div className="h-2 bg-black/70 rounded" style={{ width: `${progress}%` }} />
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="border rounded-xl p-4">
         <div className="text-xs uppercase opacity-60">Scenarios (per person)</div>

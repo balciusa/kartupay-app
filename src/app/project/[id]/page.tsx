@@ -244,7 +244,7 @@ export default async function ProjectPage({
 
       <SummaryCards
         totalCents={totalCents}
-        minParticipants={project.min_participants}
+        minParticipants={project.min_participants as number | null}
         participantsNow={participantsNow}
         scenarios={scenarios}
         deadlineISO={(project.deadline_at as string) ?? undefined}
@@ -268,9 +268,7 @@ export default async function ProjectPage({
             </button>
             <div className="text-xs opacity-60">
               Waiting for organizer approval
-              {myPendingReq?.created_at
-                ? ` • requested ${new Date(myPendingReq.created_at).toLocaleString()}`
-                : ''}
+              {myPendingReq?.created_at ? ` requested ${new Date(myPendingReq.created_at).toLocaleString()}` : ''}
             </div>
           </div>
         ) : (
