@@ -1,11 +1,7 @@
 'use client'
 
 import { useTransition, useState } from 'react'
-import {
-  markReceived,
-  createLateJoinTransfers,
-  confirmLateJoinReceipt,
-} from '@/app/project/[id]/actions'
+import { markReceived, approveJoinRequest, rejectJoinRequest } from '@/app/project/[id]/actions'
 
 type Participant = {
   id: string
@@ -51,21 +47,17 @@ export function Participants(props: {
   allOptions: Map<string, Array<Opt>>
   paidSet: Set<string>
   afterDeadlineSet: Set<string>
-  transfers: Array<any>
   organizerId: string | null
+  pendingRequests?: Array<{ id: string; requester_user_id: string; created_at: string; status: string }>
+  myParticipantId: string | null
+  currentUserId: string | null
 }) {
   const [pending, start] = useTransition()
-  const [newcomerId, setNewcomerId] = useState('')
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null)
   const [ibanModal, setIbanModal] = useState<IbanModalState>(null)
   const [copiedIban, setCopiedIban] = useState(false)
-
-  const transfersByRecipient = new Map<string, any[]>()
-  for (const t of (props.transfers ?? [])) {
-    const arr = transfersByRecipient.get(t.to_participant_id) ?? []
-    arr.push(t)
-    transfersByRecipient.set(t.to_participant_id, arr)
-  }
+  const isOrganizer = !!(props.organizerId && props.myParticipantId === props.organizerId)
+  const pendingRequests = props.pendingRequests ?? []
 
   const openIbanModal = (opt: PayOption) => {
     setCopiedIban(false)
@@ -108,19 +100,33 @@ export function Participants(props: {
     <section className="border rounded-xl p-4 space-y-4">
       <h2 className="text-lg font-semibold">Participants</h2>
 
-      {/* Existing Late-Join panel (keep it; visible even if no organizer yet for MVP) */}
-      <div className="rounded border p-3 space-y-2">
-        <div className="font-medium">Late-Join</div>
-        <form onSubmit={(e)=>{e.preventDefault(); if (!newcomerId.trim()) return; start(async ()=>{ await createLateJoinTransfers(props.projectId, newcomerId.trim()); setNewcomerId('') })}}>
-          <div className="flex gap-2">
-            <input className="border rounded px-2 py-1 flex-1" placeholder="Newcomer participant ID" value={newcomerId} onChange={e=>setNewcomerId(e.target.value)} />
-            <button className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50" disabled={pending || !newcomerId.trim()}>
-              {pending ? 'Creating...' : 'Start late-join'}
-            </button>
+      {isOrganizer && pendingRequests.length > 0 && (
+        <div className="rounded border p-3 space-y-3">
+          <div className="font-medium">Pending join requests</div>
+          <div className="space-y-2">
+            {pendingRequests.map(req => (
+              <div key={req.id} className="flex items-center justify-between gap-3 text-sm">
+                <div className="space-y-0.5">
+                  <div className="font-medium">User {req.requester_user_id.slice(0, 6)}</div>
+                  <div className="text-xs opacity-70">{new Date(req.created_at).toLocaleString()}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <form action={approveJoinRequest.bind(null, req.id)}>
+                    <button className="px-3 py-1.5 rounded bg-black text-white text-xs">
+                      Approve
+                    </button>
+                  </form>
+                  <form action={rejectJoinRequest.bind(null, req.id)}>
+                    <button className="px-3 py-1.5 rounded border text-xs" type="submit">
+                      Reject
+                    </button>
+                  </form>
+                </div>
+              </div>
+            ))}
           </div>
-          <div className="text-xs opacity-60 mt-1">Creates a transfer for each already-paid participant.</div>
-        </form>
-      </div>
+        </div>
+      )}
 
       <div className="grid gap-3">
         {props.participants.map(p => {
@@ -128,10 +134,10 @@ export function Participants(props: {
           const all = (props.allOptions.get(p.id) ?? []).filter(o => o.is_active !== false)
           const paid = props.paidSet.has(p.id)
           const late = props.afterDeadlineSet.has(p.id)
-          const myTransfers = transfersByRecipient.get(p.id) ?? []
           const otherOptions = pref ? all.filter(o => !(o.type === pref.type && o.value === pref.value)) : all
           const hasMultipleActive = all.length > 1
           const name = displayName(p)
+          const isSelf = props.currentUserId && p.user_id === props.currentUserId
 
           return (
             <div key={p.id} className="rounded border p-3 space-y-2">
@@ -144,7 +150,7 @@ export function Participants(props: {
                   <div className="text-xs opacity-70">
                     {pref ? (
                       <>
-                        Preferred: <span className="font-medium">{pref.label ?? pref.type}</span> ·{' '}
+                        Preferred: <span className="font-medium">{pref.label ?? pref.type}</span>{' '}
                         <span className="font-mono break-all">{pref.value}</span>
                       </>
                     ) : (
@@ -153,43 +159,47 @@ export function Participants(props: {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
-                    className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
-                    disabled={!pref}
-                    onClick={() => handlePay(pref)}
-                  >
-                    Pay
-                  </button>
-
-                  {hasMultipleActive && (
-                    <div className="relative">
+                  {!isSelf && (
+                    <>
                       <button
-                        className="px-2 py-1 rounded border"
-                        onClick={() => setMenuOpenFor(menuOpenFor === p.id ? null : p.id)}
-                        aria-label="Choose another payment option"
+                        className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
+                        disabled={!pref}
+                        onClick={() => handlePay(pref)}
                       >
-                        ⋯
+                        Pay
                       </button>
-                      {menuOpenFor === p.id && (
-                        <div className="absolute right-0 mt-2 w-72 rounded border bg-white shadow-lg z-10">
-                          <div className="text-xs px-3 py-2 border-b font-medium">Other options</div>
-                          {otherOptions.length === 0 ? (
-                            <div className="text-xs px-3 py-2 opacity-60">No other active options</div>
-                          ) : (
-                            otherOptions.map((o, idx) => (
-                              <button
-                                key={idx}
-                                className="block w-full text-left px-3 py-2 hover:bg-black/5"
-                                onClick={() => { setMenuOpenFor(null); handlePay(o) }}
-                              >
-                                <div className="text-sm font-medium">{o.label ?? o.type}</div>
-                                <div className="text-xs opacity-70 font-mono break-all">{o.value}</div>
-                              </button>
-                            ))
+
+                      {hasMultipleActive && (
+                        <div className="relative">
+                          <button
+                            className="px-2 py-1 rounded border"
+                            onClick={() => setMenuOpenFor(menuOpenFor === p.id ? null : p.id)}
+                            aria-label="Choose another payment option"
+                          >
+                            ...
+                          </button>
+                          {menuOpenFor === p.id && (
+                            <div className="absolute right-0 mt-2 w-72 rounded border bg-white shadow-lg z-10">
+                              <div className="text-xs px-3 py-2 border-b font-medium">Other options</div>
+                              {otherOptions.length === 0 ? (
+                                <div className="text-xs px-3 py-2 opacity-60">No other active options</div>
+                              ) : (
+                                otherOptions.map((o, idx) => (
+                                  <button
+                                    key={idx}
+                                    className="block w-full text-left px-3 py-2 hover:bg-black/5"
+                                    onClick={() => { setMenuOpenFor(null); handlePay(o) }}
+                                  >
+                                    <div className="text-sm font-medium">{o.label ?? o.type}</div>
+                                    <div className="text-xs opacity-70 font-mono break-all">{o.value}</div>
+                                  </button>
+                                ))
+                              )}
+                            </div>
                           )}
                         </div>
                       )}
-                    </div>
+                    </>
                   )}
 
                   <button className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
@@ -211,25 +221,6 @@ export function Participants(props: {
                 </div>
               )}
 
-              {myTransfers.length > 0 && (
-                <div className="mt-2 rounded border p-2">
-                  <div className="text-sm font-medium">Late-Join Transfers to this participant</div>
-                  <div className="space-y-1 mt-1">
-                    {myTransfers.map(t => (
-                      <div key={t.id} className="flex items-center justify-between text-sm">
-                        <div>Expected: €{(t.expected_cents/100).toFixed(2)} {t.received_at ? '- Received' : ''}</div>
-                        {!t.received_at && (
-                          <button className="px-2 py-1 rounded bg-black text-white text-xs"
-                            onClick={() => start(async ()=>{ await confirmLateJoinReceipt(t.id) })}
-                          >
-                            Confirm received
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
           )
         })}

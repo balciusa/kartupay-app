@@ -1,10 +1,9 @@
-import { headers } from 'next/headers'
 import { SummaryCards } from '@/components/Project/SummaryCards'
 import { Participants } from '@/components/Project/Participants'
 import { Discussions } from '@/components/Project/Discussions'
 import Voting from '@/components/Project/Voting'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
-import { joinProjectFromForm } from './actions'
+import { requestJoin } from './actions'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -13,56 +12,22 @@ export default async function ProjectPage({
   params,
   searchParams,
 }: {
-  params: Promise<{ id?: string }>
-  searchParams?: Promise<{ id?: string | string[] }>
+  params: { id?: string } | Promise<{ id?: string }>
+  searchParams?: { id?: string | string[] } | Promise<{ id?: string | string[] }>
 }) {
-  // In Next.js 16, params is a Promise that must be awaited
   const resolvedParams = await params
   const resolvedSearchParams = searchParams ? await searchParams : undefined
-  
-  // IDs from a dynamic segment are already decoded by Next
+
   const pathId = Array.isArray(resolvedParams?.id) ? resolvedParams?.id?.[0] : resolvedParams?.id
-  const queryId = resolvedSearchParams ? (Array.isArray(resolvedSearchParams?.id) ? resolvedSearchParams?.id?.[0] : resolvedSearchParams?.id) : undefined
-  const hdrs = await headers()
-  const extractIdFromPath = (path?: string | null) => {
-    if (!path) return null
-    const match = path.match(/\/project\/([^/?#]+)/)
-    return match?.[1] ?? null
-  }
-  const headerPaths =
-    hdrs && typeof (hdrs as any).get === 'function'
-      ? [
-          (hdrs as any).get('x-invoke-path'),
-          (hdrs as any).get('x-middleware-pathname'),
-          (hdrs as any).get('x-original-url'),
-          (hdrs as any).get('x-rewrite-url'),
-          (hdrs as any).get('x-forwarded-url'),
-          (hdrs as any).get('next-url'),
-          (hdrs as any).get('referer')
-        ].filter(Boolean)
-      : []
-  const parsedFromHeaders = headerPaths.map(extractIdFromPath).find(Boolean) ?? null
-  const projectId = pathId || queryId || parsedFromHeaders
+  const queryId = resolvedSearchParams
+    ? (Array.isArray(resolvedSearchParams?.id) ? resolvedSearchParams?.id?.[0] : resolvedSearchParams?.id)
+    : undefined
+  const projectId = pathId || queryId
 
   if (!projectId) {
-    const headerSnapshot: Array<[string, string]> = []
-    try {
-      // ReadonlyHeaders doesn't have entries(), so we'll just use the headerPaths we already extracted
-      // This is just for debugging display
-    } catch {
-      // ignore
-    }
     return (
       <main className="p-6 max-w-2xl mx-auto space-y-4">
         <h1 className="text-xl font-semibold">Project not found (missing id)</h1>
-        <pre className="text-xs whitespace-pre-wrap border rounded p-3 bg-muted/30">
-{JSON.stringify({
-  paramsReceived: resolvedParams,
-  searchParamsReceived: resolvedSearchParams,
-  parsedFromHeaders: parsedFromHeaders ?? null,
-  headerSnapshot
-}, null, 2)}
-        </pre>
         <p className="text-sm opacity-70">
           Expected a URL like <code>/project/&lt;uuid&gt;</code>. Go back to the home list and ensure links use the
           real project <code>id</code>.
@@ -103,7 +68,6 @@ export default async function ProjectPage({
     { data: messages },
     { data: addons },
     { data: allPayments },
-    { data: transfers },
     { data: addonVotes }
   ] = await Promise.all([
     supabase
@@ -114,7 +78,6 @@ export default async function ProjectPage({
     supabase.from('messages').select('*').eq('project_id', projectId).order('created_at', { ascending: false }),
     supabase.from('addons').select('*').eq('project_id', projectId),
     supabase.from('payments').select('participant_id, is_counted, created_at').eq('is_counted', true),
-    supabase.from('late_join_transfers').select('*').eq('project_id', projectId),
     supabase.from('addon_votes').select('addon_id')
   ])
 
@@ -132,8 +95,22 @@ export default async function ProjectPage({
   // Process participants and payment methods
   const rawParticipants = participants ?? []
   const uid = await getCurrentUserId()
-  // Determine membership from already-fetched participants to avoid RLS recursion
-  const isMeParticipant = !!(uid && rawParticipants.some(p => p.user_id === uid))
+  const myParticipant = uid ? rawParticipants.find(p => p.user_id === uid) : null
+  const isMeParticipant = !!myParticipant
+  const myParticipantId = myParticipant?.id ?? null
+  const isOrganizer = !!(myParticipant && myParticipant.role === 'organizer')
+
+  let pendingRequests: Array<{ id: string; requester_user_id: string; created_at: string; status: string }> = []
+  if (isOrganizer) {
+    const { data: joinRequests, error: joinReqErr } = await supabase
+      .from('join_requests')
+      .select('id, requester_user_id, created_at, status')
+      .eq('project_id', projectId)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true })
+    if (joinReqErr) throw joinReqErr
+    pendingRequests = joinRequests ?? []
+  }
 
   const participantsClean = rawParticipants
   const participantsCount = participantsClean.length
@@ -199,7 +176,13 @@ export default async function ProjectPage({
 
   // Find organizer
   const organizer = participantsClean.find(p => p.role === 'organizer')
-  const organizerId = organizer?.id ?? null
+  const organizerId = myParticipant?.role === 'organizer'
+    ? myParticipant.id
+    : organizer?.id ?? null
+
+  const now = new Date()
+  const beforeDeadline = project.deadline_at ? now <= new Date(project.deadline_at as any) : true
+  const canJoinNow = project.status === 'collecting' && beforeDeadline
 
   return (
     <main className="p-6 max-w-4xl mx-auto space-y-6">
@@ -220,19 +203,33 @@ export default async function ProjectPage({
 
       <div className="border rounded-xl p-4">
         <div className="font-medium mb-2">Join this project</div>
-        <form action={joinProjectFromForm}>
-          <input type="hidden" name="projectId" value={projectId} />
+        {!uid && (
           <button
             className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
-            disabled={!uid || isMeParticipant}
-            title={uid ? undefined : 'Sign in to join'}
+            disabled
+            title="Sign in to join"
           >
-            {uid ? (isMeParticipant ? 'You are in' : 'Join project') : 'Sign in to join'}
+            Sign in to join
           </button>
-        </form>
-        <pre className="text-[10px] opacity-60 mt-2">
-          {JSON.stringify({ uid, isMeParticipant, participantsLen: (participants ?? []).length }, null, 2)}
-        </pre>
+        )}
+        {uid && isMeParticipant && (
+          <button
+            className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
+            disabled
+          >
+            You are in
+          </button>
+        )}
+        {uid && !isMeParticipant && (
+          <form action={requestJoin.bind(null, projectId)}>
+            <button
+              className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
+              type="submit"
+            >
+              {canJoinNow ? 'Join project' : 'Request to join'}
+            </button>
+          </form>
+        )}
         <div className="text-xs opacity-60 mt-1">
           On join, your active payment links from Settings will be copied here.
         </div>
@@ -245,8 +242,10 @@ export default async function ProjectPage({
         allOptions={allOptions}
         paidSet={paidSet}
         afterDeadlineSet={afterDeadlineSet}
-        transfers={transfers ?? []}
         organizerId={organizerId}
+        pendingRequests={pendingRequests}
+        myParticipantId={myParticipantId}
+        currentUserId={uid}
       />
 
       <Voting addons={addonsWithCounts} />
