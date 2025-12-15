@@ -11,8 +11,9 @@ const schema = z.object({
   description: z.string().max(2000).optional().nullable(),
   totalEur: z.string().regex(/^\d+(\.\d{1,2})?$/),
   minParticipants: z.coerce.number().int().min(1),
-  deadlineDate: z.string().min(1),
-  deadlineTime: z.string().min(1),
+  maxParticipants: z.coerce.number().int().min(1).optional().nullable(),
+  deadlineDate: z.string().optional().nullable(),
+  deadlineTime: z.string().optional().nullable(),
 })
 
 export async function createProject(formData: FormData) {
@@ -26,8 +27,9 @@ export async function createProject(formData: FormData) {
     description: (formData.get('description') as string) || null,
     totalEur: (formData.get('totalEur') as string) ?? '',
     minParticipants: formData.get('minParticipants') as any,
-    deadlineDate: (formData.get('deadlineDate') as string) ?? '',
-    deadlineTime: (formData.get('deadlineTime') as string) ?? '',
+    maxParticipants: formData.get('maxParticipants') as any,
+    deadlineDate: (formData.get('deadlineDate') as string) ?? null,
+    deadlineTime: (formData.get('deadlineTime') as string) ?? null,
   }
 
   const parsed = schema.safeParse(payload)
@@ -35,7 +37,7 @@ export async function createProject(formData: FormData) {
     throw new Error('Invalid form: ' + JSON.stringify(parsed.error.flatten().fieldErrors))
   }
 
-  const { title, description, totalEur, minParticipants, deadlineDate, deadlineTime } = parsed.data
+  const { title, description, totalEur, minParticipants, maxParticipants, deadlineDate, deadlineTime } = parsed.data
 
   const normalizedAmount = totalEur.replace(',', '.').trim()
   const amountFloat = parseFloat(normalizedAmount)
@@ -44,9 +46,13 @@ export async function createProject(formData: FormData) {
   }
   const total_cents = Math.round(amountFloat * 100)
 
-  const deadline_at = new Date(`${deadlineDate}T${deadlineTime}:00`)
-  if (isNaN(+deadline_at)) {
-    throw new Error('Invalid deadline date or time')
+  let deadline_at: string | null = null
+  if (deadlineDate && deadlineTime) {
+    const combined = new Date(`${deadlineDate}T${deadlineTime}:00`)
+    if (isNaN(+combined)) {
+      throw new Error('Invalid deadline date or time')
+    }
+    deadline_at = combined.toISOString()
   }
 
   const { data: proj, error: pErr } = await supabaseAdmin
@@ -56,7 +62,8 @@ export async function createProject(formData: FormData) {
       description,
       total_cents,
       min_participants: Number(minParticipants),
-      deadline_at: deadline_at.toISOString(),
+      max_participants: maxParticipants ?? null,
+      deadline_at,
       status: 'collecting',
     })
     .select('id')

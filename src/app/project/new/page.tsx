@@ -15,54 +15,58 @@ export default async function NewProjectPage() {
     )
   }
 
-  const today = new Date()
-  const yyyy = today.getFullYear()
-  const mm = String(today.getMonth() + 1).padStart(2, '0')
-  const dd = String(today.getDate()).padStart(2, '0')
-  const hh = String(Math.max(9, today.getHours())).padStart(2, '0')
-  const mi = String(today.getMinutes()).padStart(2, '0')
-
   return (
     <main className="p-6 max-w-xl mx-auto space-y-4">
       <h1 className="text-2xl font-semibold">New project</h1>
-      <form action={createProject} className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium mb-1">Title</label>
-          <input name="title" required className="w-full border rounded px-3 py-2" placeholder="Beach House Weekend" />
-        </div>
+      <form action={createProject} className="grid gap-3">
+        <input name="title" placeholder="Project title" className="border rounded px-3 py-2" required />
+        <textarea name="description" placeholder="Description (optional)" className="border rounded px-3 py-2" />
 
-        <div>
-          <label className="block text-sm font-medium mb-1">Description (optional)</label>
-          <textarea name="description" className="w-full border rounded px-3 py-2" rows={3} placeholder="Trip details…" />
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid md:grid-cols-3 gap-3">
           <div>
-            <label className="block text-sm font-medium mb-1">Total (€)</label>
-            <input name="totalEur" required inputMode="decimal" className="w-full border rounded px-3 py-2" placeholder="600" />
+            <label className="text-sm block mb-1">Total (EUR)</label>
+            <input
+              name="totalEur"
+              type="text"
+              inputMode="decimal"
+              placeholder="199.99"
+              className="border rounded px-3 py-2 w-full"
+              required
+            />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Min participants</label>
-            <input name="minParticipants" required type="number" min={1} className="w-full border rounded px-3 py-2" placeholder="3" />
+            <label className="text-sm block mb-1">Min participants</label>
+            <input
+              name="minParticipants"
+              type="number"
+              min={1}
+              className="border rounded px-3 py-2 w-full"
+              required
+            />
+          </div>
+          <div>
+            <label className="text-sm block mb-1">Max participants (optional)</label>
+            <input
+              name="maxParticipants"
+              type="number"
+              min={1}
+              className="border rounded px-3 py-2 w-full"
+            />
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid md:grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium mb-1">Deadline date</label>
-            <input name="deadlineDate" type="date" required className="w-full border rounded px-3 py-2" defaultValue={`${yyyy}-${mm}-${dd}`} />
+            <label className="text-sm block mb-1">Deadline date (optional)</label>
+            <input name="deadlineDate" type="date" className="border rounded px-3 py-2 w-full" />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Deadline time</label>
-            <input name="deadlineTime" type="time" required className="w-full border rounded px-3 py-2" defaultValue={`${hh}:${mi}`} />
+            <label className="text-sm block mb-1">Deadline time (optional)</label>
+            <input name="deadlineTime" type="time" className="border rounded px-3 py-2 w-full" />
           </div>
         </div>
 
-        <div className="pt-2">
-          <button type="submit" className="px-3 py-1.5 rounded bg-black text-white hover:opacity-90">
-            Create project
-          </button>
-        </div>
+        <button className="px-4 py-2 rounded bg-black text-white">Create</button>
       </form>
       <p className="text-xs opacity-60">You will be added as the organizer, and your active payment links from Settings will be copied.</p>
     </main>

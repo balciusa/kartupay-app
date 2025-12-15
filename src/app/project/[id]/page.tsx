@@ -247,7 +247,8 @@ export default async function ProjectPage({
         minParticipants={project.min_participants}
         participantsNow={participantsNow}
         scenarios={scenarios}
-        deadlineISO={project.deadline_at as string}
+        deadlineISO={(project.deadline_at as string) ?? undefined}
+        maxParticipants={project.max_participants as number | null}
       />
 
       <div className="border rounded-xl p-4">
