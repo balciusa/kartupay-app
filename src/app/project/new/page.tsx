@@ -37,17 +37,17 @@ export default async function NewProjectPage() {
           <div>
             <label className="text-sm block mb-1">Min participants</label>
             <input
-              name="minParticipants"
+              name="min_participants"
               type="number"
               min={1}
               className="border rounded px-3 py-2 w-full"
-              required
+              placeholder="e.g. 5 (optional)"
             />
           </div>
           <div>
             <label className="text-sm block mb-1">Max participants (optional)</label>
             <input
-              name="maxParticipants"
+              name="max_participants"
               type="number"
               min={1}
               className="border rounded px-3 py-2 w-full"
