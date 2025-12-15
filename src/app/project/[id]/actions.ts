@@ -7,6 +7,45 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { getCurrentUserId } from '@/lib/supabaseServer'
 import { joinProjectSafe } from './joinProject.safe'
 
+export async function leaveProject(projectId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+
+  const { data: me, error: meErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, role')
+    .eq('project_id', projectId)
+    .eq('user_id', uid)
+    .is('left_at', null)
+    .limit(1)
+    .maybeSingle()
+  if (meErr) throw meErr
+  if (!me) { revalidatePath(`/project/${projectId}`); return { ok: true } }
+
+  if (me.role === 'organizer') {
+    const { data: organizers, error: orgErr } = await supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('role', 'organizer')
+      .is('left_at', null)
+    if (orgErr) throw orgErr
+    if ((organizers?.length ?? 0) <= 1) {
+      throw new Error('You are the only organizer. Assign another organizer before leaving.')
+    }
+  }
+
+  const { error: updErr } = await supabaseAdmin
+    .from('participants')
+    .update({ left_at: new Date().toISOString() })
+    .eq('id', me.id)
+  if (updErr) throw updErr
+
+  revalidatePath(`/project/${projectId}`)
+  return { ok: true }
+}
+
 async function clonePaymentOptionsForParticipant(participantId: string, userId: string) {
   const [{ data: userOptions, error: userErr }, { data: existingOpts, error: existingErr }] = await Promise.all([
     supabaseAdmin
@@ -48,49 +87,149 @@ export async function requestJoin(projectId: string) {
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('You must be signed in')
 
-  const { data: existing, error: existingErr } = await supabaseAdmin
-    .from('participants')
-    .select('id')
-    .eq('project_id', projectId)
-    .eq('user_id', uid)
-    .limit(1)
-  if (existingErr) throw existingErr
+  console.log('[requestJoin] start', { projectId, uid })
 
-  if (existing?.[0]?.id) {
-    revalidatePath(`/project/${projectId}`)
-    return { joined: true }
-  }
-
-  const { data: project, error: projectErr } = await supabaseAdmin
+  const { data: project, error: pErr } = await supabaseAdmin
     .from('projects')
-    .select('status, deadline_at')
+    .select('id, status, deadline_at')
     .eq('id', projectId)
     .single()
-  if (projectErr || !project) throw new Error('Project not found')
+  if (pErr || !project) {
+    console.error('[requestJoin] project fetch error', pErr)
+    revalidatePath(`/project/${projectId}`)
+    return { ok: false, reason: 'project_fetch_failed' as const }
+  }
 
   const now = new Date()
   const beforeDeadline = project.deadline_at ? now <= new Date(project.deadline_at as any) : true
   const canJoinNow = project.status === 'collecting' && beforeDeadline
 
-  if (canJoinNow) {
-    await joinProjectSafe(projectId)
+  const { data: mine, error: mineErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, left_at')
+    .eq('project_id', projectId)
+    .eq('user_id', uid)
+    .limit(1)
+  if (mineErr) console.warn('[requestJoin] participants probe error', mineErr)
+
+  const existing = mine?.[0]
+  if (existing && !existing.left_at) {
+    console.log('[requestJoin] already active participant', existing.id)
     revalidatePath(`/project/${projectId}`)
-    return { joined: true }
+    return { ok: true, joined: true as const }
   }
 
-  await supabaseAdmin
+  if (canJoinNow) {
+    if (existing?.left_at) {
+      const { error: reactErr } = await supabaseAdmin
+        .from('participants')
+        .update({ left_at: null })
+        .eq('id', existing.id)
+      if (reactErr) {
+        console.error('[requestJoin] reactivate error', reactErr)
+        revalidatePath(`/project/${projectId}`)
+        return { ok: false, reason: 'reactivate_failed' as const }
+      }
+      console.log('[requestJoin] reactivated participant', existing.id)
+    } else {
+      await joinProjectSafe(projectId)
+      console.log('[requestJoin] joined immediately via joinProjectSafe')
+    }
+    revalidatePath(`/project/${projectId}`)
+    return { ok: true, joined: true as const }
+  }
+
+  // Check if there's an existing request (including rejected ones)
+  const { data: existingReq, error: checkErr } = await supabaseAdmin
     .from('join_requests')
-    .upsert({
+    .select('id, status')
+    .eq('project_id', projectId)
+    .eq('requester_user_id', uid)
+    .maybeSingle()
+  
+  if (checkErr) {
+    console.error('[requestJoin] check existing request error', checkErr)
+    // Continue anyway - try to upsert which will handle conflicts
+  }
+
+  if (existingReq && !checkErr) {
+    // Update existing request (whether pending, rejected, or approved)
+    const { error: upErr } = await supabaseAdmin
+      .from('join_requests')
+      .update({
+        status: 'pending',
+        created_at: new Date().toISOString(), // Reset created_at for new request
+      })
+      .eq('id', existingReq.id)
+    
+    if (upErr) {
+      console.error('[requestJoin] update join_requests error', upErr, { requestId: existingReq.id })
+      revalidatePath(`/project/${projectId}`)
+      return { ok: false, reason: 'update_failed' as const }
+    }
+    console.log('[requestJoin] updated existing request to pending', { requestId: existingReq.id, oldStatus: existingReq.status })
+  } else {
+    // Create new request (or upsert if check failed)
+    // Try insert first, if it fails due to conflict, then update
+    const insertData = {
       project_id: projectId,
       requester_user_id: uid,
-      status: 'pending',
-    }, {
-      onConflict: 'project_id,requester_user_id,status',
-      ignoreDuplicates: true,
-    })
+      status: 'pending' as const,
+    }
+    
+    const { data: inserted, error: insErr } = await supabaseAdmin
+      .from('join_requests')
+      .insert(insertData)
+      .select()
+      .single()
+    
+    if (insErr) {
+      // If it's a unique constraint violation, try to update instead
+      if (insErr.code === '23505' || insErr.message?.includes('duplicate') || insErr.message?.includes('unique')) {
+        console.log('[requestJoin] Insert failed due to conflict, trying update instead', insErr)
+        
+        // Find the existing request and update it
+        const { data: existingForUpdate, error: findErr } = await supabaseAdmin
+          .from('join_requests')
+          .select('id')
+          .eq('project_id', projectId)
+          .eq('requester_user_id', uid)
+          .maybeSingle()
+        
+        if (findErr || !existingForUpdate) {
+          console.error('[requestJoin] Could not find existing request to update', findErr)
+          revalidatePath(`/project/${projectId}`)
+          return { ok: false, reason: 'upsert_failed' as const, error: insErr.message }
+        }
+        
+        const { error: upErr } = await supabaseAdmin
+          .from('join_requests')
+          .update({
+            status: 'pending',
+            created_at: new Date().toISOString(),
+          })
+          .eq('id', existingForUpdate.id)
+        
+        if (upErr) {
+          console.error('[requestJoin] Update after conflict failed', upErr)
+          revalidatePath(`/project/${projectId}`)
+          return { ok: false, reason: 'upsert_failed' as const, error: upErr.message }
+        }
+        
+        console.log('[requestJoin] Updated existing request after conflict')
+      } else {
+        console.error('[requestJoin] insert join_requests error', insErr)
+        revalidatePath(`/project/${projectId}`)
+        return { ok: false, reason: 'upsert_failed' as const, error: insErr.message }
+      }
+    } else {
+      console.log('[requestJoin] created new pending request', inserted?.id)
+    }
+  }
 
+  console.log('[requestJoin] pending request created/updated successfully')
   revalidatePath(`/project/${projectId}`)
-  return { requested: true }
+  return { ok: true, pending: true as const }
 }
 
 export async function approveJoinRequest(requestId: string) {
@@ -119,16 +258,24 @@ export async function approveJoinRequest(requestId: string) {
     return
   }
 
+  // Check for existing participant (including those who left)
   const { data: participantExisting, error: existingErr } = await supabaseAdmin
     .from('participants')
-    .select('id')
+    .select('id, left_at, role')
     .eq('project_id', req.project_id)
     .eq('user_id', req.requester_user_id)
-    .limit(1)
-  if (existingErr) throw existingErr
+    .maybeSingle()
+  
+  if (existingErr) {
+    console.error('[approveJoinRequest] Error checking existing participant:', existingErr)
+    throw existingErr
+  }
 
-  let participantId = participantExisting?.[0]?.id as string | undefined
+  let participantId = participantExisting?.id as string | undefined
+  
   if (!participantId) {
+    // Create new participant
+    console.log('[approveJoinRequest] Creating new participant for user', req.requester_user_id)
     const { data: inserted, error: insertErr } = await supabaseAdmin
       .from('participants')
       .insert({
@@ -138,8 +285,38 @@ export async function approveJoinRequest(requestId: string) {
       })
       .select('id')
       .single()
-    if (insertErr || !inserted?.id) throw insertErr || new Error('Failed to create participant')
+    if (insertErr || !inserted?.id) {
+      console.error('[approveJoinRequest] Failed to create participant:', insertErr)
+      throw insertErr || new Error('Failed to create participant')
+    }
     participantId = inserted.id
+    console.log('[approveJoinRequest] Created new participant', { participantId, userId: req.requester_user_id })
+  } else if (participantExisting?.left_at) {
+    // Reactivate participant who left
+    console.log('[approveJoinRequest] Reactivating participant who left', { participantId, left_at: participantExisting.left_at })
+    const { error: reactErr } = await supabaseAdmin
+      .from('participants')
+      .update({ left_at: null })
+      .eq('id', participantId)
+    if (reactErr) {
+      console.error('[approveJoinRequest] Failed to reactivate participant:', reactErr)
+      throw reactErr
+    }
+    console.log('[approveJoinRequest] Reactivated participant', participantId)
+    
+    // Verify reactivation
+    const { data: verify } = await supabaseAdmin
+      .from('participants')
+      .select('id, left_at')
+      .eq('id', participantId)
+      .single()
+    console.log('[approveJoinRequest] Verification after reactivate:', verify)
+  } else {
+    console.log('[approveJoinRequest] Participant already active', { participantId, left_at: participantExisting?.left_at })
+  }
+
+  if (!participantId) {
+    throw new Error('Failed to get or create participant')
   }
 
   await clonePaymentOptionsForParticipant(participantId, req.requester_user_id)
@@ -148,13 +325,31 @@ export async function approveJoinRequest(requestId: string) {
     .from('join_requests')
     .update({
       status: 'approved',
-      decided_at: new Date().toISOString(),
-      decided_by: organizerId,
     })
     .eq('id', requestId)
-  if (updErr) throw updErr
+  if (updErr) {
+    console.error('[approveJoinRequest] Failed to update request status:', updErr)
+    throw updErr
+  }
 
+  // Verify participant is active
+  const { data: verifyParticipant } = await supabaseAdmin
+    .from('participants')
+    .select('id, left_at, role')
+    .eq('id', participantId)
+    .single()
+  
+  console.log('[approveJoinRequest] Final verification:', {
+    requestId,
+    participantId,
+    participantActive: verifyParticipant?.left_at === null,
+    participantRole: verifyParticipant?.role,
+    requesterUserId: req.requester_user_id
+  })
+
+  console.log('[approveJoinRequest] Request approved, participant active', { requestId, participantId })
   revalidatePath(`/project/${req.project_id}`)
+  redirect(`/project/${req.project_id}`)
 }
 
 export async function rejectJoinRequest(requestId: string) {
@@ -187,13 +382,13 @@ export async function rejectJoinRequest(requestId: string) {
     .from('join_requests')
     .update({
       status: 'rejected',
-      decided_at: new Date().toISOString(),
-      decided_by: organizerId,
     })
     .eq('id', requestId)
   if (updErr) throw updErr
 
+  console.log('[rejectJoinRequest] Request rejected', { requestId })
   revalidatePath(`/project/${req.project_id}`)
+  redirect(`/project/${req.project_id}`)
 }
 
 // Route all join calls to the clean implementation
@@ -218,6 +413,71 @@ export async function joinProjectFromForm(formData: FormData) {
     if (err?.message === 'NEXT_REDIRECT' || err?.digest === 'NEXT_REDIRECT') throw err
     console.error('[joinProjectFromForm] error', err?.message || err)
     throw err
+  }
+}
+
+// FormData-based wrappers for approve/reject to avoid bind quirks
+export async function approveJoinRequestFromForm(formData: FormData) {
+  'use server'
+  const requestId = String(formData.get('requestId') || '')
+  if (!requestId) {
+    console.error('[approveJoinRequestFromForm] Missing requestId')
+    return
+  }
+  console.log('[approveJoinRequestFromForm] Approving request', { requestId })
+  try {
+    await approveJoinRequest(requestId)
+  } catch (err: any) {
+    // Redirect is expected; surface it without logging as a failure.
+    if (err?.message === 'NEXT_REDIRECT' || err?.digest === 'NEXT_REDIRECT') throw err
+    console.error('[approveJoinRequestFromForm] error', err?.message || err)
+    throw err
+  }
+}
+
+export async function rejectJoinRequestFromForm(formData: FormData) {
+  'use server'
+  const requestId = String(formData.get('requestId') || '')
+  if (!requestId) {
+    console.error('[rejectJoinRequestFromForm] Missing requestId')
+    return
+  }
+  console.log('[rejectJoinRequestFromForm] Rejecting request', { requestId })
+  try {
+    await rejectJoinRequest(requestId)
+  } catch (err: any) {
+    // Redirect is expected; surface it without logging as a failure.
+    if (err?.message === 'NEXT_REDIRECT' || err?.digest === 'NEXT_REDIRECT') throw err
+    console.error('[rejectJoinRequestFromForm] error', err?.message || err)
+    throw err
+  }
+}
+
+// FormData-based wrapper for requestJoin to avoid bind quirks
+// Returns result instead of redirecting - let client handle navigation
+export async function requestJoinFromForm(formData: FormData) {
+  'use server'
+  const projectId = String(formData.get('projectId') || '')
+  if (!projectId) {
+    console.error('[requestJoinFromForm] Missing projectId')
+    return { ok: false, error: 'Missing projectId' }
+  }
+
+  console.log('[requestJoinFromForm] start', { projectId })
+
+  try {
+    const result = await requestJoin(projectId)
+    
+    console.log('[requestJoinFromForm] requestJoin result', { projectId, result })
+    
+    // Revalidate the path so fresh data is available
+    revalidatePath(`/project/${projectId}`)
+    
+    return result
+  } catch (err: any) {
+    console.error('[requestJoinFromForm] error', { projectId, error: err?.message || err, stack: err?.stack })
+    revalidatePath(`/project/${projectId}`)
+    return { ok: false, error: err?.message || 'Unknown error' }
   }
 }
 

@@ -2,8 +2,8 @@ import { SummaryCards } from '@/components/Project/SummaryCards'
 import { Participants } from '@/components/Project/Participants'
 import { Discussions } from '@/components/Project/Discussions'
 import Voting from '@/components/Project/Voting'
+import { JoinButton } from '@/components/Project/JoinButton'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
-import { requestJoin } from './actions'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -74,6 +74,7 @@ export default async function ProjectPage({
       .from('participants')
       .select('id, user_id, role, short_code, joined_at')
       .eq('project_id', projectId)
+      .is('left_at', null)
       .order('joined_at', { ascending: true }),
     supabase.from('messages').select('*').eq('project_id', projectId).order('created_at', { ascending: false }),
     supabase.from('addons').select('*').eq('project_id', projectId),
@@ -95,22 +96,53 @@ export default async function ProjectPage({
   // Process participants and payment methods
   const rawParticipants = participants ?? []
   const uid = await getCurrentUserId()
-  const myParticipant = uid ? rawParticipants.find(p => p.user_id === uid) : null
-  const isMeParticipant = !!myParticipant
-  const myParticipantId = myParticipant?.id ?? null
-  const isOrganizer = !!(myParticipant && myParticipant.role === 'organizer')
-
-  let pendingRequests: Array<{ id: string; requester_user_id: string; created_at: string; status: string }> = []
-  if (isOrganizer) {
-    const { data: joinRequests, error: joinReqErr } = await supabase
-      .from('join_requests')
-      .select('id, requester_user_id, created_at, status')
+  let isMeParticipant = false
+  let myParticipantId: string | null = null
+  let myParticipantRole: string | null = null
+  if (uid) {
+    const { data: mine, error: mineErr } = await supabase
+      .from('participants')
+      .select('id, role, left_at')
       .eq('project_id', projectId)
-      .eq('status', 'pending')
-      .order('created_at', { ascending: true })
-    if (joinReqErr) throw joinReqErr
-    pendingRequests = joinRequests ?? []
+      .eq('user_id', uid)
+      .is('left_at', null)
+      .limit(1)
+    if (mineErr) {
+      console.error('[ProjectPage] Error fetching my participant:', mineErr)
+    }
+    isMeParticipant = !!(mine && mine.length > 0)
+    myParticipantId = mine?.[0]?.id ?? null
+    myParticipantRole = mine?.[0]?.role ?? null
+    console.log('[ProjectPage] My participant status:', { 
+      uid, 
+      isMeParticipant, 
+      myParticipantId, 
+      myParticipantRole,
+      participantData: mine 
+    })
   }
+
+  const { data: myPendingReq } = uid
+    ? await supabase
+        .from('join_requests')
+        .select('id, created_at, status')
+        .eq('project_id', projectId)
+        .eq('requester_user_id', uid)
+        .eq('status', 'pending')
+        .maybeSingle()
+    : { data: null as any }
+  const hasPending = !!myPendingReq
+
+  const { data: pendingForOrganizer, error: pendingErr } = await supabase
+    .from('join_requests')
+    .select('id, requester_user_id, created_at, status')
+    .eq('project_id', projectId)
+    .eq('status', 'pending')
+  
+  if (pendingErr) {
+    console.error('[ProjectPage] Error fetching pending requests:', pendingErr)
+  }
+  console.log('[ProjectPage] Pending requests for organizer:', { count: pendingForOrganizer?.length ?? 0, requests: pendingForOrganizer })
 
   const participantsClean = rawParticipants
   const participantsCount = participantsClean.length
@@ -176,13 +208,23 @@ export default async function ProjectPage({
 
   // Find organizer
   const organizer = participantsClean.find(p => p.role === 'organizer')
-  const organizerId = myParticipant?.role === 'organizer'
-    ? myParticipant.id
+  const organizerId = myParticipantRole === 'organizer'
+    ? myParticipantId
     : organizer?.id ?? null
+  
+  console.log('[ProjectPage] Organizer check:', { 
+    myParticipantRole, 
+    myParticipantId, 
+    organizerId, 
+    organizerFound: organizer?.id,
+    isMeOrganizer: myParticipantRole === 'organizer',
+    pendingRequestsCount: pendingForOrganizer?.length ?? 0
+  })
 
   const now = new Date()
   const beforeDeadline = project.deadline_at ? now <= new Date(project.deadline_at as any) : true
   const canJoinNow = project.status === 'collecting' && beforeDeadline
+  const isMemberActive = isMeParticipant
 
   return (
     <main className="p-6 max-w-4xl mx-auto space-y-6">
@@ -203,32 +245,30 @@ export default async function ProjectPage({
 
       <div className="border rounded-xl p-4">
         <div className="font-medium mb-2">Join this project</div>
-        {!uid && (
-          <button
-            className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
-            disabled
-            title="Sign in to join"
-          >
+        {!uid ? (
+          <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
             Sign in to join
           </button>
-        )}
-        {uid && isMeParticipant && (
-          <button
-            className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
-            disabled
-          >
+        ) : isMemberActive ? (
+          <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
             You are in
           </button>
-        )}
-        {uid && !isMeParticipant && (
-          <form action={requestJoin.bind(null, projectId)}>
-            <button
-              className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
-              type="submit"
-            >
-              {canJoinNow ? 'Join project' : 'Request to join'}
+        ) : canJoinNow ? (
+          <JoinButton projectId={projectId} canJoinNow={true} />
+        ) : hasPending ? (
+          <div className="space-y-1">
+            <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
+              Request sent
             </button>
-          </form>
+            <div className="text-xs opacity-60">
+              Waiting for organizer approval
+              {myPendingReq?.created_at
+                ? ` • requested ${new Date(myPendingReq.created_at).toLocaleString()}`
+                : ''}
+            </div>
+          </div>
+        ) : (
+          <JoinButton projectId={projectId} canJoinNow={false} />
         )}
         <div className="text-xs opacity-60 mt-1">
           On join, your active payment links from Settings will be copied here.
@@ -243,7 +283,7 @@ export default async function ProjectPage({
         paidSet={paidSet}
         afterDeadlineSet={afterDeadlineSet}
         organizerId={organizerId}
-        pendingRequests={pendingRequests}
+        pendingRequests={pendingForOrganizer ?? []}
         myParticipantId={myParticipantId}
         currentUserId={uid}
       />

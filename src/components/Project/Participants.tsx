@@ -1,7 +1,7 @@
 'use client'
 
 import { useTransition, useState } from 'react'
-import { markReceived, approveJoinRequest, rejectJoinRequest } from '@/app/project/[id]/actions'
+import { markReceived, approveJoinRequestFromForm, rejectJoinRequestFromForm } from '@/app/project/[id]/actions'
 
 type Participant = {
   id: string
@@ -58,6 +58,14 @@ export function Participants(props: {
   const [copiedIban, setCopiedIban] = useState(false)
   const isOrganizer = !!(props.organizerId && props.myParticipantId === props.organizerId)
   const pendingRequests = props.pendingRequests ?? []
+  
+  console.log('[Participants] Render:', {
+    isOrganizer,
+    organizerId: props.organizerId,
+    myParticipantId: props.myParticipantId,
+    pendingRequestsCount: pendingRequests.length,
+    pendingRequests: pendingRequests
+  })
 
   const openIbanModal = (opt: PayOption) => {
     setCopiedIban(false)
@@ -111,13 +119,15 @@ export function Participants(props: {
                   <div className="text-xs opacity-70">{new Date(req.created_at).toLocaleString()}</div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <form action={approveJoinRequest.bind(null, req.id)}>
-                    <button className="px-3 py-1.5 rounded bg-black text-white text-xs">
+                  <form action={approveJoinRequestFromForm}>
+                    <input type="hidden" name="requestId" value={req.id} />
+                    <button type="submit" className="px-3 py-1.5 rounded bg-black text-white text-xs">
                       Approve
                     </button>
                   </form>
-                  <form action={rejectJoinRequest.bind(null, req.id)}>
-                    <button className="px-3 py-1.5 rounded border text-xs" type="submit">
+                  <form action={rejectJoinRequestFromForm}>
+                    <input type="hidden" name="requestId" value={req.id} />
+                    <button type="submit" className="px-3 py-1.5 rounded border text-xs">
                       Reject
                     </button>
                   </form>
