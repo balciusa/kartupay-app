@@ -1,7 +1,7 @@
 'use client'
 
 import { useTransition, useState } from 'react'
-import { markReceived, approveJoinRequestFromForm, rejectJoinRequestFromForm } from '@/app/project/[id]/actions'
+import { markReceived, approveJoinRequestFromForm, rejectJoinRequestFromForm, promoteToOrganizerFromForm } from '@/app/project/[id]/actions'
 
 type Participant = {
   id: string
@@ -116,7 +116,16 @@ export function Participants(props: {
               <div key={req.id} className="flex items-center justify-between gap-3 text-sm">
                 <div className="space-y-0.5">
                   <div className="font-medium">User {req.requester_user_id.slice(0, 6)}</div>
-                  <div className="text-xs opacity-70">{new Date(req.created_at).toLocaleString()}</div>
+                  <div className="text-xs opacity-70">
+                    {new Date(req.created_at).toLocaleString('en-US', {
+                      year: 'numeric',
+                      month: 'numeric',
+                      day: 'numeric',
+                      hour: 'numeric',
+                      minute: '2-digit',
+                      hour12: true
+                    })}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <form action={approveJoinRequestFromForm}>
@@ -156,6 +165,18 @@ export function Participants(props: {
                   <div className="font-medium flex items-center gap-2">
                     <span>{name}</span>
                     <span className="text-xs uppercase opacity-50">{p.role}</span>
+                    {isOrganizer && p.role === 'member' && !isSelf && (
+                      <form action={promoteToOrganizerFromForm} className="inline">
+                        <input type="hidden" name="participantId" value={p.id} />
+                        <button
+                          type="submit"
+                          className="text-xs px-2 py-0.5 rounded border hover:bg-gray-50"
+                          title="Promote to organizer"
+                        >
+                          Promote
+                        </button>
+                      </form>
+                    )}
                   </div>
                   <div className="text-xs opacity-70">
                     {pref ? (

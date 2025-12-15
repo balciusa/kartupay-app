@@ -3,6 +3,7 @@ import { Participants } from '@/components/Project/Participants'
 import { Discussions } from '@/components/Project/Discussions'
 import Voting from '@/components/Project/Voting'
 import { JoinButton } from '@/components/Project/JoinButton'
+import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 
 export const dynamic = 'force-dynamic'
@@ -212,12 +213,18 @@ export default async function ProjectPage({
     ? myParticipantId
     : organizer?.id ?? null
   
+  // Count active organizers
+  const organizerCount = participantsClean.filter(p => p.role === 'organizer').length
+  const isOnlyOrganizer = myParticipantRole === 'organizer' && organizerCount === 1
+  
   console.log('[ProjectPage] Organizer check:', { 
     myParticipantRole, 
     myParticipantId, 
     organizerId, 
     organizerFound: organizer?.id,
     isMeOrganizer: myParticipantRole === 'organizer',
+    organizerCount,
+    isOnlyOrganizer,
     pendingRequestsCount: pendingForOrganizer?.length ?? 0
   })
 
@@ -250,9 +257,7 @@ export default async function ProjectPage({
             Sign in to join
           </button>
         ) : isMemberActive ? (
-          <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
-            You are in
-          </button>
+          <LeaveProjectButton projectId={projectId} isOnlyOrganizer={isOnlyOrganizer} />
         ) : canJoinNow ? (
           <JoinButton projectId={projectId} canJoinNow={true} />
         ) : hasPending ? (

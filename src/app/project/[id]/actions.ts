@@ -43,7 +43,86 @@ export async function leaveProject(projectId: string) {
   if (updErr) throw updErr
 
   revalidatePath(`/project/${projectId}`)
-  return { ok: true }
+  redirect(`/project/${projectId}`)
+}
+
+export async function promoteToOrganizer(participantId: string) {
+  'use server'
+  const organizerId = await getCurrentUserId()
+  if (!organizerId) throw new Error('You must be signed in')
+
+  // Get the participant to promote
+  const { data: targetParticipant, error: targetErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, project_id, role, user_id')
+    .eq('id', participantId)
+    .single()
+  if (targetErr || !targetParticipant) throw new Error('Participant not found')
+
+  // Verify the current user is an organizer
+  const { data: organizerRow, error: orgErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('project_id', targetParticipant.project_id)
+    .eq('user_id', organizerId)
+    .eq('role', 'organizer')
+    .is('left_at', null)
+    .single()
+  if (orgErr || !organizerRow) throw new Error('Only organizers can promote members')
+
+  // Verify the target participant is a member (not already an organizer)
+  if (targetParticipant.role === 'organizer') {
+    throw new Error('This participant is already an organizer')
+  }
+
+  // Promote to organizer
+  const { error: updErr } = await supabaseAdmin
+    .from('participants')
+    .update({ role: 'organizer' })
+    .eq('id', participantId)
+  if (updErr) throw updErr
+
+  console.log('[promoteToOrganizer] Promoted participant to organizer', { participantId, projectId: targetParticipant.project_id })
+  revalidatePath(`/project/${targetParticipant.project_id}`)
+  redirect(`/project/${targetParticipant.project_id}`)
+}
+
+// FormData-based wrapper for leaveProject
+export async function leaveProjectFromForm(formData: FormData) {
+  'use server'
+  const projectId = String(formData.get('projectId') || '')
+  if (!projectId) {
+    console.error('[leaveProjectFromForm] Missing projectId')
+    return
+  }
+  console.log('[leaveProjectFromForm] Leaving project', { projectId })
+  try {
+    await leaveProject(projectId)
+  } catch (err: any) {
+    // Redirect is expected; surface it without logging as a failure.
+    if (err?.message === 'NEXT_REDIRECT' || err?.digest === 'NEXT_REDIRECT') throw err
+    console.error('[leaveProjectFromForm] error', err?.message || err)
+    throw err
+  }
+}
+
+// FormData-based wrapper for promoteToOrganizer
+export async function promoteToOrganizerFromForm(formData: FormData) {
+  'use server'
+  const participantId = String(formData.get('participantId') || '')
+  if (!participantId) {
+    console.error('[promoteToOrganizerFromForm] Missing participantId')
+    return
+  }
+  console.log('[promoteToOrganizerFromForm] Promoting participant', { participantId })
+  try {
+    await promoteToOrganizer(participantId)
+  } catch (err: any) {
+    // Redirect is expected; surface it without logging as a failure.
+    if (err?.message === 'NEXT_REDIRECT' || err?.digest === 'NEXT_REDIRECT') throw err
+    console.error('[promoteToOrganizerFromForm] error', err?.message || err)
+    throw err
+  }
 }
 
 async function clonePaymentOptionsForParticipant(participantId: string, userId: string) {
