@@ -10,7 +10,8 @@ export function SummaryCards(props: {
   minParticipants: number
   participantsNow: number
   scenarios: { now: number, plus1: number, plus2: number }
-  deadlineISO: string
+  deadlineISO?: string | null
+  maxParticipants?: number | null
 }) {
   const progress = useMemo(() => {
     const pct = Math.min(100, Math.round(100 * props.participantsNow / (props.minParticipants || 1)))
@@ -18,16 +19,10 @@ export function SummaryCards(props: {
   }, [props.participantsNow, props.minParticipants])
 
   const deadlineDisplay = useMemo(() => {
+    if (!props.deadlineISO) return null
     const date = new Date(props.deadlineISO)
-    if (Number.isNaN(date.getTime())) return '—'
-    return date.toLocaleString('en-GB', {
-      timeZone: 'UTC',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
+    if (Number.isNaN(date.getTime())) return null
+    return date.toLocaleString()
   }, [props.deadlineISO])
 
   const showShare = (cents: number) =>
@@ -38,7 +33,12 @@ export function SummaryCards(props: {
       <div className="border rounded-xl p-4">
         <div className="text-xs uppercase opacity-60">Total</div>
         <div className="text-2xl font-semibold">€{eur(props.totalCents)}</div>
-        <div className="text-xs opacity-60">Deadline: {deadlineDisplay}</div>
+        {typeof props.maxParticipants === 'number' && (
+          <div className="text-sm opacity-70">Max: {props.maxParticipants}</div>
+        )}
+        {deadlineDisplay && (
+          <div className="text-sm opacity-70">Deadline: {deadlineDisplay}</div>
+        )}
       </div>
 
       <div className="border rounded-xl p-4">
