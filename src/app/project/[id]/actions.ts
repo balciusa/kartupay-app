@@ -7,6 +7,41 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { getCurrentUserId } from '@/lib/supabaseServer'
 import { joinProjectSafe } from './joinProject.safe'
 
+export async function setCollector(projectId: string, participantId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('Not signed in')
+
+  // Verify caller is an active organizer of this project
+  const { data: org, error: orgErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('user_id', uid)
+    .eq('role', 'organizer')
+    .is('left_at', null)
+    .limit(1)
+  if (orgErr) throw orgErr
+  if (!org?.length) throw new Error('Not authorized')
+
+  // Ensure target participant belongs to this project and is active
+  const { data: part, error: partErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, project_id, left_at')
+    .eq('id', participantId)
+    .single()
+  if (partErr) throw partErr
+  if (!part || part.project_id !== projectId || part.left_at) throw new Error('Invalid participant')
+
+  const { error: updErr } = await supabaseAdmin
+    .from('projects')
+    .update({ collector_participant_id: participantId })
+    .eq('id', projectId)
+  if (updErr) throw updErr
+
+  revalidatePath(`/project/${projectId}`)
+}
+
 export async function cancelProject(projectId: string) {
   'use server'
   const uid = await getCurrentUserId()

@@ -1,7 +1,7 @@
 'use client'
 
 import { useTransition, useState } from 'react'
-import { markReceived, approveJoinRequestFromForm, rejectJoinRequestFromForm, promoteToOrganizerFromForm } from '@/app/project/[id]/actions'
+import { markReceived, approveJoinRequestFromForm, rejectJoinRequestFromForm, promoteToOrganizerFromForm, setCollector } from '@/app/project/[id]/actions'
 
 type Participant = {
   id: string
@@ -52,12 +52,14 @@ export function Participants(props: {
   myParticipantId: string | null
   currentUserId: string | null
   projectCanceled?: boolean
+  collectorParticipantId?: string | null
 }) {
   const [pending, start] = useTransition()
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null)
   const [ibanModal, setIbanModal] = useState<IbanModalState>(null)
   const [copiedIban, setCopiedIban] = useState(false)
   const isOrganizer = !!(props.organizerId && props.myParticipantId === props.organizerId)
+  const amCollector = isOrganizer && props.collectorParticipantId === props.myParticipantId
   const pendingRequests = props.pendingRequests ?? []
   const projectCanceled = props.projectCanceled === true
   
@@ -159,6 +161,7 @@ export function Participants(props: {
           const hasMultipleActive = all.length > 1
           const name = displayName(p)
           const isSelf = props.currentUserId && p.user_id === props.currentUserId
+          const isCollectorRow = props.collectorParticipantId === p.id
 
           return (
             <div key={p.id} className="rounded border p-3 space-y-2">
@@ -166,7 +169,13 @@ export function Participants(props: {
                 <div className="space-y-1">
                   <div className="font-medium flex items-center gap-2">
                     <span>{name}</span>
+                    {isSelf && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-black text-white">You</span>
+                    )}
                     <span className="text-xs uppercase opacity-50">{p.role}</span>
+                    {isCollectorRow && (
+                      <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-emerald-600 text-white">Collector</span>
+                    )}
                     {isOrganizer && p.role === 'member' && !isSelf && (
                       <form action={promoteToOrganizerFromForm} className="inline">
                         <input type="hidden" name="participantId" value={p.id} />
@@ -236,12 +245,23 @@ export function Participants(props: {
                     </>
                   )}
 
-                  <button className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
-                    disabled={pending || projectCanceled}
-                    onClick={() => { if (projectCanceled) return; start(async () => { await markReceived(p.id) }) }}
-                  >
-                    {pending ? 'Saving...' : projectCanceled ? 'Canceled' : 'Mark received'}
-                  </button>
+                  {amCollector && (
+                    <button
+                      className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
+                      disabled={pending || projectCanceled}
+                      onClick={() => { if (projectCanceled) return; start(async () => { await markReceived(p.id) }) }}
+                    >
+                      {pending ? 'Saving...' : projectCanceled ? 'Canceled' : 'Mark received'}
+                    </button>
+                  )}
+
+                  {isOrganizer && p.role === 'organizer' && !isCollectorRow && (
+                    <form action={setCollector.bind(null, props.projectId, p.id)}>
+                      <button className="px-2 py-1 rounded border text-xs" type="submit">
+                        Make collector
+                      </button>
+                    </form>
+                  )}
                 </div>
 
                 {projectCanceled && (

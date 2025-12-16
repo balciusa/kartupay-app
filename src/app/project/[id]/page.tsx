@@ -44,7 +44,7 @@ export default async function ProjectPage({
   // Fetch project
   const { data: project, error: projectError } = await supabase
     .from('projects')
-    .select('id, title, description, total_cents, min_participants, max_participants, deadline_at, status, canceled_at')
+    .select('id, title, description, total_cents, min_participants, max_participants, deadline_at, status, canceled_at, collector_participant_id')
     .eq('id', projectId)
     .single()
 
@@ -66,6 +66,7 @@ export default async function ProjectPage({
   }
 
   const isCanceled = project.status === 'canceled' || !!project.canceled_at
+  const collectorParticipantId = project?.collector_participant_id ?? null
 
   // Fetch all related data in parallel
   const [
@@ -308,6 +309,7 @@ export default async function ProjectPage({
         myParticipantId={myParticipantId}
         currentUserId={uid}
         projectCanceled={isCanceled}
+        collectorParticipantId={collectorParticipantId}
       />
 
       <Voting addons={addonsWithCounts} projectCanceled={isCanceled} />

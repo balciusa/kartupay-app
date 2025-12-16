@@ -105,6 +105,14 @@ export async function createProject(formData: FormData) {
     throw new Error('Failed to add organizer: ' + (iErr?.message ?? 'unknown'))
   }
 
+  const { error: collectorErr } = await supabaseAdmin
+    .from('projects')
+    .update({ collector_participant_id: part.id })
+    .eq('id', proj.id)
+  if (collectorErr) {
+    throw new Error('Failed to set collector: ' + collectorErr.message)
+  }
+
   const [{ data: upos, error: uErr }, { data: existingPOs, error: eErr }] = await Promise.all([
     supabaseAdmin.from('user_payment_options')
       .select('type,label,value,priority,is_active')
