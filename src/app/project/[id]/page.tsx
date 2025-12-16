@@ -274,8 +274,6 @@ export default async function ProjectPage({
           </button>
         ) : isMemberActive ? (
           <LeaveProjectButton projectId={projectId} isOnlyOrganizer={isOnlyOrganizer} />
-        ) : canJoinNow ? (
-          <JoinButton projectId={projectId} canJoinNow={true} />
         ) : hasPending ? (
           <div className="space-y-1">
             <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
@@ -286,6 +284,8 @@ export default async function ProjectPage({
               {myPendingReq?.created_at ? ` requested ${new Date(myPendingReq.created_at).toLocaleString()}` : ''}
             </div>
           </div>
+        ) : canJoinNow ? (
+          <JoinButton projectId={projectId} canJoinNow={true} />
         ) : (
           <JoinButton projectId={projectId} canJoinNow={false} />
         )}

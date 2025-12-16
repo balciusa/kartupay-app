@@ -5,7 +5,6 @@ import { redirect } from 'next/navigation'
 import { randomUUID } from 'crypto'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { getCurrentUserId } from '@/lib/supabaseServer'
-import { joinProjectSafe } from './joinProject.safe'
 
 export async function setCollector(projectId: string, participantId: string) {
   'use server'
@@ -258,10 +257,6 @@ export async function requestJoin(projectId: string) {
     return { ok: false as const, blocked: true as const }
   }
 
-  const now = new Date()
-  const beforeDeadline = project.deadline_at ? now <= new Date(project.deadline_at as any) : true
-  const canJoinNow = project.status === 'collecting' && beforeDeadline
-
   const { data: mine, error: mineErr } = await supabaseAdmin
     .from('participants')
     .select('id, left_at')
@@ -273,26 +268,6 @@ export async function requestJoin(projectId: string) {
   const existing = mine?.[0]
   if (existing && !existing.left_at) {
     console.log('[requestJoin] already active participant', existing.id)
-    revalidatePath(`/project/${projectId}`)
-    return { ok: true, joined: true as const }
-  }
-
-  if (canJoinNow) {
-    if (existing?.left_at) {
-      const { error: reactErr } = await supabaseAdmin
-        .from('participants')
-        .update({ left_at: null })
-        .eq('id', existing.id)
-      if (reactErr) {
-        console.error('[requestJoin] reactivate error', reactErr)
-        revalidatePath(`/project/${projectId}`)
-        return { ok: false, reason: 'reactivate_failed' as const }
-      }
-      console.log('[requestJoin] reactivated participant', existing.id)
-    } else {
-      await joinProjectSafe(projectId)
-      console.log('[requestJoin] joined immediately via joinProjectSafe')
-    }
     revalidatePath(`/project/${projectId}`)
     return { ok: true, joined: true as const }
   }
