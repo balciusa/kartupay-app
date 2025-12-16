@@ -7,6 +7,43 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { getCurrentUserId } from '@/lib/supabaseServer'
 import { joinProjectSafe } from './joinProject.safe'
 
+export async function cancelProject(projectId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  const nowIso = new Date().toISOString()
+
+  const { data: me, error: meErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, role')
+    .eq('project_id', projectId)
+    .eq('user_id', uid)
+    .is('left_at', null)
+    .limit(1)
+  if (meErr) throw meErr
+  if (!me?.length || me[0].role !== 'organizer') throw new Error('Not authorized')
+
+  const { error: uErr } = await supabaseAdmin
+    .from('projects')
+    .update({ status: 'canceled', canceled_at: nowIso })
+    .eq('id', projectId)
+  if (uErr) {
+    const needsFallback = (uErr as any)?.code === '23514' || uErr?.message?.includes('projects_status_check')
+    if (needsFallback) {
+      console.warn('[cancelProject] status value not allowed by constraint, falling back to canceled_at only', uErr)
+      const { error: fbErr } = await supabaseAdmin
+        .from('projects')
+        .update({ canceled_at: nowIso })
+        .eq('id', projectId)
+      if (fbErr) throw fbErr
+    } else {
+      throw uErr
+    }
+  }
+
+  revalidatePath(`/project/${projectId}`)
+}
+
 export async function leaveProject(projectId: string) {
   'use server'
   const uid = await getCurrentUserId()
@@ -170,13 +207,20 @@ export async function requestJoin(projectId: string) {
 
   const { data: project, error: pErr } = await supabaseAdmin
     .from('projects')
-    .select('id, status, deadline_at')
+    .select('id, status, deadline_at, canceled_at')
     .eq('id', projectId)
     .single()
   if (pErr || !project) {
     console.error('[requestJoin] project fetch error', pErr)
     revalidatePath(`/project/${projectId}`)
     return { ok: false, reason: 'project_fetch_failed' as const }
+  }
+
+  const canceled = project.status === 'canceled' || !!project.canceled_at
+  if (canceled) {
+    console.log('[requestJoin] blocked - project canceled', { projectId, status: project.status, canceled_at: project.canceled_at })
+    revalidatePath(`/project/${projectId}`)
+    return { ok: false as const, blocked: true as const }
   }
 
   const now = new Date()

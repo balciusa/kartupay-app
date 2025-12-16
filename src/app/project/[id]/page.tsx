@@ -5,6 +5,8 @@ import Voting from '@/components/Project/Voting'
 import { JoinButton } from '@/components/Project/JoinButton'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
+import { cancelProject } from './actions'
+import { CancelProjectButton } from '@/components/Project/CancelProjectButton'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -42,7 +44,7 @@ export default async function ProjectPage({
   // Fetch project
   const { data: project, error: projectError } = await supabase
     .from('projects')
-    .select('*')
+    .select('id, title, description, total_cents, min_participants, max_participants, deadline_at, status, canceled_at')
     .eq('id', projectId)
     .single()
 
@@ -62,6 +64,8 @@ export default async function ProjectPage({
       </main>
     )
   }
+
+  const isCanceled = project.status === 'canceled' || !!project.canceled_at
 
   // Fetch all related data in parallel
   const [
@@ -230,7 +234,7 @@ export default async function ProjectPage({
 
   const now = new Date()
   const beforeDeadline = project.deadline_at ? now <= new Date(project.deadline_at as any) : true
-  const canJoinNow = project.status === 'collecting' && beforeDeadline
+  const canJoinNow = !isCanceled && project.status === 'collecting' && beforeDeadline
   const isMemberActive = isMeParticipant
 
   return (
@@ -241,6 +245,12 @@ export default async function ProjectPage({
           <div className="text-sm opacity-70 mt-2">{project.description}</div>
         )}
       </div>
+
+      {isCanceled && (
+        <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm">
+          This project was canceled on {new Date(project.canceled_at as any).toLocaleString()}.
+        </div>
+      )}
 
       <SummaryCards
         totalCents={totalCents}
@@ -253,7 +263,11 @@ export default async function ProjectPage({
 
       <div className="border rounded-xl p-4">
         <div className="font-medium mb-2">Join this project</div>
-        {!uid ? (
+        {isCanceled ? (
+          <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
+            Canceled
+          </button>
+        ) : !uid ? (
           <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
             Sign in to join
           </button>
@@ -277,6 +291,9 @@ export default async function ProjectPage({
         <div className="text-xs opacity-60 mt-1">
           On join, your active payment links from Settings will be copied here.
         </div>
+        {myParticipantRole === 'organizer' && !isCanceled && (
+          <CancelProjectButton action={cancelProject.bind(null, projectId)} />
+        )}
       </div>
 
       <Participants
@@ -290,11 +307,12 @@ export default async function ProjectPage({
         pendingRequests={pendingForOrganizer ?? []}
         myParticipantId={myParticipantId}
         currentUserId={uid}
+        projectCanceled={isCanceled}
       />
 
-      <Voting addons={addonsWithCounts} />
+      <Voting addons={addonsWithCounts} projectCanceled={isCanceled} />
 
-      <Discussions projectId={projectId} messages={messages ?? []} />
+      <Discussions projectId={projectId} messages={messages ?? []} projectCanceled={isCanceled} />
     </main>
   )
 }

@@ -51,6 +51,7 @@ export function Participants(props: {
   pendingRequests?: Array<{ id: string; requester_user_id: string; created_at: string; status: string }>
   myParticipantId: string | null
   currentUserId: string | null
+  projectCanceled?: boolean
 }) {
   const [pending, start] = useTransition()
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null)
@@ -58,6 +59,7 @@ export function Participants(props: {
   const [copiedIban, setCopiedIban] = useState(false)
   const isOrganizer = !!(props.organizerId && props.myParticipantId === props.organizerId)
   const pendingRequests = props.pendingRequests ?? []
+  const projectCanceled = props.projectCanceled === true
   
   console.log('[Participants] Render:', {
     isOrganizer,
@@ -194,8 +196,8 @@ export function Participants(props: {
                     <>
                       <button
                         className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
-                        disabled={!pref}
-                        onClick={() => handlePay(pref)}
+                        disabled={!pref || projectCanceled}
+                        onClick={() => { if (projectCanceled) return; handlePay(pref) }}
                       >
                         Pay
                       </button>
@@ -204,7 +206,8 @@ export function Participants(props: {
                         <div className="relative">
                           <button
                             className="px-2 py-1 rounded border"
-                            onClick={() => setMenuOpenFor(menuOpenFor === p.id ? null : p.id)}
+                            disabled={projectCanceled}
+                            onClick={() => { if (projectCanceled) return; setMenuOpenFor(menuOpenFor === p.id ? null : p.id) }}
                             aria-label="Choose another payment option"
                           >
                             ...
@@ -219,7 +222,7 @@ export function Participants(props: {
                                   <button
                                     key={idx}
                                     className="block w-full text-left px-3 py-2 hover:bg-black/5"
-                                    onClick={() => { setMenuOpenFor(null); handlePay(o) }}
+                                    onClick={() => { if (projectCanceled) return; setMenuOpenFor(null); handlePay(o) }}
                                   >
                                     <div className="text-sm font-medium">{o.label ?? o.type}</div>
                                     <div className="text-xs opacity-70 font-mono break-all">{o.value}</div>
@@ -234,12 +237,18 @@ export function Participants(props: {
                   )}
 
                   <button className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
-                    disabled={pending}
-                    onClick={() => start(async () => { await markReceived(p.id) })}
+                    disabled={pending || projectCanceled}
+                    onClick={() => { if (projectCanceled) return; start(async () => { await markReceived(p.id) }) }}
                   >
-                    {pending ? 'Saving...' : 'Mark received'}
+                    {pending ? 'Saving...' : projectCanceled ? 'Canceled' : 'Mark received'}
                   </button>
                 </div>
+
+                {projectCanceled && (
+                  <div className="text-xs text-red-700 mt-1">
+                    Payment updates are disabled because the project was canceled.
+                  </div>
+                )}
               </div>
 
               {paid && !late && (
