@@ -52,14 +52,14 @@ export function Participants(props: {
   myParticipantId: string | null
   currentUserId: string | null
   projectCanceled?: boolean
-  collectorParticipantId?: string | null
+  perPersonCents: number
+  collectorId: string | null
 }) {
   const [pending, start] = useTransition()
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null)
   const [ibanModal, setIbanModal] = useState<IbanModalState>(null)
   const [copiedIban, setCopiedIban] = useState(false)
   const isOrganizer = !!(props.organizerId && props.myParticipantId === props.organizerId)
-  const amCollector = isOrganizer && props.collectorParticipantId === props.myParticipantId
   const pendingRequests = props.pendingRequests ?? []
   const projectCanceled = props.projectCanceled === true
   
@@ -107,6 +107,9 @@ export function Participants(props: {
       setCopiedIban(false)
     }
   }
+
+  const viewerParticipantId = props.myParticipantId ?? null
+  const viewerHasPaid = viewerParticipantId ? props.paidSet.has(viewerParticipantId) : false
 
   return (
     <section className="border rounded-xl p-4 space-y-4">
@@ -160,8 +163,24 @@ export function Participants(props: {
           const otherOptions = pref ? all.filter(o => !(o.type === pref.type && o.value === pref.value)) : all
           const hasMultipleActive = all.length > 1
           const name = displayName(p)
-          const isSelf = props.currentUserId && p.user_id === props.currentUserId
-          const isCollectorRow = props.collectorParticipantId === p.id
+          const isViewerCollector = !!(props.myParticipantId && props.myParticipantId === props.collectorId)
+          const isCollectorRow = p.id === props.collectorId
+          const isSelfRow = !!(props.myParticipantId && props.myParticipantId === p.id)
+          const perPersonEuro = (props.perPersonCents / 100).toFixed(2)
+
+          let statusLabel: string
+          let statusClass = 'text-[10px] px-1.5 py-0.5 rounded border font-medium'
+          if (isCollectorRow) {
+            statusLabel = 'Collector'
+            statusClass += ' bg-emerald-600 text-white border-emerald-700'
+          } else if (paid) {
+            statusLabel = 'Settled'
+            statusClass += ' bg-emerald-50 text-emerald-700 border-emerald-200'
+          } else {
+            statusLabel = `Owes €${perPersonEuro}`
+            statusClass += ' bg-gray-100 text-gray-800 border-gray-200'
+          }
+          const showLateTag = !isCollectorRow && paid && late
 
           return (
             <div key={p.id} className="rounded border p-3 space-y-2">
@@ -169,14 +188,17 @@ export function Participants(props: {
                 <div className="space-y-1">
                   <div className="font-medium flex items-center gap-2">
                     <span>{name}</span>
-                    {isSelf && (
+                    {isSelfRow && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-black text-white">You</span>
                     )}
                     <span className="text-xs uppercase opacity-50">{p.role}</span>
-                    {isCollectorRow && (
-                      <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-emerald-600 text-white">Collector</span>
+                    <span className={statusClass}>{statusLabel}</span>
+                    {showLateTag && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-700">
+                        Late
+                      </span>
                     )}
-                    {isOrganizer && p.role === 'member' && !isSelf && (
+                    {isOrganizer && p.role === 'member' && !isSelfRow && (
                       <form action={promoteToOrganizerFromForm} className="inline">
                         <input type="hidden" name="participantId" value={p.id} />
                         <button
@@ -198,23 +220,32 @@ export function Participants(props: {
                     ) : (
                       <span>No payment link yet</span>
                     )}
+                    {isCollectorRow && (
+                      <span className="ml-1 text-emerald-600">Collects payments</span>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {!isSelf && (
+                  {!isViewerCollector && isCollectorRow && !viewerHasPaid && (
                     <>
                       <button
                         className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
+                        type="button"
                         disabled={!pref || projectCanceled}
-                        onClick={() => { if (projectCanceled) return; handlePay(pref) }}
+                        title={pref ? undefined : 'No payment link'}
+                        onClick={() => {
+                          if (!pref || projectCanceled) return
+                          handlePay(pref)
+                        }}
                       >
-                        Pay
+                        {`Pay €${perPersonEuro}`}
                       </button>
 
                       {hasMultipleActive && (
                         <div className="relative">
                           <button
                             className="px-2 py-1 rounded border"
+                            type="button"
                             disabled={projectCanceled}
                             onClick={() => { if (projectCanceled) return; setMenuOpenFor(menuOpenFor === p.id ? null : p.id) }}
                             aria-label="Choose another payment option"
@@ -231,6 +262,7 @@ export function Participants(props: {
                                   <button
                                     key={idx}
                                     className="block w-full text-left px-3 py-2 hover:bg-black/5"
+                                    type="button"
                                     onClick={() => { if (projectCanceled) return; setMenuOpenFor(null); handlePay(o) }}
                                   >
                                     <div className="text-sm font-medium">{o.label ?? o.type}</div>
@@ -245,11 +277,23 @@ export function Participants(props: {
                     </>
                   )}
 
-                  {amCollector && (
+                  {!isViewerCollector && isCollectorRow && viewerHasPaid && (
+                    <span className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 border border-green-300">
+                      Settled
+                    </span>
+                  )}
+
+                  {isViewerCollector && !isCollectorRow && (
                     <button
                       className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
-                      disabled={pending || projectCanceled}
-                      onClick={() => { if (projectCanceled) return; start(async () => { await markReceived(p.id) }) }}
+                      type="button"
+                      disabled={pending || projectCanceled || paid}
+                      onClick={() => {
+                        if (projectCanceled || paid) return
+                        start(async () => {
+                          await markReceived(p.id)
+                        })
+                      }}
                     >
                       {pending ? 'Saving...' : projectCanceled ? 'Canceled' : 'Mark received'}
                     </button>
@@ -270,16 +314,6 @@ export function Participants(props: {
                   </div>
                 )}
               </div>
-
-              {paid && !late && (
-                <div className="text-sm text-green-700">Payment received (counts for threshold)</div>
-              )}
-              {late && (
-                <div className="text-sm bg-yellow-100 border border-yellow-300 rounded p-2">
-                  <div className="font-medium">Heads up</div>
-                  <div>This receipt was recorded after the deadline. It will not count toward the threshold.</div>
-                </div>
-              )}
 
             </div>
           )

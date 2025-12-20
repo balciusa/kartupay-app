@@ -44,7 +44,9 @@ export default async function ProjectPage({
   // Fetch project
   const { data: project, error: projectError } = await supabase
     .from('projects')
-    .select('id, title, description, total_cents, min_participants, max_participants, deadline_at, status, canceled_at, collector_participant_id')
+    .select(
+      'id, title, description, total_cents, min_participants, max_participants, deadline_at, status, canceled_at, collector_participant_id',
+    )
     .eq('id', projectId)
     .single()
 
@@ -66,7 +68,6 @@ export default async function ProjectPage({
   }
 
   const isCanceled = project.status === 'canceled' || !!project.canceled_at
-  const collectorParticipantId = project?.collector_participant_id ?? null
 
   // Fetch all related data in parallel
   const [
@@ -192,8 +193,9 @@ export default async function ProjectPage({
   const afterDeadlineSet = new Set(afterDeadlineIds)
 
   // Calculate scenarios
+  const totalCents = Number(project.total_cents ?? 0)
+  const perPersonCents = Math.floor(totalCents / Math.max(1, participantsCount))
   const participantsNow = paidIds.length || participantsCount
-  const totalCents = project.total_cents
   const scenarios = {
     now: Math.floor(totalCents / Math.max(1, participantsNow)),
     plus1: Math.floor(totalCents / Math.max(1, participantsNow + 1)),
@@ -214,9 +216,8 @@ export default async function ProjectPage({
 
   // Find organizer
   const organizer = participantsClean.find(p => p.role === 'organizer')
-  const organizerId = myParticipantRole === 'organizer'
-    ? myParticipantId
-    : organizer?.id ?? null
+  const organizerId = myParticipantRole === 'organizer' ? myParticipantId : organizer?.id ?? null
+  const collectorId = (project.collector_participant_id as string | null) ?? organizerId
   
   // Count active organizers
   const organizerCount = participantsClean.filter(p => p.role === 'organizer').length
@@ -309,7 +310,8 @@ export default async function ProjectPage({
         myParticipantId={myParticipantId}
         currentUserId={uid}
         projectCanceled={isCanceled}
-        collectorParticipantId={collectorParticipantId}
+        perPersonCents={perPersonCents}
+        collectorId={collectorId}
       />
 
       <Voting addons={addonsWithCounts} projectCanceled={isCanceled} />
