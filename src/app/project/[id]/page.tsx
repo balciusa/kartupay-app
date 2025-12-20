@@ -5,6 +5,7 @@ import Voting from '@/components/Project/Voting'
 import { JoinButton } from '@/components/Project/JoinButton'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
+import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { cancelProject } from './actions'
 import { CancelProjectButton } from '@/components/Project/CancelProjectButton'
 
@@ -218,6 +219,36 @@ export default async function ProjectPage({
   const organizer = participantsClean.find(p => p.role === 'organizer')
   const organizerId = myParticipantRole === 'organizer' ? myParticipantId : organizer?.id ?? null
   const collectorId = (project.collector_participant_id as string | null) ?? organizerId
+  const collectorParticipant = collectorId ? participantsClean.find(p => p.id === collectorId) : null
+  
+  // Get collector options from payment_options (project-specific)
+  let collectorOptions =
+    collectorId
+      ? (paymentOptions ?? []).filter(po => po.participant_id === collectorId && po.is_active !== false)
+      : []
+  
+  // Fallback to user_payment_options if no project-specific options found
+  // This handles cases where collector updated their payment options in Settings after joining
+  if (collectorOptions.length === 0 && collectorParticipant?.user_id) {
+    const { data: userPaymentOptions, error: userOptsError } = await supabaseAdmin
+      .from('user_payment_options')
+      .select('type, label, value, priority, is_active')
+      .eq('user_id', collectorParticipant.user_id)
+      .eq('is_active', true)
+      .order('priority', { ascending: true })
+    
+    if (userOptsError) {
+      console.error('[ProjectPage] Error fetching collector user_payment_options:', userOptsError)
+    }
+    
+    collectorOptions = (userPaymentOptions ?? []).map(opt => ({
+      label: opt.label,
+      value: opt.value,
+      type: opt.type,
+      priority: opt.priority ?? 999,
+      is_active: opt.is_active !== false,
+    }))
+  }
   
   // Count active organizers
   const organizerCount = participantsClean.filter(p => p.role === 'organizer').length
@@ -312,6 +343,7 @@ export default async function ProjectPage({
         projectCanceled={isCanceled}
         perPersonCents={perPersonCents}
         collectorId={collectorId}
+        collectorOptions={collectorOptions}
       />
 
       <Voting addons={addonsWithCounts} projectCanceled={isCanceled} />
