@@ -614,6 +614,39 @@ export async function requestJoinFromForm(formData: FormData) {
   }
 }
 
+export async function selfReportPaid(participantId: string) {
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+
+  const { data: mine, error: mineErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, user_id, project_id, left_at')
+    .eq('id', participantId)
+    .limit(1)
+  if (mineErr) throw mineErr
+  if (!mine || mine.length === 0) throw new Error('Participant not found')
+  const participant = mine[0]
+  if (participant.user_id !== uid) throw new Error('Not your participant entry')
+  if (participant.left_at) throw new Error('You have left this project')
+
+  const { data: existing, error: existingErr } = await supabaseAdmin
+    .from('payment_signals')
+    .select('id')
+    .eq('participant_id', participantId)
+    .is('cleared_at', null)
+    .limit(1)
+  if (existingErr) throw existingErr
+
+  if (!existing || existing.length === 0) {
+    const { error: insertErr } = await supabaseAdmin
+      .from('payment_signals')
+      .insert({ participant_id: participantId })
+    if (insertErr) throw insertErr
+  }
+
+  revalidatePath(`/project/${participant.project_id}`)
+}
+
 /**
  * Mark a participant's payment as received.
  * If after the deadline, it won't count toward the threshold (is_counted = false).
@@ -641,6 +674,23 @@ export async function markReceived(participantId: string) {
     .from('payments')
     .insert({ participant_id: participantId, is_counted: isCounted })
   if (e3) throw e3
+
+  // Clear payment signals if they exist (ignore if table doesn't exist)
+  const { error: clrErr } = await supabaseAdmin
+    .from('payment_signals')
+    .update({ cleared_at: new Date().toISOString() })
+    .eq('participant_id', participantId)
+    .is('cleared_at', null)
+  
+  // Don't throw error if table doesn't exist - this is optional functionality
+  if (clrErr) {
+    const code = (clrErr as any)?.code
+    const isMissingTable = code === '42P01' || clrErr.message?.toLowerCase()?.includes('payment_signals')
+    if (!isMissingTable) {
+      console.error('[markReceived] Error clearing payment signals:', clrErr)
+      // Continue anyway - the payment was recorded successfully
+    }
+  }
 
   revalidatePath(`/project/${participant.project_id}`)
 }

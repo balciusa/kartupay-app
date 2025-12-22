@@ -1,7 +1,15 @@
 'use client'
 
 import { useTransition, useState } from 'react'
-import { markReceived, approveJoinRequestFromForm, rejectJoinRequestFromForm, promoteToOrganizerFromForm, setCollector } from '@/app/project/[id]/actions'
+import { useRouter } from 'next/navigation'
+import {
+  markReceived,
+  approveJoinRequestFromForm,
+  rejectJoinRequestFromForm,
+  promoteToOrganizerFromForm,
+  setCollector,
+  selfReportPaid,
+} from '@/app/project/[id]/actions'
 
 type Participant = {
   id: string
@@ -47,12 +55,15 @@ export function Participants(props: {
   perPersonCents: number
   collectorId: string | null
   collectorOptions: Array<{ label: string | null; value: string; type: string; priority?: number; is_active?: boolean }>
+  pendingSignalsSet?: Set<string>
 }) {
   const [pending, start] = useTransition()
   const [payOpenFor, setPayOpenFor] = useState<string | null>(null)
+  const router = useRouter()
   const isOrganizer = !!(props.organizerId && props.myParticipantId === props.organizerId)
   const pendingRequests = props.pendingRequests ?? []
   const projectCanceled = props.projectCanceled === true
+  const pendingSignalsSet = props.pendingSignalsSet ?? new Set<string>()
   
   console.log('[Participants] Render:', {
     isOrganizer,
@@ -64,6 +75,9 @@ export function Participants(props: {
 
   const viewerParticipantId = props.myParticipantId ?? null
   const viewerSettled = viewerParticipantId ? props.paidSet.has(viewerParticipantId) : false
+  const viewerHasPendingSignal = viewerParticipantId ? pendingSignalsSet.has(viewerParticipantId) : false
+  const selfReportAction = viewerParticipantId ? selfReportPaid.bind(null, viewerParticipantId) : null
+  const canSelfReport = !!selfReportAction && !viewerSettled && !viewerHasPendingSignal && !projectCanceled
   const collectorOptions = (props.collectorOptions ?? []).filter(opt => opt && opt.is_active !== false)
   const openPayForCollector = () => setPayOpenFor('collector')
   const handleCollectorOption = (opt: { value: string; type: string }) => {
@@ -126,27 +140,42 @@ export function Participants(props: {
       <div className="grid gap-3">
         {props.participants.map(p => {
           const paid = props.paidSet.has(p.id)
+          const sent = pendingSignalsSet.has(p.id)
           const late = props.afterDeadlineSet.has(p.id)
           const name = displayName(p)
           const rowIsCollector = !!(props.collectorId && p.id === props.collectorId)
           const viewerIsCollector = !!(props.collectorId && props.myParticipantId === props.collectorId)
           const isSelfRow = !!(props.myParticipantId && props.myParticipantId === p.id)
           const perPersonEuro = (props.perPersonCents / 100).toFixed(2)
-          const showPay = !viewerIsCollector && !rowIsCollector && !viewerSettled
+          const amountLabel = `€${perPersonEuro}`
+          // Only show Pay button if it's the viewer's own row, they haven't paid, and they're not the collector
+          const showPay =
+            isSelfRow &&
+            !viewerIsCollector &&
+            !rowIsCollector &&
+            !paid && // Also check if this row participant has paid (should match viewerSettled when isSelfRow is true)
+            !viewerSettled &&
+            !viewerHasPendingSignal &&
+            !sent
 
           let statusLabel: string
           let statusClass = 'text-[10px] px-1.5 py-0.5 rounded border font-medium'
           if (rowIsCollector) {
             statusLabel = 'Collector'
             statusClass += ' bg-emerald-600 text-white border-emerald-700'
-          } else if (paid) {
+          } else if (paid && !isSelfRow && !(viewerIsCollector && !rowIsCollector)) {
+            // Don't show "Settled" in status label for self row or when collector views paid member - it's shown on the right side instead
             statusLabel = 'Settled'
             statusClass += ' bg-emerald-50 text-emerald-700 border-emerald-200'
+          } else if (sent) {
+            statusLabel = `Sent - ${amountLabel}`
+            statusClass += ' bg-amber-50 text-amber-800 border-amber-200'
           } else {
-            statusLabel = `Owes €${perPersonEuro}`
+            statusLabel = `Owes ${amountLabel}`
             statusClass += ' bg-gray-100 text-gray-800 border-gray-200'
           }
           const showLateTag = !rowIsCollector && paid && late
+          const markReceivedDisabled = pending || projectCanceled || paid
 
           return (
             <div key={p.id} className="rounded border p-3 space-y-2">
@@ -158,7 +187,12 @@ export function Participants(props: {
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-black text-white">You</span>
                     )}
                     <span className="text-xs uppercase opacity-50">{p.role}</span>
-                    <span className={statusClass}>{statusLabel}</span>
+                    <span
+                      className={statusClass}
+                      title={sent && !paid ? 'Waiting for confirmation' : undefined}
+                    >
+                      {statusLabel}
+                    </span>
                     {showLateTag && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-700">
                         Late
@@ -195,31 +229,37 @@ export function Participants(props: {
                         openPayForCollector()
                       }}
                     >
-                      {`Pay €${perPersonEuro}`}
+                      {`Pay ${amountLabel}`}
                     </button>
                   )}
 
-                  {!showPay && viewerSettled && !rowIsCollector && (
+                  {!showPay && viewerSettled && !rowIsCollector && isSelfRow && (
                     <span className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 border border-green-300">
                       Settled
                     </span>
                   )}
 
-
-                  {viewerIsCollector && !rowIsCollector && (
+                  {viewerIsCollector && !rowIsCollector && !paid && (
                     <button
                       className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
                       type="button"
-                      disabled={pending || projectCanceled || paid}
+                      disabled={markReceivedDisabled}
                       onClick={() => {
                         if (projectCanceled || paid) return
                         start(async () => {
                           await markReceived(p.id)
+                          router.refresh()
                         })
                       }}
                     >
                       {pending ? 'Saving...' : projectCanceled ? 'Canceled' : 'Mark received'}
                     </button>
+                  )}
+
+                  {viewerIsCollector && !rowIsCollector && paid && (
+                    <span className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 border border-green-300">
+                      Settled
+                    </span>
                   )}
 
                   {isOrganizer && p.role === 'organizer' && !rowIsCollector && (
@@ -245,9 +285,9 @@ export function Participants(props: {
 
       {payOpenFor && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-md rounded-lg bg-white shadow-lg border">
+          <div className="w-full max-w-md rounded-lg bg-white shadow-lg border flex flex-col max-h-[90vh]">
             <div className="px-4 py-3 border-b font-medium">Choose a payment method</div>
-            <div className="p-4 space-y-2 max-h-[60vh] overflow-y-auto">
+            <div className="p-4 space-y-2 overflow-y-auto flex-1">
               {collectorOptions.length === 0 ? (
                 <div className="text-sm opacity-70">
                   No payment methods yet. Ask the collector to add one in Settings.
@@ -269,7 +309,29 @@ export function Participants(props: {
                   ))
               )}
             </div>
-            <div className="px-4 py-3 border-t flex justify-end">
+            <div className="px-4 py-3 border-t flex flex-col gap-2 sm:flex-row sm:items-center sticky bottom-0 bg-white">
+              {selfReportAction ? (
+                <form
+                  action={selfReportAction}
+                  className="flex flex-col gap-2 sm:flex-row sm:items-center flex-1"
+                  onSubmit={() => setPayOpenFor(null)}
+                >
+                  <div className="text-xs opacity-70">
+                    Let the collector know you sent the payment.
+                  </div>
+                  <button
+                    type="submit"
+                    className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50 w-full sm:w-auto"
+                    disabled={!canSelfReport}
+                  >
+                    I've paid
+                  </button>
+                </form>
+              ) : (
+                <div className="text-xs opacity-70 flex-1">
+                  You need an active participant slot to self-report payments.
+                </div>
+              )}
               <button
                 type="button"
                 className="px-3 py-1.5 rounded border"

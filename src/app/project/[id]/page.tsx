@@ -86,7 +86,7 @@ export default async function ProjectPage({
       .order('joined_at', { ascending: true }),
     supabase.from('messages').select('*').eq('project_id', projectId).order('created_at', { ascending: false }),
     supabase.from('addons').select('*').eq('project_id', projectId),
-    supabase.from('payments').select('participant_id, is_counted, created_at').eq('is_counted', true),
+    supabase.from('payments').select('participant_id, is_counted, created_at'),
     supabase.from('addon_votes').select('addon_id')
   ])
 
@@ -100,6 +100,26 @@ export default async function ProjectPage({
         .in('participant_id', participantIdsArr)
     : { data: [], error: null as any }
   if (pmErr) throw pmErr
+
+  let pendingSignalsSet = new Set<string>()
+  if (participantIdsArr.length) {
+    const { data: pendingSignals, error: sigErr } = await supabaseAdmin
+      .from('payment_signals')
+      .select('participant_id, cleared_at')
+      .in('participant_id', participantIdsArr)
+      .is('cleared_at', null)
+
+    if (sigErr) {
+      const code = (sigErr as any)?.code
+      const isMissingTable =
+        code === '42P01' ||
+        sigErr.message?.toLowerCase()?.includes('payment_signals')
+      if (!isMissingTable) throw sigErr
+      console.warn('[ProjectPage] skipping payment_signals fetch', { reason: 'missing_table' })
+    } else {
+      pendingSignalsSet = new Set<string>((pendingSignals ?? []).map(signal => signal.participant_id))
+    }
+  }
 
   // Process participants and payment methods
   const rawParticipants = participants ?? []
@@ -185,8 +205,14 @@ export default async function ProjectPage({
   }
 
   // Process payments (as Sets for component)
-  const paidIds = payments.map(p => p.participant_id)
-  const paidSet = new Set(paidIds)
+  // paidSet includes ALL payments for UI display (whether counted or not)
+  const allPaidIds = payments.map(p => p.participant_id)
+  const paidSet = new Set(allPaidIds)
+  
+  // Only counted payments for threshold calculations
+  const countedPayments = payments.filter(p => p.is_counted === true)
+  const paidIds = countedPayments.map(p => p.participant_id)
+  
   const deadline = project.deadline_at ? new Date(project.deadline_at as any) : null
   const afterDeadlineIds = payments
     .filter(p => (deadline ? new Date(p.created_at) > deadline : false))
@@ -344,6 +370,7 @@ export default async function ProjectPage({
         perPersonCents={perPersonCents}
         collectorId={collectorId}
         collectorOptions={collectorOptions}
+        pendingSignalsSet={pendingSignalsSet}
       />
 
       <Voting addons={addonsWithCounts} projectCanceled={isCanceled} />
