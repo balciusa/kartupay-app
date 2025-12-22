@@ -1,6 +1,7 @@
 import { getCurrentUserId } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { revalidatePath } from 'next/cache'
+import SetPasswordForm from './SetPasswordForm'
 
 async function addLink(formData: FormData) {
   'use server'
@@ -127,6 +128,10 @@ export default async function SettingsPage() {
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="border rounded-xl p-4">
+        <SetPasswordForm />
       </section>
     </main>
   )
