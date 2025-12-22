@@ -23,7 +23,8 @@ export function SummaryCards(props: {
     if (!props.deadlineISO) return null
     const date = new Date(props.deadlineISO)
     if (Number.isNaN(date.getTime())) return null
-    return date.toLocaleString()
+    const pad = (value: number) => String(value).padStart(2, '0')
+    return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`
   }, [props.deadlineISO])
 
   const showShare = (cents: number) =>

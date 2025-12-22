@@ -15,9 +15,15 @@ type Addon = {
  * Server Component. No "use client".
  * Renders a list of add-ons with a <form action=...> that calls castVote on submit.
  */
-export default function Voting({ addons }: { addons: Addon[] }) {
+export default function Voting({ addons, projectCanceled }: { addons: Addon[]; projectCanceled?: boolean }) {
   return (
     <div className="space-y-3">
+      {projectCanceled && (
+        <div className="rounded border border-dashed p-3 text-sm text-red-700 bg-red-50/50">
+          Voting disabled (project canceled).
+        </div>
+      )}
+
       {addons.map((a) => (
         <Card key={a.id} className="p-4 flex items-center justify-between gap-4">
           <div className="min-w-0">
@@ -26,15 +32,20 @@ export default function Voting({ addons }: { addons: Addon[] }) {
               <div className="text-sm text-muted-foreground">{a.description}</div>
             ) : null}
             <div className="text-sm mt-1">
-              +€{(a.extra_cents / 100).toFixed(2)} · Need {a.required_votes}
-              {typeof a.current_votes === 'number' ? ` · Have ${a.current_votes}` : null}
+              +{(a.extra_cents / 100).toFixed(2)} • Need {a.required_votes}
+              {typeof a.current_votes === 'number' ? ` • Have ${a.current_votes}` : null}
             </div>
           </div>
 
-          {/* Server Action via form */}
-          <form action={castVote.bind(null, a.id)}>
-            <Button type="submit">Vote</Button>
-          </form>
+          {projectCanceled ? (
+            <Button type="button" disabled>
+              Vote
+            </Button>
+          ) : (
+            <form action={castVote.bind(null, a.id)}>
+              <Button type="submit">Vote</Button>
+            </form>
+          )}
         </Card>
       ))}
     </div>

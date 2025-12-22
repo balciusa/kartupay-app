@@ -5,7 +5,78 @@ import { redirect } from 'next/navigation'
 import { randomUUID } from 'crypto'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { getCurrentUserId } from '@/lib/supabaseServer'
-import { joinProjectSafe } from './joinProject.safe'
+
+export async function setCollector(projectId: string, participantId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('Not signed in')
+
+  // Verify caller is an active organizer of this project
+  const { data: org, error: orgErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('user_id', uid)
+    .eq('role', 'organizer')
+    .is('left_at', null)
+    .limit(1)
+  if (orgErr) throw orgErr
+  if (!org?.length) throw new Error('Not authorized')
+
+  // Ensure target participant belongs to this project and is active
+  const { data: part, error: partErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, project_id, left_at')
+    .eq('id', participantId)
+    .single()
+  if (partErr) throw partErr
+  if (!part || part.project_id !== projectId || part.left_at) throw new Error('Invalid participant')
+
+  const { error: updErr } = await supabaseAdmin
+    .from('projects')
+    .update({ collector_participant_id: participantId })
+    .eq('id', projectId)
+  if (updErr) throw updErr
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function cancelProject(projectId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  const nowIso = new Date().toISOString()
+
+  const { data: me, error: meErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, role')
+    .eq('project_id', projectId)
+    .eq('user_id', uid)
+    .is('left_at', null)
+    .limit(1)
+  if (meErr) throw meErr
+  if (!me?.length || me[0].role !== 'organizer') throw new Error('Not authorized')
+
+  const { error: uErr } = await supabaseAdmin
+    .from('projects')
+    .update({ status: 'canceled', canceled_at: nowIso })
+    .eq('id', projectId)
+  if (uErr) {
+    const needsFallback = (uErr as any)?.code === '23514' || uErr?.message?.includes('projects_status_check')
+    if (needsFallback) {
+      console.warn('[cancelProject] status value not allowed by constraint, falling back to canceled_at only', uErr)
+      const { error: fbErr } = await supabaseAdmin
+        .from('projects')
+        .update({ canceled_at: nowIso })
+        .eq('id', projectId)
+      if (fbErr) throw fbErr
+    } else {
+      throw uErr
+    }
+  }
+
+  revalidatePath(`/project/${projectId}`)
+}
 
 export async function leaveProject(projectId: string) {
   'use server'
@@ -170,7 +241,7 @@ export async function requestJoin(projectId: string) {
 
   const { data: project, error: pErr } = await supabaseAdmin
     .from('projects')
-    .select('id, status, deadline_at')
+    .select('id, status, deadline_at, canceled_at')
     .eq('id', projectId)
     .single()
   if (pErr || !project) {
@@ -179,9 +250,12 @@ export async function requestJoin(projectId: string) {
     return { ok: false, reason: 'project_fetch_failed' as const }
   }
 
-  const now = new Date()
-  const beforeDeadline = project.deadline_at ? now <= new Date(project.deadline_at as any) : true
-  const canJoinNow = project.status === 'collecting' && beforeDeadline
+  const canceled = project.status === 'canceled' || !!project.canceled_at
+  if (canceled) {
+    console.log('[requestJoin] blocked - project canceled', { projectId, status: project.status, canceled_at: project.canceled_at })
+    revalidatePath(`/project/${projectId}`)
+    return { ok: false as const, blocked: true as const }
+  }
 
   const { data: mine, error: mineErr } = await supabaseAdmin
     .from('participants')
@@ -194,26 +268,6 @@ export async function requestJoin(projectId: string) {
   const existing = mine?.[0]
   if (existing && !existing.left_at) {
     console.log('[requestJoin] already active participant', existing.id)
-    revalidatePath(`/project/${projectId}`)
-    return { ok: true, joined: true as const }
-  }
-
-  if (canJoinNow) {
-    if (existing?.left_at) {
-      const { error: reactErr } = await supabaseAdmin
-        .from('participants')
-        .update({ left_at: null })
-        .eq('id', existing.id)
-      if (reactErr) {
-        console.error('[requestJoin] reactivate error', reactErr)
-        revalidatePath(`/project/${projectId}`)
-        return { ok: false, reason: 'reactivate_failed' as const }
-      }
-      console.log('[requestJoin] reactivated participant', existing.id)
-    } else {
-      await joinProjectSafe(projectId)
-      console.log('[requestJoin] joined immediately via joinProjectSafe')
-    }
     revalidatePath(`/project/${projectId}`)
     return { ok: true, joined: true as const }
   }

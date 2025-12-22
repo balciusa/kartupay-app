@@ -5,6 +5,9 @@ import Voting from '@/components/Project/Voting'
 import { JoinButton } from '@/components/Project/JoinButton'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
+import { supabaseAdmin } from '@/lib/supabaseAdmin'
+import { cancelProject } from './actions'
+import { CancelProjectButton } from '@/components/Project/CancelProjectButton'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -42,7 +45,9 @@ export default async function ProjectPage({
   // Fetch project
   const { data: project, error: projectError } = await supabase
     .from('projects')
-    .select('*')
+    .select(
+      'id, title, description, total_cents, min_participants, max_participants, deadline_at, status, canceled_at, collector_participant_id',
+    )
     .eq('id', projectId)
     .single()
 
@@ -62,6 +67,8 @@ export default async function ProjectPage({
       </main>
     )
   }
+
+  const isCanceled = project.status === 'canceled' || !!project.canceled_at
 
   // Fetch all related data in parallel
   const [
@@ -187,8 +194,9 @@ export default async function ProjectPage({
   const afterDeadlineSet = new Set(afterDeadlineIds)
 
   // Calculate scenarios
+  const totalCents = Number(project.total_cents ?? 0)
+  const perPersonCents = Math.floor(totalCents / Math.max(1, participantsCount))
   const participantsNow = paidIds.length || participantsCount
-  const totalCents = project.total_cents
   const scenarios = {
     now: Math.floor(totalCents / Math.max(1, participantsNow)),
     plus1: Math.floor(totalCents / Math.max(1, participantsNow + 1)),
@@ -209,9 +217,38 @@ export default async function ProjectPage({
 
   // Find organizer
   const organizer = participantsClean.find(p => p.role === 'organizer')
-  const organizerId = myParticipantRole === 'organizer'
-    ? myParticipantId
-    : organizer?.id ?? null
+  const organizerId = myParticipantRole === 'organizer' ? myParticipantId : organizer?.id ?? null
+  const collectorId = (project.collector_participant_id as string | null) ?? organizerId
+  const collectorParticipant = collectorId ? participantsClean.find(p => p.id === collectorId) : null
+  
+  // Get collector options from payment_options (project-specific)
+  let collectorOptions =
+    collectorId
+      ? (paymentOptions ?? []).filter(po => po.participant_id === collectorId && po.is_active !== false)
+      : []
+  
+  // Fallback to user_payment_options if no project-specific options found
+  // This handles cases where collector updated their payment options in Settings after joining
+  if (collectorOptions.length === 0 && collectorParticipant?.user_id) {
+    const { data: userPaymentOptions, error: userOptsError } = await supabaseAdmin
+      .from('user_payment_options')
+      .select('type, label, value, priority, is_active')
+      .eq('user_id', collectorParticipant.user_id)
+      .eq('is_active', true)
+      .order('priority', { ascending: true })
+    
+    if (userOptsError) {
+      console.error('[ProjectPage] Error fetching collector user_payment_options:', userOptsError)
+    }
+    
+    collectorOptions = (userPaymentOptions ?? []).map(opt => ({
+      label: opt.label,
+      value: opt.value,
+      type: opt.type,
+      priority: opt.priority ?? 999,
+      is_active: opt.is_active !== false,
+    }))
+  }
   
   // Count active organizers
   const organizerCount = participantsClean.filter(p => p.role === 'organizer').length
@@ -230,7 +267,7 @@ export default async function ProjectPage({
 
   const now = new Date()
   const beforeDeadline = project.deadline_at ? now <= new Date(project.deadline_at as any) : true
-  const canJoinNow = project.status === 'collecting' && beforeDeadline
+  const canJoinNow = !isCanceled && project.status === 'collecting' && beforeDeadline
   const isMemberActive = isMeParticipant
 
   return (
@@ -241,6 +278,12 @@ export default async function ProjectPage({
           <div className="text-sm opacity-70 mt-2">{project.description}</div>
         )}
       </div>
+
+      {isCanceled && (
+        <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm">
+          This project was canceled on {new Date(project.canceled_at as any).toLocaleString()}.
+        </div>
+      )}
 
       <SummaryCards
         totalCents={totalCents}
@@ -253,14 +296,16 @@ export default async function ProjectPage({
 
       <div className="border rounded-xl p-4">
         <div className="font-medium mb-2">Join this project</div>
-        {!uid ? (
+        {isCanceled ? (
+          <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
+            Canceled
+          </button>
+        ) : !uid ? (
           <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
             Sign in to join
           </button>
         ) : isMemberActive ? (
           <LeaveProjectButton projectId={projectId} isOnlyOrganizer={isOnlyOrganizer} />
-        ) : canJoinNow ? (
-          <JoinButton projectId={projectId} canJoinNow={true} />
         ) : hasPending ? (
           <div className="space-y-1">
             <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
@@ -271,12 +316,17 @@ export default async function ProjectPage({
               {myPendingReq?.created_at ? ` requested ${new Date(myPendingReq.created_at).toLocaleString()}` : ''}
             </div>
           </div>
+        ) : canJoinNow ? (
+          <JoinButton projectId={projectId} canJoinNow={true} />
         ) : (
           <JoinButton projectId={projectId} canJoinNow={false} />
         )}
         <div className="text-xs opacity-60 mt-1">
           On join, your active payment links from Settings will be copied here.
         </div>
+        {myParticipantRole === 'organizer' && !isCanceled && (
+          <CancelProjectButton action={cancelProject.bind(null, projectId)} />
+        )}
       </div>
 
       <Participants
@@ -290,11 +340,15 @@ export default async function ProjectPage({
         pendingRequests={pendingForOrganizer ?? []}
         myParticipantId={myParticipantId}
         currentUserId={uid}
+        projectCanceled={isCanceled}
+        perPersonCents={perPersonCents}
+        collectorId={collectorId}
+        collectorOptions={collectorOptions}
       />
 
-      <Voting addons={addonsWithCounts} />
+      <Voting addons={addonsWithCounts} projectCanceled={isCanceled} />
 
-      <Discussions projectId={projectId} messages={messages ?? []} />
+      <Discussions projectId={projectId} messages={messages ?? []} projectCanceled={isCanceled} />
     </main>
   )
 }
