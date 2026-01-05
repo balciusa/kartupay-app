@@ -2,15 +2,30 @@ import { SummaryCards } from '@/components/Project/SummaryCards'
 import { Participants } from '@/components/Project/Participants'
 import { Discussions } from '@/components/Project/Discussions'
 import Voting from '@/components/Project/Voting'
-import { JoinButton } from '@/components/Project/JoinButton'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
+import { JoinButton } from '@/components/Project/JoinButton'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
-import { cancelProject } from './actions'
-import { CancelProjectButton } from '@/components/Project/CancelProjectButton'
+import OverflowMenu from '@/components/ui/OverflowMenu'
+import { finalizeProject, reopenProject, abortProject } from './actions'
+
+type LateTransferRow = {
+  id: string
+  project_id: string
+  from_participant_id: string
+  to_participant_id: string
+  expected_cents: number
+  received_at: string | null
+  sender_marked_at: string | null
+}
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
+
+const missingColumn = (error: { message?: string } | null, column: string) => {
+  const msg = error?.message?.toLowerCase() ?? ''
+  return msg.includes('does not exist') && msg.includes(column.toLowerCase())
+}
 
 export default async function ProjectPage({
   params,
@@ -42,14 +57,52 @@ export default async function ProjectPage({
 
   const supabase = await getSupabaseServer()
 
-  // Fetch project
-  const { data: project, error: projectError } = await supabase
-    .from('projects')
-    .select(
-      'id, title, description, total_cents, min_participants, max_participants, deadline_at, status, canceled_at, collector_participant_id',
-    )
-    .eq('id', projectId)
-    .single()
+  const baseProjectFields =
+    'id, title, description, total_cents, min_participants, max_participants, deadline_at, status, canceled_at, collector_participant_id'
+  const optionalProjectFields = ['closed_at', 'aborted_at', 'finalized_at'] as const
+  let optionalFields = [...optionalProjectFields]
+  const missingFields = new Set<string>()
+  let project: any = null
+  let projectError: { message?: string } | null = null
+
+  while (true) {
+    const selectList = [baseProjectFields, ...optionalFields].join(', ')
+    const { data, error } = await supabase
+      .from('projects')
+      .select(selectList)
+      .eq('id', projectId)
+      .single()
+
+    const missingField = optionalFields.find(field => missingColumn(error, field))
+    if (missingField) {
+      console.warn(`[ProjectPage] ${missingField} column missing, retrying without it`)
+      missingFields.add(missingField)
+      optionalFields = optionalFields.filter(field => field !== missingField)
+      if (optionalFields.length === 0) {
+        const fallback = await supabase
+          .from('projects')
+          .select(baseProjectFields)
+          .eq('id', projectId)
+          .single()
+        project = fallback.data
+        projectError = fallback.error
+        break
+      }
+      continue
+    }
+
+    project = data
+    projectError = error
+    break
+  }
+
+  if (project && optionalProjectFields.length) {
+    for (const field of optionalProjectFields) {
+      if (missingFields.has(field) || typeof project[field] === 'undefined') {
+        project[field] = null
+      }
+    }
+  }
 
   if (projectError || !project) {
     return (
@@ -68,7 +121,13 @@ export default async function ProjectPage({
     )
   }
 
-  const isCanceled = project.status === 'canceled' || !!project.canceled_at
+  const isCollectingStatus = project.status === 'collecting'
+  const isClosedStatus = project.status === 'closed'
+  const isCancelledStatus = project.status === 'cancelled' || project.status === 'canceled'
+  const isAborted = isCancelledStatus || !!project.aborted_at || !!project.canceled_at
+  const abortedAtDisplay = (project.aborted_at as string | null) ?? (project.canceled_at as string | null) ?? null
+  const abortedAtLocale = abortedAtDisplay ? new Date(abortedAtDisplay).toLocaleString() : null
+  const closedAt = (project.closed_at as string | null) ?? null
 
   // Fetch all related data in parallel
   const [
@@ -89,6 +148,28 @@ export default async function ProjectPage({
     supabase.from('payments').select('participant_id, is_counted, created_at'),
     supabase.from('addon_votes').select('addon_id')
   ])
+  const lateTransfersResult = await supabase
+    .from('late_join_transfers')
+    .select('id, project_id, from_participant_id, to_participant_id, expected_cents, received_at, sender_marked_at')
+    .eq('project_id', projectId)
+  let lateTransfers: LateTransferRow[] = (lateTransfersResult.data as LateTransferRow[]) ?? []
+  if (lateTransfersResult.error) {
+    if (missingColumn(lateTransfersResult.error, 'sender_marked_at')) {
+      console.warn('[ProjectPage] sender_marked_at missing, retrying late transfers without it')
+      const fallback = await supabase
+        .from('late_join_transfers')
+        .select('id, project_id, from_participant_id, to_participant_id, expected_cents, received_at')
+        .eq('project_id', projectId)
+      lateTransfers =
+        (fallback.data ?? []).map(row => ({
+          ...row,
+          sender_marked_at: null,
+        })) as LateTransferRow[]
+    } else {
+      console.error('[ProjectPage] late transfers fetch error', lateTransfersResult.error)
+      lateTransfers = []
+    }
+  }
 
   // Collect participant IDs for this project
   const participantIdsArr = (participants ?? []).map(p => p.id)
@@ -203,6 +284,9 @@ export default async function ProjectPage({
       })))
     }
   }
+  const preferredEntries = Array.from(preferred.entries())
+  const allOptionsEntries = Array.from(allOptions.entries())
+  const lateTransferRows = lateTransfers ?? []
 
   // Process payments (as Sets for component)
   // paidSet includes ALL payments for UI display (whether counted or not)
@@ -291,23 +375,113 @@ export default async function ProjectPage({
     pendingRequestsCount: pendingForOrganizer?.length ?? 0
   })
 
-  const now = new Date()
-  const beforeDeadline = project.deadline_at ? now <= new Date(project.deadline_at as any) : true
-  const canJoinNow = !isCanceled && project.status === 'collecting' && beforeDeadline
   const isMemberActive = isMeParticipant
+  const viewerIsOrganizer = myParticipantRole === 'organizer'
+  const overflowItems = []
+  if (isClosedStatus) {
+    overflowItems.push({
+      label: 'Reopen project',
+      formAction: reopenProject.bind(null, projectId),
+    })
+  }
+  if (!isAborted) {
+    overflowItems.push({
+      label: 'Abort project',
+      type: 'danger' as const,
+      formAction: abortProject.bind(null, projectId),
+    })
+  }
+  const joinCta = (() => {
+    if (!uid) {
+      return (
+        <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
+          Sign in to join
+        </button>
+      )
+    }
+    if (isAborted) {
+      return (
+        <button className="px-3 py-1.5 rounded border" disabled title="Project aborted">
+          Project aborted
+        </button>
+      )
+    }
+    if (isMemberActive) {
+      if (isOnlyOrganizer) {
+        return null
+      }
+      return (
+        <button className="px-3 py-1.5 rounded border" disabled>
+          You are in
+        </button>
+      )
+    }
+    if (isCollectingStatus) {
+      if (hasPending) {
+        return (
+          <div className="space-y-1">
+            <button className="px-3 py-1.5 rounded border" disabled>
+              Request sent
+            </button>
+            <div className="text-xs opacity-60">
+              Waiting for organizer approval
+              {myPendingReq?.created_at ? ` since ${new Date(myPendingReq.created_at).toLocaleString()}` : ''}
+            </div>
+          </div>
+        )
+      }
+      return <JoinButton projectId={projectId} canJoinNow={true} />
+    }
+    if (hasPending) {
+      return (
+        <div className="space-y-1">
+          <button className="px-3 py-1.5 rounded border" disabled>
+            Request sent
+          </button>
+          <div className="text-xs opacity-60">
+            Waiting for organizer approval
+            {myPendingReq?.created_at ? ` since ${new Date(myPendingReq.created_at).toLocaleString()}` : ''}
+          </div>
+        </div>
+      )
+    }
+    return <JoinButton projectId={projectId} canJoinNow={false} />
+  })()
 
   return (
     <main className="p-6 max-w-4xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-3xl font-semibold">{project.title}</h1>
-        {project.description && (
-          <div className="text-sm opacity-70 mt-2">{project.description}</div>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-3xl font-semibold flex items-center gap-2">
+            {project.title}
+            {isClosedStatus && (
+              <span className="text-xs px-2 py-0.5 rounded bg-black text-white">Finalized</span>
+            )}
+            {isAborted && (
+              <span className="text-xs px-2 py-0.5 rounded bg-red-600 text-white">Aborted</span>
+            )}
+          </h1>
+          {project.description && (
+            <div className="text-sm opacity-70 mt-2">{project.description}</div>
+          )}
+        </div>
+        {viewerIsOrganizer && (
+          <div className="flex items-center gap-2">
+            {isCollectingStatus && (
+              <form action={finalizeProject.bind(null, projectId)}>
+                <button className="px-3 py-1.5 rounded bg-black text-white" type="submit">
+                  Finalize project
+                </button>
+              </form>
+            )}
+            {overflowItems.length > 0 && <OverflowMenu items={overflowItems} />}
+          </div>
         )}
       </div>
 
-      {isCanceled && (
+      {isAborted && (
         <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm">
-          This project was canceled on {new Date(project.canceled_at as any).toLocaleString()}.
+          This project was aborted {abortedAtLocale ? `on ${abortedAtLocale}` : 'recently'}.
         </div>
       )}
 
@@ -320,62 +494,43 @@ export default async function ProjectPage({
         maxParticipants={project.max_participants as number | null}
       />
 
-      <div className="border rounded-xl p-4">
-        <div className="font-medium mb-2">Join this project</div>
-        {isCanceled ? (
-          <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
-            Canceled
-          </button>
-        ) : !uid ? (
-          <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
-            Sign in to join
-          </button>
-        ) : isMemberActive ? (
-          <LeaveProjectButton projectId={projectId} isOnlyOrganizer={isOnlyOrganizer} />
-        ) : hasPending ? (
-          <div className="space-y-1">
-            <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
-              Request sent
-            </button>
-            <div className="text-xs opacity-60">
-              Waiting for organizer approval
-              {myPendingReq?.created_at ? ` requested ${new Date(myPendingReq.created_at).toLocaleString()}` : ''}
-            </div>
+      <div className="border rounded-xl p-4 space-y-2">
+        <div className="font-medium">Join this project</div>
+        {joinCta}
+        {isMemberActive && (
+          <div>
+            <LeaveProjectButton projectId={projectId} isOnlyOrganizer={isOnlyOrganizer} />
           </div>
-        ) : canJoinNow ? (
-          <JoinButton projectId={projectId} canJoinNow={true} />
-        ) : (
-          <JoinButton projectId={projectId} canJoinNow={false} />
         )}
         <div className="text-xs opacity-60 mt-1">
           On join, your active payment links from Settings will be copied here.
         </div>
-        {myParticipantRole === 'organizer' && !isCanceled && (
-          <CancelProjectButton action={cancelProject.bind(null, projectId)} />
-        )}
       </div>
 
       <Participants
         projectId={projectId}
         participants={participantsClean}
-        preferred={preferred}
-        allOptions={allOptions}
+        preferred={preferredEntries}
+        allOptions={allOptionsEntries}
         paidSet={paidSet}
         afterDeadlineSet={afterDeadlineSet}
         organizerId={organizerId}
         pendingRequests={pendingForOrganizer ?? []}
         myParticipantId={myParticipantId}
         currentUserId={uid}
-        projectCanceled={isCanceled}
+        projectCanceled={isAborted}
         perPersonCents={perPersonCents}
         collectorId={collectorId}
         collectorOptions={collectorOptions}
         pendingSignalsSet={pendingSignalsSet}
+        transfers={lateTransferRows}
+        closedAt={closedAt}
+        projectStatus={project.status}
       />
 
-      <Voting addons={addonsWithCounts} projectCanceled={isCanceled} />
+      <Voting addons={addonsWithCounts} projectCanceled={isAborted} />
 
-      <Discussions projectId={projectId} messages={messages ?? []} projectCanceled={isCanceled} />
+      <Discussions projectId={projectId} messages={messages ?? []} projectCanceled={isAborted} />
     </main>
   )
 }
