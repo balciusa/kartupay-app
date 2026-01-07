@@ -4,12 +4,13 @@ import { Discussions } from '@/components/Project/Discussions'
 import Voting from '@/components/Project/Voting'
 import { ProjectTabs } from '@/components/Project/ProjectTabs'
 import { AdminPanel } from '@/components/Project/AdminPanel'
+import { OutgoingTransfer } from '@/components/Project/OutgoingTransfer'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { JoinButton } from '@/components/Project/JoinButton'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import OverflowMenu from '@/components/ui/OverflowMenu'
-import { finalizeProject, reopenProject, abortProject } from './actions'
+import { finalizeProject, reopenProject, abortProject, markReceived } from './actions'
 
 type LateTransferRow = {
   id: string
@@ -310,6 +311,7 @@ export default async function ProjectPage({
   const perPersonCents = Math.floor(totalCents / Math.max(1, participantsCount))
   const participantsNow = paidIds.length || participantsCount
   const viewerPaid = !!(myParticipantId && paidSet.has(myParticipantId))
+  const viewerHasPendingSignal = !!(myParticipantId && pendingSignalsSet.has(myParticipantId))
   const viewerPaidCents = viewerPaid ? perPersonCents : 0
   const collectedCents = perPersonCents * paidIds.length
   const formatEuro = (cents: number) => `€${(cents / 100).toFixed(2)}`
@@ -337,6 +339,8 @@ export default async function ProjectPage({
   const collectorId = (project.collector_participant_id as string | null) ?? organizerId
   const collectorParticipant = collectorId ? participantsClean.find(p => p.id === collectorId) : null
   const collectorLabel = collectorParticipant?.short_code ? `#${collectorParticipant.short_code}` : 'Anonymous'
+  const collectorName = collectorLabel
+  const viewerIsCollector = !!(myParticipantId && collectorId && myParticipantId === collectorId)
   
   // Get collector options from payment_options (project-specific)
   let collectorOptions =
@@ -572,27 +576,58 @@ export default async function ProjectPage({
                   </div>
                 </div>
               </section>
-              <Participants
-                projectId={projectId}
-                participants={participantsClean}
-                preferred={preferredEntries}
-                allOptions={allOptionsEntries}
-                paidSet={paidSet}
-                afterDeadlineSet={afterDeadlineSet}
-                organizerId={organizerId}
-                pendingRequests={pendingForOrganizer ?? []}
-                showPendingRequests={false}
-                myParticipantId={myParticipantId}
-                currentUserId={uid}
-                projectCanceled={isAborted}
-                perPersonCents={perPersonCents}
-                collectorId={collectorId}
-                collectorOptions={collectorOptions}
-                pendingSignalsSet={pendingSignalsSet}
-                transfers={lateTransferRows}
-                closedAt={closedAt}
-                projectStatus={project.status}
-              />
+              <section className="border rounded-xl p-4 space-y-3">
+                <div className="font-medium">Incoming transfers</div>
+                {viewerIsCollector ? (
+                  (() => {
+                    const incoming = participantsClean.filter(p => p.id !== collectorId && !paidSet.has(p.id))
+                    if (incoming.length === 0) {
+                      return <div className="text-sm opacity-70">No incoming transfers.</div>
+                    }
+                    return (
+                      <div className="divide-y">
+                        {incoming.map(p => (
+                          <div key={p.id} className="flex items-center justify-between py-2 text-sm">
+                            <div>
+                              {p.short_code
+                                ? `#${p.short_code}`
+                                : p.user_id
+                                  ? `User ${p.user_id.slice(0, 6)}`
+                                  : 'Anonymous'}{' '}
+                              — {formatEuro(perPersonCents)}
+                            </div>
+                            <form action={markReceived.bind(null, p.id)}>
+                              <button className="px-3 py-1.5 rounded border text-xs" type="submit">
+                                Mark received
+                              </button>
+                            </form>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  })()
+                ) : (
+                  <div className="text-sm opacity-70">No incoming transfers.</div>
+                )}
+              </section>
+              <section className="border rounded-xl p-4 space-y-3">
+                <div className="font-medium">Outgoing transfers</div>
+                {!viewerIsCollector && myParticipantId && collectorId ? (
+                  <div className="divide-y">
+                    <OutgoingTransfer
+                      collectorName={collectorName}
+                      amountLabel={formatEuro(perPersonCents)}
+                      collectorOptions={collectorOptions}
+                      participantId={myParticipantId}
+                      viewerPaid={viewerPaid}
+                      viewerHasPendingSignal={viewerHasPendingSignal}
+                      projectCanceled={isAborted}
+                    />
+                  </div>
+                ) : (
+                  <div className="text-sm opacity-70">No outgoing transfers.</div>
+                )}
+              </section>
               <Voting addons={addonsWithCounts} projectCanceled={isAborted} />
             </div>
           ),
