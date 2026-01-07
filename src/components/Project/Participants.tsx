@@ -1,19 +1,67 @@
 'use client'
 
-import { useTransition, useState } from 'react'
-import { markReceived, approveJoinRequestFromForm, rejectJoinRequestFromForm, promoteToOrganizerFromForm, setCollector } from '@/app/project/[id]/actions'
+import { useMemo, useState, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
+import {
+  markReceived,
+  approveJoinRequestFromForm,
+  rejectJoinRequestFromForm,
+  promoteToOrganizerFromForm,
+  setCollector,
+  selfReportPaid,
+  confirmLateJoinReceipt,
+  markLateJoinPaid,
+} from '@/app/project/[id]/actions'
 
 type Participant = {
   id: string
   user_id: string
   role: string
   short_code: string | null
+  joined_at: string | null
   users?: { email: string | null } | null
 }
 
 type PayOption = { label: string | null, value: string, type: string }
 type Pref = PayOption
 type Opt = PayOption & { priority: number, is_active?: boolean }
+
+// Money helpers
+const euros = (cents: number) => `€${(cents / 100).toFixed(2)}`
+
+type Transfer = {
+  id: string
+  project_id: string
+  from_participant_id: string
+  to_participant_id: string
+  expected_cents: number
+  sender_marked_at: string | null
+  received_at: string | null
+}
+
+type PayModalState =
+  | { type: 'collector' }
+  | { type: 'participant'; participantId: string }
+
+type TransferStats = {
+  pendingCount: number
+  pendingCents: number
+  totalCount: number
+  totalCents: number
+  markedPendingCount: number
+  markedCount: number
+  confirmedCount: number
+}
+
+const makeEmptyStats = (): TransferStats => ({
+  pendingCount: 0,
+  pendingCents: 0,
+  totalCount: 0,
+  totalCents: 0,
+  markedPendingCount: 0,
+  markedCount: 0,
+  confirmedCount: 0,
+})
 
 const ensureHttp = (raw: string) => {
   if (!raw) return null
@@ -32,27 +80,121 @@ const normalizeRevolutUrl = (raw: string) => {
 const displayName = (p: Participant) =>
   p.users?.email || (p.short_code ? `#${p.short_code}` : 'Anonymous')
 
+const formatEuro = (cents: number) => `€${(cents / 100).toFixed(2)}`
+const readableDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : '')
+const mapFromEntries = <T,>(entries: Array<[string, T]> = []) => new Map(entries)
+
 export function Participants(props: {
   projectId: string
   participants: Array<Participant>
-  preferred: Map<string, Pref>
-  allOptions: Map<string, Array<Opt>>
+  preferred: Array<[string, Pref]>
+  allOptions: Array<[string, Array<Opt>]>
   paidSet: Set<string>
   afterDeadlineSet: Set<string>
   organizerId: string | null
   pendingRequests?: Array<{ id: string; requester_user_id: string; created_at: string; status: string }>
+  showPendingRequests?: boolean
+  showPayments?: boolean
   myParticipantId: string | null
   currentUserId: string | null
   projectCanceled?: boolean
   perPersonCents: number
   collectorId: string | null
   collectorOptions: Array<{ label: string | null; value: string; type: string; priority?: number; is_active?: boolean }>
+  pendingSignalsSet?: Set<string>
+  transfers: Transfer[]
+  closedAt: string | null
+  projectStatus: string | null
 }) {
   const [pending, start] = useTransition()
-  const [payOpenFor, setPayOpenFor] = useState<string | null>(null)
+  const [confirming, startConfirm] = useTransition()
+  const [markingLatePaid, startMarkLatePaid] = useTransition()
+  const [payOpenFor, setPayOpenFor] = useState<PayModalState | null>(null)
+  const router = useRouter()
   const isOrganizer = !!(props.organizerId && props.myParticipantId === props.organizerId)
   const pendingRequests = props.pendingRequests ?? []
+  const showPendingRequests = props.showPendingRequests !== false
+  const showPayments = props.showPayments !== false
   const projectCanceled = props.projectCanceled === true
+  const pendingSignalsSet = props.pendingSignalsSet ?? new Set<string>()
+  const allOptionsMap = useMemo(() => mapFromEntries(props.allOptions ?? []), [props.allOptions])
+  const transfersList = props.transfers ?? []
+  const transferAggregates = useMemo(() => {
+    type Stats = {
+      pendingCount: number
+      pendingCents: number
+      totalCount: number
+      totalCents: number
+      markedPendingCount: number
+      markedCount: number
+      confirmedCount: number
+    }
+    const makeStats = (): Stats => ({
+      pendingCount: 0,
+      pendingCents: 0,
+      totalCount: 0,
+      totalCents: 0,
+      markedPendingCount: 0,
+      markedCount: 0,
+      confirmedCount: 0,
+    })
+    const senderMap = new Map<string, Transfer[]>()
+    const recipientMap = new Map<string, Transfer[]>()
+    const incomingStats = new Map<string, Stats>()
+    const outgoingStats = new Map<string, Stats>()
+    const pairMap = new Map<string, Transfer[]>()
+
+    for (const t of transfersList) {
+      if (!senderMap.has(t.from_participant_id)) senderMap.set(t.from_participant_id, [])
+      senderMap.get(t.from_participant_id)!.push(t)
+      if (!recipientMap.has(t.to_participant_id)) recipientMap.set(t.to_participant_id, [])
+      recipientMap.get(t.to_participant_id)!.push(t)
+
+      const pairKey = `${t.from_participant_id}__${t.to_participant_id}`
+      if (!pairMap.has(pairKey)) pairMap.set(pairKey, [])
+      pairMap.get(pairKey)!.push(t)
+
+      const recStats = incomingStats.get(t.to_participant_id) ?? makeStats()
+      recStats.totalCount += 1
+      recStats.totalCents += t.expected_cents
+      if (t.sender_marked_at) recStats.markedCount += 1
+      if (t.sender_marked_at && !t.received_at) recStats.markedPendingCount += 1
+      if (t.received_at) recStats.confirmedCount += 1
+      if (!t.received_at) {
+        recStats.pendingCount += 1
+        recStats.pendingCents += t.expected_cents
+      }
+      incomingStats.set(t.to_participant_id, recStats)
+
+      const sndStats = outgoingStats.get(t.from_participant_id) ?? makeStats()
+      sndStats.totalCount += 1
+      sndStats.totalCents += t.expected_cents
+      if (t.sender_marked_at) sndStats.markedCount += 1
+      if (t.sender_marked_at && !t.received_at) sndStats.markedPendingCount += 1
+      if (t.received_at) sndStats.confirmedCount += 1
+      if (!t.received_at) {
+        sndStats.pendingCount += 1
+        sndStats.pendingCents += t.expected_cents
+      }
+      outgoingStats.set(t.from_participant_id, sndStats)
+    }
+
+    return { senderMap, recipientMap, incomingStats, outgoingStats, pairMap }
+  }, [transfersList])
+  const lateTransfersBySenderMap = transferAggregates.senderMap
+  const lateTransfersByRecipientMap = transferAggregates.recipientMap
+  const incomingStatsMap = transferAggregates.incomingStats
+  const outgoingStatsMap = transferAggregates.outgoingStats
+  const pairTransfersMap = transferAggregates.pairMap
+  const participantsById = useMemo(
+    () => new Map(props.participants.map(p => [p.id, p] as const)),
+    [props.participants]
+  )
+  const closedAtDate = useMemo(() => (props.closedAt ? new Date(props.closedAt) : null), [props.closedAt])
+  const isFinalized = useMemo(() => {
+    const status = (props.projectStatus ?? '').toLowerCase()
+    return status === 'closed' || status === 'finalized'
+  }, [props.projectStatus])
   
   console.log('[Participants] Render:', {
     isOrganizer,
@@ -64,9 +206,13 @@ export function Participants(props: {
 
   const viewerParticipantId = props.myParticipantId ?? null
   const viewerSettled = viewerParticipantId ? props.paidSet.has(viewerParticipantId) : false
+  const viewerHasPendingSignal = viewerParticipantId ? pendingSignalsSet.has(viewerParticipantId) : false
+  const selfReportAction = viewerParticipantId ? selfReportPaid.bind(null, viewerParticipantId) : null
+  const canSelfReport = !!selfReportAction && !viewerSettled && !viewerHasPendingSignal && !projectCanceled
   const collectorOptions = (props.collectorOptions ?? []).filter(opt => opt && opt.is_active !== false)
-  const openPayForCollector = () => setPayOpenFor('collector')
-  const handleCollectorOption = (opt: { value: string; type: string }) => {
+  const openPayForCollector = () => setPayOpenFor({ type: 'collector' })
+  const openPayForParticipant = (participantId: string) => setPayOpenFor({ type: 'participant', participantId })
+  const handlePaymentOption = (opt: { value: string; type: string }) => {
     if (!opt?.value) return
     const type = (opt.type || '').toLowerCase()
     if (type === 'iban') {
@@ -79,12 +225,34 @@ export function Participants(props: {
     if (href) window.open(href, '_blank', 'noreferrer')
     setPayOpenFor(null)
   }
+  const modalTargetParticipant =
+    payOpenFor?.type === 'participant' ? participantsById.get(payOpenFor.participantId) ?? null : null
+  const modalOptions =
+    payOpenFor?.type === 'collector'
+      ? collectorOptions
+      : payOpenFor?.type === 'participant'
+        ? allOptionsMap.get(payOpenFor.participantId) ?? []
+        : []
+  const modalTitle =
+    payOpenFor?.type === 'participant' && modalTargetParticipant
+      ? `Pay ${displayName(modalTargetParticipant)}`
+      : 'Choose a payment method'
+  const viewerModalTransfers =
+    payOpenFor?.type === 'participant' && viewerParticipantId
+      ? pairTransfersMap.get(`${viewerParticipantId}__${payOpenFor.participantId}`) ?? []
+      : []
+  const modalLatePending =
+    viewerModalTransfers.find(t => !t.received_at && !t.sender_marked_at) ?? null
+  const modalLateAwaiting =
+    !modalLatePending ? viewerModalTransfers.find(t => !t.received_at && !!t.sender_marked_at) ?? null : null
+  const modalLateSettled =
+    !modalLatePending && !modalLateAwaiting ? viewerModalTransfers.find(t => !!t.received_at) ?? null : null
 
   return (
     <section className="border rounded-xl p-4 space-y-4">
       <h2 className="text-lg font-semibold">Participants</h2>
 
-      {isOrganizer && pendingRequests.length > 0 && (
+      {showPendingRequests && isOrganizer && pendingRequests.length > 0 && (
         <div className="rounded border p-3 space-y-3">
           <div className="font-medium">Pending join requests</div>
           <div className="space-y-2">
@@ -126,27 +294,83 @@ export function Participants(props: {
       <div className="grid gap-3">
         {props.participants.map(p => {
           const paid = props.paidSet.has(p.id)
-          const late = props.afterDeadlineSet.has(p.id)
+          const sent = pendingSignalsSet.has(p.id)
           const name = displayName(p)
           const rowIsCollector = !!(props.collectorId && p.id === props.collectorId)
           const viewerIsCollector = !!(props.collectorId && props.myParticipantId === props.collectorId)
           const isSelfRow = !!(props.myParticipantId && props.myParticipantId === p.id)
-          const perPersonEuro = (props.perPersonCents / 100).toFixed(2)
-          const showPay = !viewerIsCollector && !rowIsCollector && !viewerSettled
+          const amountLabel = formatEuro(props.perPersonCents)
+          const senderLateTransfers = lateTransfersBySenderMap.get(p.id) ?? []
+          const recipientLateTransfers = lateTransfersByRecipientMap.get(p.id) ?? []
+          const incomingStats = incomingStatsMap.get(p.id) ?? makeEmptyStats()
+          const outgoingStats = outgoingStatsMap.get(p.id) ?? makeEmptyStats()
+          const joinedAtDate = p.joined_at ? new Date(p.joined_at) : null
+          const joinedAfterClose = !!(closedAtDate && joinedAtDate && joinedAtDate > closedAtDate)
+          const showsIncomingBadge = isFinalized && incomingStats.totalCount > 0
+          const showsOutgoingBadge = isFinalized && outgoingStats.totalCount > 0
+          const isLateParticipant = isFinalized && (showsOutgoingBadge || joinedAfterClose)
+          if (isLateParticipant) {
+            console.log('[Participants] Late participant debug', {
+              participantId: p.id,
+              outgoingLateTransfers: senderLateTransfers.length,
+              incomingLateTransfers: recipientLateTransfers.length,
+            })
+          }
+          const allIncomingSettled = incomingStats.totalCount > 0 && incomingStats.pendingCount === 0
+          const hasIncomingMarkedAwaiting = incomingStats.markedPendingCount > 0
+          const incomingBadgeText = allIncomingSettled
+            ? 'All settled (late)'
+            : hasIncomingMarkedAwaiting
+              ? 'Reported paid (late)'
+              : `Receives ${euros(incomingStats.pendingCents)} from ${incomingStats.pendingCount}`
+          const viewerPairKey = viewerParticipantId ? `${viewerParticipantId}__${p.id}` : null
+          const viewerPairTransfers = viewerPairKey ? pairTransfersMap.get(viewerPairKey) ?? [] : []
+          const viewerPairPending = viewerPairTransfers.filter(t => !t.received_at)
+          const viewerPairPendingUnmarked = viewerPairPending.filter(t => !t.sender_marked_at)
+          const viewerPairPendingMarked = viewerPairPending.filter(t => !!t.sender_marked_at)
+          const viewerPairConfirmed = viewerPairTransfers.filter(t => !!t.received_at)
+          const pendingUnmarkedCents = viewerPairPendingUnmarked.reduce((sum, t) => sum + t.expected_cents, 0)
+          const pendingMarkedCents = viewerPairPendingMarked.reduce((sum, t) => sum + t.expected_cents, 0)
+          const viewerHasLateLink = !!viewerParticipantId && !isSelfRow && isFinalized && viewerPairTransfers.length > 0
+          const viewerShowsLateOwesChip = viewerHasLateLink && viewerPairPendingUnmarked.length > 0
+          const viewerShowsLateAwaitingChip =
+            viewerHasLateLink && viewerPairPendingUnmarked.length === 0 && viewerPairPendingMarked.length > 0
+          const viewerShowsLateSettledChip =
+            viewerHasLateLink && viewerPairPending.length === 0 && viewerPairConfirmed.length > 0
+          const latePayAvailable = viewerHasLateLink && viewerPairPendingUnmarked.length > 0
+          const showStandardPay =
+            !isFinalized &&
+            !isLateParticipant &&
+            isSelfRow &&
+            !viewerIsCollector &&
+            !rowIsCollector &&
+            !paid &&
+            !viewerSettled &&
+            !viewerHasPendingSignal &&
+            !sent
+          const showPay = showPayments && (isFinalized ? latePayAvailable : showStandardPay)
 
           let statusLabel: string
           let statusClass = 'text-[10px] px-1.5 py-0.5 rounded border font-medium'
           if (rowIsCollector) {
             statusLabel = 'Collector'
             statusClass += ' bg-emerald-600 text-white border-emerald-700'
-          } else if (paid) {
+          } else if (paid && !isSelfRow && !(viewerIsCollector && !rowIsCollector)) {
+            // Don't show "Settled" in status label for self row or when collector views paid member - it's shown on the right side instead
             statusLabel = 'Settled'
             statusClass += ' bg-emerald-50 text-emerald-700 border-emerald-200'
+          } else if (sent) {
+            statusLabel = `Sent - ${amountLabel}`
+            statusClass += ' bg-amber-50 text-amber-800 border-amber-200'
+          } else if (paid) {
+            // When payment is settled, show "Paid" instead of "Owes"
+            statusLabel = `Paid ${amountLabel}`
+            statusClass += ' bg-gray-100 text-gray-800 border-gray-200'
           } else {
-            statusLabel = `Owes €${perPersonEuro}`
+            statusLabel = `Owes ${amountLabel}`
             statusClass += ' bg-gray-100 text-gray-800 border-gray-200'
           }
-          const showLateTag = !rowIsCollector && paid && late
+          const markReceivedDisabled = pending || projectCanceled || paid || isLateParticipant
 
           return (
             <div key={p.id} className="rounded border p-3 space-y-2">
@@ -158,10 +382,31 @@ export function Participants(props: {
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-black text-white">You</span>
                     )}
                     <span className="text-xs uppercase opacity-50">{p.role}</span>
-                    <span className={statusClass}>{statusLabel}</span>
-                    {showLateTag && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-700">
-                        Late
+                    {showPayments && (
+                      <span
+                        className={statusClass}
+                        title={sent && !paid ? 'Waiting for confirmation' : undefined}
+                      >
+                        {statusLabel}
+                      </span>
+                    )}
+                    {showPayments && showsIncomingBadge && (
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded ${
+                          allIncomingSettled ? 'bg-green-600 text-white' : 'bg-amber-600 text-white'
+                        }`}
+                      >
+                        {incomingBadgeText}
+                      </span>
+                    )}
+                    {showPayments && viewerShowsLateAwaitingChip && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-600 text-white">
+                        Sent {euros(pendingMarkedCents)} (late), awaiting confirmation
+                      </span>
+                    )}
+                    {showPayments && viewerShowsLateSettledChip && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-600 text-white">
+                        Settled (late)
                       </span>
                     )}
                     {isOrganizer && p.role === 'member' && !isSelfRow && (
@@ -192,34 +437,44 @@ export function Participants(props: {
                       }
                       onClick={() => {
                         if (projectCanceled) return
-                        openPayForCollector()
+                        if (isFinalized) {
+                          openPayForParticipant(p.id)
+                        } else {
+                          openPayForCollector()
+                        }
                       }}
                     >
-                      {`Pay €${perPersonEuro}`}
+                      {isFinalized ? `Pay ${name}` : `Pay ${amountLabel}`}
                     </button>
                   )}
 
-                  {!showPay && viewerSettled && !rowIsCollector && (
+                  {showPayments && !isFinalized && !showPay && viewerSettled && !rowIsCollector && isSelfRow && (
                     <span className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 border border-green-300">
                       Settled
                     </span>
                   )}
 
-
-                  {viewerIsCollector && !rowIsCollector && (
+                  {showPayments && viewerIsCollector && !rowIsCollector && !isFinalized && !paid && !isLateParticipant && (
                     <button
                       className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
                       type="button"
-                      disabled={pending || projectCanceled || paid}
+                      disabled={markReceivedDisabled}
                       onClick={() => {
                         if (projectCanceled || paid) return
                         start(async () => {
                           await markReceived(p.id)
+                          router.refresh()
                         })
                       }}
                     >
                       {pending ? 'Saving...' : projectCanceled ? 'Canceled' : 'Mark received'}
                     </button>
+                  )}
+
+                  {showPayments && viewerIsCollector && !rowIsCollector && !isLateParticipant && paid && (
+                    <span className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 border border-green-300">
+                      Settled
+                    </span>
                   )}
 
                   {isOrganizer && p.role === 'organizer' && !rowIsCollector && (
@@ -238,22 +493,74 @@ export function Participants(props: {
                 )}
               </div>
 
+              {showPayments && recipientLateTransfers.length > 0 && (
+                <div className="rounded-md border bg-slate-50 p-3 space-y-2">
+                  <div className="text-sm font-medium">Incoming late payments</div>
+                  <div className="space-y-2">
+                    {recipientLateTransfers.map(transfer => {
+                      const sender = participantsById.get(transfer.from_participant_id)
+                      const senderName = sender ? displayName(sender) : 'Participant'
+                      const settled = !!transfer.received_at
+                      const senderMarked = !!transfer.sender_marked_at
+                      return (
+                        <div
+                          key={transfer.id}
+                          className="rounded border bg-white p-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                          <div>
+                            <div className="text-sm font-medium">{senderName}</div>
+                            <div className="text-xs opacity-70">
+                              {settled
+                                ? `Settled ${readableDate(transfer.received_at)}`
+                                : senderMarked
+                                  ? `Reported paid ${readableDate(transfer.sender_marked_at)}`
+                                  : `Owes ${formatEuro(transfer.expected_cents)}`}
+                            </div>
+                          </div>
+                          {!settled && isSelfRow ? (
+                            <button
+                              type="button"
+                              className="px-3 py-1.5 rounded border bg-white text-xs sm:text-sm disabled:opacity-50"
+                              disabled={confirming}
+                              onClick={() => {
+                                startConfirm(async () => {
+                                  await confirmLateJoinReceipt(transfer.id)
+                                  router.refresh()
+                                })
+                              }}
+                            >
+                              {confirming ? 'Saving...' : 'Confirm received'}
+                            </button>
+                          ) : settled ? (
+                            <span className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 border border-green-300">
+                              Settled
+                            </span>
+                          ) : null}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
             </div>
           )
         })}
       </div>
 
-      {payOpenFor && (
+      {showPayments && payOpenFor && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-md rounded-lg bg-white shadow-lg border">
-            <div className="px-4 py-3 border-b font-medium">Choose a payment method</div>
-            <div className="p-4 space-y-2 max-h-[60vh] overflow-y-auto">
-              {collectorOptions.length === 0 ? (
+          <div className="w-full max-w-md rounded-lg bg-white shadow-lg border flex flex-col max-h-[90vh]">
+            <div className="px-4 py-3 border-b font-medium">{modalTitle}</div>
+            <div className="p-4 space-y-2 overflow-y-auto flex-1">
+              {modalOptions.length === 0 ? (
                 <div className="text-sm opacity-70">
-                  No payment methods yet. Ask the collector to add one in Settings.
+                  {payOpenFor.type === 'collector'
+                    ? 'No payment methods yet. Ask the collector to add one in Settings.'
+                    : 'No payment link yet.'}
                 </div>
               ) : (
-                [...collectorOptions]
+                [...modalOptions]
                   .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999))
                   .map((opt, idx) => (
                     <button
@@ -261,7 +568,7 @@ export function Participants(props: {
                       type="button"
                       className="w-full text-left px-3 py-2 rounded border hover:bg-black/5"
                       title={opt.type === 'iban' ? 'Copy IBAN' : 'Open link'}
-                      onClick={() => handleCollectorOption({ value: opt.value, type: opt.type })}
+                      onClick={() => handlePaymentOption({ value: opt.value, type: opt.type })}
                     >
                       <div className="text-sm font-medium">{opt.label ?? opt.type ?? 'Payment option'}</div>
                       <div className="text-xs opacity-70 break-all font-mono">{opt.value}</div>
@@ -269,7 +576,64 @@ export function Participants(props: {
                   ))
               )}
             </div>
-            <div className="px-4 py-3 border-t flex justify-end">
+            <div className="px-4 py-3 border-t flex flex-col gap-2 sm:flex-row sm:items-center sticky bottom-0 bg-white">
+              {payOpenFor.type === 'collector' ? (
+                selfReportAction ? (
+                  <form
+                    action={selfReportAction}
+                    className="flex flex-col gap-2 sm:flex-row sm:items-center flex-1"
+                    onSubmit={() => setPayOpenFor(null)}
+                  >
+                    <div className="text-xs opacity-70">Let the collector know you sent the payment.</div>
+                    <button
+                      type="submit"
+                      className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50 w-full sm:w-auto"
+                      disabled={!canSelfReport}
+                    >
+                      I&apos;ve paid
+                    </button>
+                  </form>
+                ) : (
+                  <div className="text-xs opacity-70 flex-1">
+                    You need an active participant slot to self-report payments.
+                  </div>
+                )
+              ) : (
+                <div className="flex flex-col gap-2 flex-1">
+                  <div className="text-xs opacity-70">
+                    Pay {modalTargetParticipant ? displayName(modalTargetParticipant) : 'this participant'} using the
+                    methods above, then mark it here.
+                  </div>
+                  {modalLatePending && (
+                    <button
+                      className="px-3 py-1.5 rounded bg-black text-white w-full sm:w-auto disabled:opacity-50"
+                      type="button"
+                      disabled={markingLatePaid}
+                      onClick={() => {
+                        if (markingLatePaid) return
+                        startMarkLatePaid(async () => {
+                          await markLateJoinPaid(modalLatePending.id)
+                          router.refresh()
+                          setPayOpenFor(null)
+                        })
+                      }}
+                    >
+                      {markingLatePaid ? 'Saving...' : `I've paid ${euros(modalLatePending.expected_cents)}`}
+                    </button>
+                  )}
+                  {modalLateAwaiting && (
+                    <div className="text-xs px-2 py-1 rounded bg-amber-600 text-white w-fit">
+                      Sent {euros(modalLateAwaiting.expected_cents)} (late), awaiting confirmation
+                    </div>
+                  )}
+                  {modalLateSettled && (
+                    <div className="text-xs px-2 py-1 rounded bg-green-600 text-white w-fit">
+                      Confirmed (late){' '}
+                      {modalLateSettled.received_at ? `on ${readableDate(modalLateSettled.received_at)}` : ''}
+                    </div>
+                  )}
+                </div>
+              )}
               <button
                 type="button"
                 className="px-3 py-1.5 rounded border"

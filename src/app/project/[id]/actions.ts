@@ -78,6 +78,138 @@ export async function cancelProject(projectId: string) {
   revalidatePath(`/project/${projectId}`)
 }
 
+export async function finalizeProject(projectId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('Not signed in')
+  await requireActiveOrganizer(projectId, uid)
+
+  const values = { status: 'closed' as const, finalized_at: new Date().toISOString() }
+
+  const { error } = await supabaseAdmin
+    .from('projects')
+    .update(values)
+    .eq('id', projectId)
+    .eq('status', 'collecting')
+  if (error) {
+    if (missingColumn(error, 'finalized_at')) {
+      const { error: retryErr } = await supabaseAdmin
+        .from('projects')
+        .update({ status: 'closed' })
+        .eq('id', projectId)
+        .eq('status', 'collecting')
+      if (retryErr) {
+        if (statusConstraintViolated(retryErr)) {
+          const { error: fallbackErr } = await supabaseAdmin
+            .from('projects')
+            .update({ finalized_at: values.finalized_at })
+            .eq('id', projectId)
+          if (fallbackErr) throw new Error(fallbackErr.message ?? 'Failed to finalize project')
+        } else {
+          throw new Error(retryErr.message ?? 'Failed to finalize project')
+        }
+      }
+    } else if (statusConstraintViolated(error)) {
+      const { error: fallbackErr } = await supabaseAdmin
+        .from('projects')
+        .update({ finalized_at: values.finalized_at })
+        .eq('id', projectId)
+      if (fallbackErr) throw new Error(fallbackErr.message ?? 'Failed to finalize project')
+    } else {
+      throw new Error(error.message ?? 'Failed to finalize project')
+    }
+  }
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function reopenProject(projectId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('Not signed in')
+  await requireActiveOrganizer(projectId, uid)
+
+  const values = { status: 'collecting' as const, finalized_at: null }
+  const { error } = await supabaseAdmin
+    .from('projects')
+    .update(values)
+    .eq('id', projectId)
+    .eq('status', 'closed')
+  if (error) {
+    if (missingColumn(error, 'finalized_at')) {
+      const { error: retryErr } = await supabaseAdmin
+        .from('projects')
+        .update({ status: 'collecting' })
+        .eq('id', projectId)
+        .eq('status', 'closed')
+      if (retryErr) throw new Error(retryErr.message ?? 'Failed to reopen project')
+    } else if (statusConstraintViolated(error)) {
+      const { error: fallbackErr } = await supabaseAdmin
+        .from('projects')
+        .update({ finalized_at: null })
+        .eq('id', projectId)
+      if (fallbackErr) throw new Error(fallbackErr.message ?? 'Failed to reopen project')
+    } else {
+      throw new Error(error.message ?? 'Failed to reopen project')
+    }
+  }
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function abortProject(projectId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('Not signed in')
+  await requireActiveOrganizer(projectId, uid)
+
+  const { data: participants, error: participantsErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('project_id', projectId)
+  if (participantsErr) throw participantsErr
+
+  const participantIds = (participants ?? []).map(p => p.id)
+  if (participantIds.length > 0) {
+    const { data: payments, error: paymentsErr } = await supabaseAdmin
+      .from('payments')
+      .select('id')
+      .in('participant_id', participantIds)
+      .limit(1)
+    if (paymentsErr) throw paymentsErr
+    if ((payments?.length ?? 0) > 0) {
+      throw new Error('Cannot abort: some payments were already recorded')
+    }
+  }
+
+  const values = { status: 'cancelled' as const, aborted_at: new Date().toISOString() }
+  const { error } = await supabaseAdmin
+    .from('projects')
+    .update(values)
+    .eq('id', projectId)
+    .in('status', ['collecting', 'closed'])
+  if (error) {
+    if (missingColumn(error, 'aborted_at')) {
+      const { error: retryErr } = await supabaseAdmin
+        .from('projects')
+        .update({ status: 'cancelled' })
+        .eq('id', projectId)
+        .in('status', ['collecting', 'closed'])
+      if (retryErr) throw new Error(retryErr.message ?? 'Failed to abort project')
+    } else if (statusConstraintViolated(error)) {
+      const { error: fallbackErr } = await supabaseAdmin
+        .from('projects')
+        .update({ aborted_at: values.aborted_at })
+        .eq('id', projectId)
+      if (fallbackErr) throw new Error(fallbackErr.message ?? 'Failed to abort project')
+    } else {
+      throw new Error(error.message ?? 'Failed to abort project')
+    }
+  }
+
+  revalidatePath(`/project/${projectId}`)
+}
+
 export async function leaveProject(projectId: string) {
   'use server'
   const uid = await getCurrentUserId()
@@ -232,6 +364,136 @@ async function clonePaymentOptionsForParticipant(participantId: string, userId: 
   if (insertErr) throw insertErr
 }
 
+async function requireActiveOrganizer(projectId: string, userId: string) {
+  const { data: me, error: meErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, role')
+    .eq('project_id', projectId)
+    .eq('user_id', userId)
+    .is('left_at', null)
+    .limit(1)
+  if (meErr) throw meErr
+  if (!me?.length || me[0].role !== 'organizer') throw new Error('Not authorized')
+  return me[0]
+}
+
+const missingColumn = (error: { message?: string } | null, column: string) => {
+  const msg = error?.message?.toLowerCase() ?? ''
+  return msg.includes('does not exist') && msg.includes(column.toLowerCase())
+}
+
+const statusConstraintViolated = (error?: { message?: string; code?: string } | null) =>
+  !!error && (error.code === '23514' || error.message?.includes('projects_status_check'))
+
+type LateJoinTransferRunResult = {
+  processed: boolean
+  recipientsCount: number
+  perPersonCents: number
+  upsertedCount: number
+  reason?: string
+}
+
+async function runLateJoinTransferUpsert(projectId: string, newcomerParticipantId: string): Promise<LateJoinTransferRunResult> {
+  const { data: newcomer, error: newcomerErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, project_id')
+    .eq('id', newcomerParticipantId)
+    .single()
+  if (newcomerErr || !newcomer) throw newcomerErr || new Error('Participant not found')
+  if (newcomer.project_id !== projectId) throw new Error('Participant does not belong to this project')
+
+  const baseProjectFields = 'id, total_cents'
+  const projectAttempt = await supabaseAdmin
+    .from('projects')
+    .select(`${baseProjectFields}, finalized_at`)
+    .eq('id', projectId)
+    .single()
+
+  let project = projectAttempt.data
+  let projectErr = projectAttempt.error
+
+  if (missingColumn(projectAttempt.error, 'finalized_at')) {
+    console.warn('[runLateJoinTransferUpsert] finalized_at column missing, falling back without it')
+    const fallback = await supabaseAdmin
+      .from('projects')
+      .select(baseProjectFields)
+      .eq('id', projectId)
+      .single()
+    project = fallback.data ? { ...fallback.data, finalized_at: null } : null
+    projectErr = fallback.error
+  }
+
+  if (projectErr || !project) throw projectErr || new Error('Project not found for late join logic')
+
+  if (!project.finalized_at) {
+    return {
+      processed: false,
+      recipientsCount: 0,
+      perPersonCents: 0,
+      upsertedCount: 0,
+      reason: 'project_not_finalized',
+    }
+  }
+
+  const { data: recipients, error: recipientsErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('project_id', projectId)
+    .is('left_at', null)
+    .lte('joined_at', project.finalized_at as string)
+    .neq('id', newcomerParticipantId)
+  if (recipientsErr) throw recipientsErr
+
+  const recipientList = recipients ?? []
+  const recipientsCount = recipientList.length
+  if (recipientsCount === 0) {
+    return {
+      processed: false,
+      recipientsCount,
+      perPersonCents: 0,
+      upsertedCount: 0,
+      reason: 'no_recipients_at_finalize',
+    }
+  }
+
+  const numerator = Number(project.total_cents ?? 0)
+  const denominator = recipientsCount * (recipientsCount + 1)
+  const perPersonCents = denominator > 0 ? Math.floor(numerator / denominator) : 0
+
+  if (recipientsCount === 0) {
+    return {
+      processed: false,
+      recipientsCount,
+      perPersonCents,
+      upsertedCount: 0,
+      reason: 'no_recipients_at_close',
+    }
+  }
+
+  const rows = recipientList.map(r => ({
+    project_id: project.id,
+    from_participant_id: newcomerParticipantId,
+    to_participant_id: r.id,
+    expected_cents: perPersonCents,
+  }))
+
+  const { data: upserted, error: upsertErr } = await supabaseAdmin
+    .from('late_join_transfers')
+    .upsert(rows, {
+      onConflict: 'project_id,from_participant_id,to_participant_id',
+      ignoreDuplicates: true,
+    })
+    .select('id')
+  if (upsertErr) throw upsertErr
+
+  return {
+    processed: true,
+    recipientsCount,
+    perPersonCents,
+    upsertedCount: upserted?.length ?? 0,
+  }
+}
+
 export async function requestJoin(projectId: string) {
   'use server'
   const uid = await getCurrentUserId()
@@ -365,6 +627,35 @@ export async function requestJoin(projectId: string) {
   return { ok: true, pending: true as const }
 }
 
+export async function createLateJoinTransfers(
+  projectId: string,
+  newcomerParticipantId: string,
+  opts?: { skipAuth?: boolean; skipRevalidate?: boolean }
+) {
+  'use server'
+  if (!opts?.skipAuth) {
+    const uid = await getCurrentUserId()
+    if (!uid) throw new Error('You must be signed in')
+    const { data: organizerRow, error: organizerErr } = await supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('user_id', uid)
+      .eq('role', 'organizer')
+      .is('left_at', null)
+      .maybeSingle()
+    if (organizerErr || !organizerRow) throw new Error('Only organizers can manage late join transfers')
+  }
+
+  const result = await runLateJoinTransferUpsert(projectId, newcomerParticipantId)
+
+  if (!opts?.skipRevalidate) {
+    revalidatePath(`/project/${projectId}`)
+  }
+
+  return result
+}
+
 export async function approveJoinRequest(requestId: string) {
   'use server'
   const organizerId = await getCurrentUserId()
@@ -453,6 +744,30 @@ export async function approveJoinRequest(requestId: string) {
   }
 
   await clonePaymentOptionsForParticipant(participantId, req.requester_user_id)
+
+  const lateJoinResult = await createLateJoinTransfers(req.project_id, participantId, {
+    skipAuth: true,
+    skipRevalidate: true,
+  })
+  if (lateJoinResult.processed) {
+    console.log('[approveJoinRequest] Late join distribution', {
+      requestId,
+      projectId: req.project_id,
+      participantId,
+      recipientsCount: lateJoinResult.recipientsCount,
+      perPersonCents: lateJoinResult.perPersonCents,
+    })
+    console.log('[approveJoinRequest] Late join upserted rows', {
+      requestId,
+      upsertedCount: lateJoinResult.upsertedCount,
+    })
+  } else {
+    console.log('[approveJoinRequest] Late join skipped', {
+      requestId,
+      projectId: req.project_id,
+      reason: lateJoinResult.reason,
+    })
+  }
 
   const { error: updErr } = await supabaseAdmin
     .from('join_requests')
@@ -614,6 +929,126 @@ export async function requestJoinFromForm(formData: FormData) {
   }
 }
 
+export async function selfReportPaid(participantId: string) {
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+
+  const { data: mine, error: mineErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, user_id, project_id, left_at')
+    .eq('id', participantId)
+    .limit(1)
+  if (mineErr) throw mineErr
+  if (!mine || mine.length === 0) throw new Error('Participant not found')
+  const participant = mine[0]
+  if (participant.user_id !== uid) throw new Error('Not your participant entry')
+  if (participant.left_at) throw new Error('You have left this project')
+
+  const { data: existing, error: existingErr } = await supabaseAdmin
+    .from('payment_signals')
+    .select('id')
+    .eq('participant_id', participantId)
+    .is('cleared_at', null)
+    .limit(1)
+  if (existingErr) throw existingErr
+
+  if (!existing || existing.length === 0) {
+    const { error: insertErr } = await supabaseAdmin
+      .from('payment_signals')
+      .insert({ participant_id: participantId })
+    if (insertErr) throw insertErr
+  }
+
+  revalidatePath(`/project/${participant.project_id}`)
+}
+
+export async function markLateJoinPaid(transferId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+
+  let { data: transfer, error: transferErr } = await supabaseAdmin
+    .from('late_join_transfers')
+    .select('id, project_id, from_participant_id, to_participant_id, received_at, sender_marked_at')
+    .eq('id', transferId)
+    .single()
+  if (missingColumn(transferErr, 'sender_marked_at')) {
+    console.warn('[markLateJoinPaid] sender_marked_at missing, retrying without it')
+    const fallback = await supabaseAdmin
+      .from('late_join_transfers')
+      .select('id, project_id, from_participant_id, to_participant_id, received_at')
+      .eq('id', transferId)
+      .single()
+    transfer = fallback.data
+      ? { ...fallback.data, sender_marked_at: null as string | null }
+      : null
+    transferErr = fallback.error
+  }
+  if (transferErr || !transfer) throw new Error('Late transfer not found')
+
+  if (transfer.received_at) {
+    revalidatePath(`/project/${transfer.project_id}`)
+    return
+  }
+
+  const { data: sender, error: senderErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('id', transfer.from_participant_id)
+    .eq('user_id', uid)
+    .limit(1)
+  if (senderErr) throw senderErr
+  if (!sender || sender.length === 0) throw new Error('Not authorized to mark this transfer')
+
+  const { error: updateErr } = await supabaseAdmin
+    .from('late_join_transfers')
+    .update({ sender_marked_at: new Date().toISOString() })
+    .eq('id', transfer.id)
+    .is('sender_marked_at', null)
+  if (updateErr) {
+    if (missingColumn(updateErr, 'sender_marked_at')) {
+      console.warn('[markLateJoinPaid] sender_marked_at missing, skipping mark update')
+    } else {
+      throw updateErr
+    }
+  }
+
+  revalidatePath(`/project/${transfer.project_id}`)
+}
+
+export async function confirmLateJoinReceipt(transferId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+
+  const { data: transfer, error: transferErr } = await supabaseAdmin
+    .from('late_join_transfers')
+    .select('id, project_id, to_participant_id, received_at')
+    .eq('id', transferId)
+    .single()
+  if (transferErr || !transfer) throw new Error('Late transfer not found')
+  if (transfer.received_at) {
+    revalidatePath(`/project/${transfer.project_id}`)
+    return
+  }
+
+  const { data: recipient, error: recipientErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, user_id, project_id')
+    .eq('id', transfer.to_participant_id)
+    .single()
+  if (recipientErr || !recipient) throw new Error('Recipient participant not found')
+  if (recipient.user_id !== uid) throw new Error('Only the recipient can confirm this payment')
+
+  const { error: updateErr } = await supabaseAdmin
+    .from('late_join_transfers')
+    .update({ received_at: new Date().toISOString() })
+    .eq('id', transferId)
+  if (updateErr) throw updateErr
+
+  revalidatePath(`/project/${transfer.project_id}`)
+}
+
 /**
  * Mark a participant's payment as received.
  * If after the deadline, it won't count toward the threshold (is_counted = false).
@@ -641,6 +1076,23 @@ export async function markReceived(participantId: string) {
     .from('payments')
     .insert({ participant_id: participantId, is_counted: isCounted })
   if (e3) throw e3
+
+  // Clear payment signals if they exist (ignore if table doesn't exist)
+  const { error: clrErr } = await supabaseAdmin
+    .from('payment_signals')
+    .update({ cleared_at: new Date().toISOString() })
+    .eq('participant_id', participantId)
+    .is('cleared_at', null)
+  
+  // Don't throw error if table doesn't exist - this is optional functionality
+  if (clrErr) {
+    const code = (clrErr as any)?.code
+    const isMissingTable = code === '42P01' || clrErr.message?.toLowerCase()?.includes('payment_signals')
+    if (!isMissingTable) {
+      console.error('[markReceived] Error clearing payment signals:', clrErr)
+      // Continue anyway - the payment was recorded successfully
+    }
+  }
 
   revalidatePath(`/project/${participant.project_id}`)
 }
