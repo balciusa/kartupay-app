@@ -1,7 +1,8 @@
-import { getCurrentUserId } from '@/lib/supabaseServer'
+import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { revalidatePath } from 'next/cache'
 import SetPasswordForm from './SetPasswordForm'
+import { updateDisplayName } from './actions'
 
 async function addLink(formData: FormData) {
   'use server'
@@ -77,6 +78,13 @@ export default async function SettingsPage() {
   const uid = await getCurrentUserId()
   if (!uid) return <main className="p-6 max-w-3xl mx-auto">Please sign in.</main>
 
+  const supabase = await getSupabaseServer()
+  const { data: me } = await supabase
+    .from('users')
+    .select('display_name, email')
+    .eq('id', uid)
+    .single()
+
   const { data: links } = await supabaseAdmin
     .from('user_payment_options')
     .select('*')
@@ -86,6 +94,22 @@ export default async function SettingsPage() {
   return (
     <main className="p-6 max-w-3xl mx-auto space-y-6">
       <h1 className="text-2xl font-semibold">User Settings</h1>
+
+      <section className="border rounded-xl p-4 space-y-3">
+        <h2 className="text-lg font-medium">Profile</h2>
+        <form action={updateDisplayName} className="flex items-center gap-2">
+          <input
+            name="display_name"
+            defaultValue={me?.display_name ?? ''}
+            placeholder="Your display name"
+            className="border rounded px-2 py-1"
+          />
+          <button className="px-3 py-1.5 rounded bg-black text-white">Save</button>
+        </form>
+        <p className="text-xs opacity-70">
+          This name is shown to other project participants. If empty, others see a masked email prefix or your short code.
+        </p>
+      </section>
 
       <section className="border rounded-xl p-4 space-y-3">
         <h2 className="text-lg font-medium">Payment links</h2>

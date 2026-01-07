@@ -142,7 +142,7 @@ export default async function ProjectPage({
   ] = await Promise.all([
     supabase
       .from('participants')
-      .select('id, user_id, role, short_code, joined_at')
+      .select('id, user_id, role, short_code, joined_at, users(email, display_name)')
       .eq('project_id', projectId)
       .is('left_at', null)
       .order('joined_at', { ascending: true }),
@@ -257,6 +257,21 @@ export default async function ProjectPage({
   console.log('[ProjectPage] Pending requests for organizer:', { count: pendingForOrganizer?.length ?? 0, requests: pendingForOrganizer })
 
   const participantsClean = rawParticipants
+  const maskEmail = (email?: string | null) => {
+    if (!email) return null
+    const [name, domain] = email.split('@')
+    if (!domain) return email
+    const head = name.slice(0, 2)
+    return `${head}***@${domain}`
+  }
+  const participantName = (p: { users?: { email?: string | null; display_name?: string | null } | null; short_code?: string | null }) => {
+    const displayName = p.users?.display_name ?? null
+    if (displayName) return displayName
+    const masked = maskEmail(p.users?.email ?? null)
+    if (masked) return masked
+    if (p.short_code) return `#${p.short_code}`
+    return 'Member'
+  }
   const participantsCount = participantsClean.length
   const participantIds = new Set(participantsClean.map(p => p.id))
   const paymentMethodsList = (paymentOptions ?? []).filter(pm => pm.is_active !== false)
@@ -338,7 +353,7 @@ export default async function ProjectPage({
   const organizerId = myParticipantRole === 'organizer' ? myParticipantId : organizer?.id ?? null
   const collectorId = (project.collector_participant_id as string | null) ?? organizerId
   const collectorParticipant = collectorId ? participantsClean.find(p => p.id === collectorId) : null
-  const collectorLabel = collectorParticipant?.short_code ? `#${collectorParticipant.short_code}` : 'Anonymous'
+  const collectorLabel = collectorParticipant ? participantName(collectorParticipant) : 'Member'
   const collectorName = collectorLabel
   const viewerIsCollector = !!(myParticipantId && collectorId && myParticipantId === collectorId)
   
@@ -589,11 +604,7 @@ export default async function ProjectPage({
                         {incoming.map(p => (
                           <div key={p.id} className="flex items-center justify-between py-2 text-sm">
                             <div>
-                              {p.short_code
-                                ? `#${p.short_code}`
-                                : p.user_id
-                                  ? `User ${p.user_id.slice(0, 6)}`
-                                  : 'Anonymous'}{' '}
+                              {participantName(p)}{' '}
                               — {formatEuro(perPersonCents)}
                             </div>
                             <form action={markReceived.bind(null, p.id)}>

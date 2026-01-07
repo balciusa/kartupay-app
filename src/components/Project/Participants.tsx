@@ -19,7 +19,7 @@ type Participant = {
   role: string
   short_code: string | null
   joined_at: string | null
-  users?: { email: string | null } | null
+  users?: { email: string | null; display_name?: string | null } | null
 }
 
 type PayOption = { label: string | null, value: string, type: string }
@@ -77,8 +77,22 @@ const normalizeRevolutUrl = (raw: string) => {
   return null
 }
 
-const displayName = (p: Participant) =>
-  p.users?.email || (p.short_code ? `#${p.short_code}` : 'Anonymous')
+const maskEmail = (email?: string | null) => {
+  if (!email) return null
+  const [name, domain] = email.split('@')
+  if (!domain) return email
+  const head = name.slice(0, 2)
+  return `${head}***@${domain}`
+}
+
+const displayName = (p: Participant) => {
+  const name = p.users?.display_name ?? null
+  if (name) return name
+  const masked = maskEmail(p.users?.email ?? null)
+  if (masked) return masked
+  if (p.short_code) return `#${p.short_code}`
+  return 'Member'
+}
 
 const formatEuro = (cents: number) => `€${(cents / 100).toFixed(2)}`
 const readableDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : '')

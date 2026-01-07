@@ -45,7 +45,7 @@ export function SummaryCards(props: {
           {props.minParticipants != null ? ` / ${props.minParticipants}` : ''}
         </div>
         <div className="text-sm opacity-70">
-          Collector: {props.collectorLabel || 'Anonymous'}
+          Collector: {props.collectorLabel || 'Member'}
         </div>
       </div>
 
