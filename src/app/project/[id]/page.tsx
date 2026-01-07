@@ -2,6 +2,8 @@ import { SummaryCards } from '@/components/Project/SummaryCards'
 import { Participants } from '@/components/Project/Participants'
 import { Discussions } from '@/components/Project/Discussions'
 import Voting from '@/components/Project/Voting'
+import { ProjectTabs } from '@/components/Project/ProjectTabs'
+import { AdminPanel } from '@/components/Project/AdminPanel'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { JoinButton } from '@/components/Project/JoinButton'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
@@ -307,6 +309,10 @@ export default async function ProjectPage({
   const totalCents = Number(project.total_cents ?? 0)
   const perPersonCents = Math.floor(totalCents / Math.max(1, participantsCount))
   const participantsNow = paidIds.length || participantsCount
+  const viewerPaid = !!(myParticipantId && paidSet.has(myParticipantId))
+  const viewerPaidCents = viewerPaid ? perPersonCents : 0
+  const collectedCents = perPersonCents * paidIds.length
+  const formatEuro = (cents: number) => `€${(cents / 100).toFixed(2)}`
   const scenarios = {
     now: Math.floor(totalCents / Math.max(1, participantsNow)),
     plus1: Math.floor(totalCents / Math.max(1, participantsNow + 1)),
@@ -330,6 +336,7 @@ export default async function ProjectPage({
   const organizerId = myParticipantRole === 'organizer' ? myParticipantId : organizer?.id ?? null
   const collectorId = (project.collector_participant_id as string | null) ?? organizerId
   const collectorParticipant = collectorId ? participantsClean.find(p => p.id === collectorId) : null
+  const collectorLabel = collectorParticipant?.short_code ? `#${collectorParticipant.short_code}` : 'Anonymous'
   
   // Get collector options from payment_options (project-specific)
   let collectorOptions =
@@ -492,45 +499,118 @@ export default async function ProjectPage({
         scenarios={scenarios}
         deadlineISO={(project.deadline_at as string) ?? undefined}
         maxParticipants={project.max_participants as number | null}
+        collectorLabel={collectorLabel}
       />
 
-      <div className="border rounded-xl p-4 space-y-2">
-        <div className="font-medium">Join this project</div>
-        {joinCta}
-        {isMemberActive && (
-          <div>
-            <LeaveProjectButton projectId={projectId} isOnlyOrganizer={isOnlyOrganizer} />
-          </div>
-        )}
-        <div className="text-xs opacity-60 mt-1">
-          On join, your active payment links from Settings will be copied here.
-        </div>
-      </div>
-
-      <Participants
-        projectId={projectId}
-        participants={participantsClean}
-        preferred={preferredEntries}
-        allOptions={allOptionsEntries}
-        paidSet={paidSet}
-        afterDeadlineSet={afterDeadlineSet}
-        organizerId={organizerId}
-        pendingRequests={pendingForOrganizer ?? []}
-        myParticipantId={myParticipantId}
-        currentUserId={uid}
-        projectCanceled={isAborted}
-        perPersonCents={perPersonCents}
-        collectorId={collectorId}
-        collectorOptions={collectorOptions}
-        pendingSignalsSet={pendingSignalsSet}
-        transfers={lateTransferRows}
-        closedAt={closedAt}
-        projectStatus={project.status}
+      <ProjectTabs
+        counts={{
+          participants: participantsCount,
+          activity: (messages ?? []).length,
+          adminPending: viewerIsOrganizer ? (pendingForOrganizer ?? []).length : 0,
+        }}
+        sections={{
+          overview: (
+            <div className="space-y-6">
+              <div className="border rounded-xl p-4 space-y-2">
+                <div className="font-medium">Join this project</div>
+                {joinCta}
+                {isMemberActive && (
+                  <div>
+                    <LeaveProjectButton projectId={projectId} isOnlyOrganizer={isOnlyOrganizer} />
+                  </div>
+                )}
+                <div className="text-xs opacity-60 mt-1">
+                  On join, your active payment links from Settings will be copied here.
+                </div>
+              </div>
+            </div>
+          ),
+          participants: (
+            <Participants
+              projectId={projectId}
+              participants={participantsClean}
+              preferred={preferredEntries}
+              allOptions={allOptionsEntries}
+              paidSet={paidSet}
+              afterDeadlineSet={afterDeadlineSet}
+              organizerId={organizerId}
+              pendingRequests={pendingForOrganizer ?? []}
+              showPendingRequests={false}
+              showPayments={false}
+              myParticipantId={myParticipantId}
+              currentUserId={uid}
+              projectCanceled={isAborted}
+              perPersonCents={perPersonCents}
+              collectorId={collectorId}
+              collectorOptions={collectorOptions}
+              pendingSignalsSet={pendingSignalsSet}
+              transfers={lateTransferRows}
+              closedAt={closedAt}
+              projectStatus={project.status}
+            />
+          ),
+          payments: (
+            <div className="space-y-4">
+              <section className="border rounded-xl p-4 space-y-2">
+                <h2 className="text-lg font-semibold">Balances</h2>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="border rounded-lg p-3 text-sm space-y-1">
+                    <div className="text-xs uppercase opacity-60">Funds</div>
+                    <div className="font-medium">
+                      {viewerIsOrganizer
+                        ? `Collected ${formatEuro(collectedCents)} out of ${formatEuro(totalCents)}`
+                        : `Paid ${formatEuro(viewerPaidCents)} out of ${formatEuro(perPersonCents)}`}
+                    </div>
+                  </div>
+                  <div className="border rounded-lg p-3 text-sm space-y-1">
+                    <div className="text-xs uppercase opacity-60">SETTLED</div>
+                    <div className="font-medium">
+                      {viewerIsOrganizer
+                        ? `Settled ${paidIds.length} out of ${participantsCount}`
+                        : `Settled ${viewerPaid ? 1 : 0} out of ${participantsCount}`}
+                    </div>
+                  </div>
+                </div>
+              </section>
+              <Participants
+                projectId={projectId}
+                participants={participantsClean}
+                preferred={preferredEntries}
+                allOptions={allOptionsEntries}
+                paidSet={paidSet}
+                afterDeadlineSet={afterDeadlineSet}
+                organizerId={organizerId}
+                pendingRequests={pendingForOrganizer ?? []}
+                showPendingRequests={false}
+                myParticipantId={myParticipantId}
+                currentUserId={uid}
+                projectCanceled={isAborted}
+                perPersonCents={perPersonCents}
+                collectorId={collectorId}
+                collectorOptions={collectorOptions}
+                pendingSignalsSet={pendingSignalsSet}
+                transfers={lateTransferRows}
+                closedAt={closedAt}
+                projectStatus={project.status}
+              />
+              <Voting addons={addonsWithCounts} projectCanceled={isAborted} />
+            </div>
+          ),
+          activity: (
+            <Discussions projectId={projectId} messages={messages ?? []} projectCanceled={isAborted} />
+          ),
+          admin: (
+            <AdminPanel
+              projectId={projectId}
+              pendingRequests={pendingForOrganizer ?? []}
+              pendingCount={viewerIsOrganizer ? (pendingForOrganizer ?? []).length : 0}
+              isOrganizer={viewerIsOrganizer}
+              canFinalize={isCollectingStatus && !isAborted}
+              canCancel={!isAborted}
+            />
+          ),
+        }}
       />
-
-      <Voting addons={addonsWithCounts} projectCanceled={isAborted} />
-
-      <Discussions projectId={projectId} messages={messages ?? []} projectCanceled={isAborted} />
     </main>
   )
 }

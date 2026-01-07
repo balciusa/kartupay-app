@@ -93,6 +93,8 @@ export function Participants(props: {
   afterDeadlineSet: Set<string>
   organizerId: string | null
   pendingRequests?: Array<{ id: string; requester_user_id: string; created_at: string; status: string }>
+  showPendingRequests?: boolean
+  showPayments?: boolean
   myParticipantId: string | null
   currentUserId: string | null
   projectCanceled?: boolean
@@ -111,6 +113,8 @@ export function Participants(props: {
   const router = useRouter()
   const isOrganizer = !!(props.organizerId && props.myParticipantId === props.organizerId)
   const pendingRequests = props.pendingRequests ?? []
+  const showPendingRequests = props.showPendingRequests !== false
+  const showPayments = props.showPayments !== false
   const projectCanceled = props.projectCanceled === true
   const pendingSignalsSet = props.pendingSignalsSet ?? new Set<string>()
   const allOptionsMap = useMemo(() => mapFromEntries(props.allOptions ?? []), [props.allOptions])
@@ -248,7 +252,7 @@ export function Participants(props: {
     <section className="border rounded-xl p-4 space-y-4">
       <h2 className="text-lg font-semibold">Participants</h2>
 
-      {isOrganizer && pendingRequests.length > 0 && (
+      {showPendingRequests && isOrganizer && pendingRequests.length > 0 && (
         <div className="rounded border p-3 space-y-3">
           <div className="font-medium">Pending join requests</div>
           <div className="space-y-2">
@@ -344,7 +348,7 @@ export function Participants(props: {
             !viewerSettled &&
             !viewerHasPendingSignal &&
             !sent
-          const showPay = isFinalized ? latePayAvailable : showStandardPay
+          const showPay = showPayments && (isFinalized ? latePayAvailable : showStandardPay)
 
           let statusLabel: string
           let statusClass = 'text-[10px] px-1.5 py-0.5 rounded border font-medium'
@@ -378,13 +382,15 @@ export function Participants(props: {
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-black text-white">You</span>
                     )}
                     <span className="text-xs uppercase opacity-50">{p.role}</span>
-                    <span
-                      className={statusClass}
-                      title={sent && !paid ? 'Waiting for confirmation' : undefined}
-                    >
-                      {statusLabel}
-                    </span>
-                    {showsIncomingBadge && (
+                    {showPayments && (
+                      <span
+                        className={statusClass}
+                        title={sent && !paid ? 'Waiting for confirmation' : undefined}
+                      >
+                        {statusLabel}
+                      </span>
+                    )}
+                    {showPayments && showsIncomingBadge && (
                       <span
                         className={`text-[10px] px-1.5 py-0.5 rounded ${
                           allIncomingSettled ? 'bg-green-600 text-white' : 'bg-amber-600 text-white'
@@ -393,12 +399,12 @@ export function Participants(props: {
                         {incomingBadgeText}
                       </span>
                     )}
-                    {viewerShowsLateAwaitingChip && (
+                    {showPayments && viewerShowsLateAwaitingChip && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-600 text-white">
                         Sent {euros(pendingMarkedCents)} (late), awaiting confirmation
                       </span>
                     )}
-                    {viewerShowsLateSettledChip && (
+                    {showPayments && viewerShowsLateSettledChip && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-600 text-white">
                         Settled (late)
                       </span>
@@ -442,13 +448,13 @@ export function Participants(props: {
                     </button>
                   )}
 
-                  {!isFinalized && !showPay && viewerSettled && !rowIsCollector && isSelfRow && (
+                  {showPayments && !isFinalized && !showPay && viewerSettled && !rowIsCollector && isSelfRow && (
                     <span className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 border border-green-300">
                       Settled
                     </span>
                   )}
 
-                  {viewerIsCollector && !rowIsCollector && !isFinalized && !paid && !isLateParticipant && (
+                  {showPayments && viewerIsCollector && !rowIsCollector && !isFinalized && !paid && !isLateParticipant && (
                     <button
                       className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
                       type="button"
@@ -465,7 +471,7 @@ export function Participants(props: {
                     </button>
                   )}
 
-                  {viewerIsCollector && !rowIsCollector && !isLateParticipant && paid && (
+                  {showPayments && viewerIsCollector && !rowIsCollector && !isLateParticipant && paid && (
                     <span className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 border border-green-300">
                       Settled
                     </span>
@@ -487,7 +493,7 @@ export function Participants(props: {
                 )}
               </div>
 
-              {recipientLateTransfers.length > 0 && (
+              {showPayments && recipientLateTransfers.length > 0 && (
                 <div className="rounded-md border bg-slate-50 p-3 space-y-2">
                   <div className="text-sm font-medium">Incoming late payments</div>
                   <div className="space-y-2">
@@ -542,7 +548,7 @@ export function Participants(props: {
         })}
       </div>
 
-      {payOpenFor && (
+      {showPayments && payOpenFor && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md rounded-lg bg-white shadow-lg border flex flex-col max-h-[90vh]">
             <div className="px-4 py-3 border-b font-medium">{modalTitle}</div>
