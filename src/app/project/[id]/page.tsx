@@ -9,8 +9,7 @@ import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { JoinButton } from '@/components/Project/JoinButton'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
-import OverflowMenu from '@/components/ui/OverflowMenu'
-import { finalizeProject, reopenProject, abortProject, markReceived } from './actions'
+import { markReceived } from './actions'
 
 type LateTransferRow = {
   id: string
@@ -638,6 +637,9 @@ export default async function ProjectPage({
           admin: (
             <AdminPanel
               projectId={projectId}
+              participants={participantsClean}
+              collectorId={collectorId}
+              myParticipantId={myParticipantId}
               pendingRequests={pendingForOrganizer ?? []}
               pendingCount={viewerIsOrganizer ? (pendingForOrganizer ?? []).length : 0}
               isOrganizer={viewerIsOrganizer}

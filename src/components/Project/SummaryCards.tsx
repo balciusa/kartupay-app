@@ -44,9 +44,6 @@ export function SummaryCards(props: {
           {props.participantsNow}
           {props.minParticipants != null ? ` / ${props.minParticipants}` : ''}
         </div>
-        <div className="text-sm opacity-70">
-          Collector: {props.collectorLabel || 'Member'}
-        </div>
       </div>
 
       <div className="border rounded-xl p-4">

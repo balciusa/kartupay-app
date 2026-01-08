@@ -432,18 +432,6 @@ export function Participants(props: {
                         Settled (late)
                       </span>
                     )}
-                    {isOrganizer && p.role === 'member' && !isSelfRow && (
-                      <form action={promoteToOrganizerFromForm} className="inline">
-                        <input type="hidden" name="participantId" value={p.id} />
-                        <button
-                          type="submit"
-                          className="text-xs px-2 py-0.5 rounded border hover:bg-gray-50"
-                          title="Promote to organizer"
-                        >
-                          Promote
-                        </button>
-                      </form>
-                    )}
                   </div>
                   {rowIsCollector && null}
                 </div>

@@ -1,7 +1,14 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { abortProject, finalizeProject, approveJoinRequestFromForm, rejectJoinRequestFromForm } from '@/app/project/[id]/actions'
+import {
+  abortProject,
+  finalizeProject,
+  approveJoinRequestFromForm,
+  rejectJoinRequestFromForm,
+  promoteToOrganizerFromForm,
+  setCollector,
+} from '@/app/project/[id]/actions'
 
 type JoinRequest = {
   id: string
@@ -10,8 +17,36 @@ type JoinRequest = {
   status: string
 }
 
+type Participant = {
+  id: string
+  user_id: string
+  role: string
+  short_code: string | null
+  users?: { email: string | null; display_name?: string | null } | null
+}
+
+const maskEmail = (email?: string | null) => {
+  if (!email) return null
+  const [name, domain] = email.split('@')
+  if (!domain) return email
+  const head = name.slice(0, 2)
+  return `${head}***@${domain}`
+}
+
+const displayName = (p: Participant) => {
+  const name = p.users?.display_name ?? null
+  if (name) return name
+  const masked = maskEmail(p.users?.email ?? null)
+  if (masked) return masked
+  if (p.short_code) return `#${p.short_code}`
+  return 'Member'
+}
+
 export function AdminPanel({
   projectId,
+  participants,
+  collectorId,
+  myParticipantId,
   pendingRequests,
   pendingCount,
   isOrganizer,
@@ -19,6 +54,9 @@ export function AdminPanel({
   canCancel,
 }: {
   projectId: string
+  participants: Participant[]
+  collectorId: string | null
+  myParticipantId: string | null
   pendingRequests: JoinRequest[]
   pendingCount: number
   isOrganizer: boolean
@@ -26,8 +64,10 @@ export function AdminPanel({
   canCancel: boolean
 }) {
   const [requestsOpen, setRequestsOpen] = useState(false)
+  const [participantsOpen, setParticipantsOpen] = useState(false)
   const canManage = isOrganizer
   const modalRef = useRef<HTMLDivElement | null>(null)
+  const participantsModalRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     if (!requestsOpen) return
@@ -66,6 +106,44 @@ export function AdminPanel({
     }
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [requestsOpen])
+
+  useEffect(() => {
+    if (!participantsOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setParticipantsOpen(false)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const container = participantsModalRef.current
+      if (!container) return
+      const focusable = Array.from(
+        container.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        )
+      ).filter(el => !el.hasAttribute('disabled'))
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+        return
+      }
+      if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    const focusable = participantsModalRef.current?.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )
+    if (focusable && focusable.length > 0) {
+      focusable[0].focus()
+    }
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [participantsOpen])
   return (
     <section className="space-y-4">
       <div className="grid gap-4 md:grid-cols-2">
@@ -75,15 +153,9 @@ export function AdminPanel({
             type="button"
             className="w-full px-3 py-2 rounded border text-sm"
             disabled={!isOrganizer}
+            onClick={() => setParticipantsOpen(true)}
           >
             Manage participants
-          </button>
-          <button
-            type="button"
-            className="w-full px-3 py-2 rounded border text-sm"
-            disabled={!isOrganizer}
-          >
-            Change collector
           </button>
           <button
             type="button"
@@ -130,6 +202,95 @@ export function AdminPanel({
           </form>
         </div>
       </div>
+      {participantsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Close participants modal"
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setParticipantsOpen(false)}
+          />
+          <div
+            ref={participantsModalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Manage participants"
+            className="relative w-full max-w-xl rounded-lg bg-white shadow-lg border flex flex-col max-h-[90vh]"
+          >
+            <div className="px-4 py-3 border-b font-medium flex items-center justify-between">
+              <span>Manage participants</span>
+              <button
+                type="button"
+                className="text-sm px-2 py-1 rounded border"
+                onClick={() => setParticipantsOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="p-4 space-y-3 overflow-y-auto">
+              {!isOrganizer ? (
+                <div className="text-sm opacity-70">Organizer-only tools live here.</div>
+              ) : participants.length === 0 ? (
+                <div className="text-sm opacity-70">No participants found.</div>
+              ) : (
+                <div className="space-y-2">
+                  {participants.map(p => {
+                    const isCollector = !!(collectorId && p.id === collectorId)
+                    const isSelf = !!(myParticipantId && p.id === myParticipantId)
+                    return (
+                      <div key={p.id} className="flex items-center justify-between gap-3 text-sm">
+                        <div className="space-y-0.5">
+                          <div className="font-medium flex items-center gap-2 flex-wrap">
+                            <span>{displayName(p)}</span>
+                            {p.role === 'organizer' && (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-200 text-black">
+                                Organizer
+                              </span>
+                            )}
+                            {isCollector && (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600 text-white">
+                                Collector
+                              </span>
+                            )}
+                            {isSelf && (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-black text-white">
+                                You
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {p.role === 'member' && (
+                            <form action={promoteToOrganizerFromForm}>
+                              <input type="hidden" name="participantId" value={p.id} />
+                              <button
+                                type="submit"
+                                className="text-xs px-2 py-0.5 rounded bg-black text-white"
+                              >
+                                Promote to organizer
+                              </button>
+                            </form>
+                          )}
+                          {!isCollector && (
+                            <form action={setCollector.bind(null, projectId, p.id)}>
+                              <button
+                                type="submit"
+                                className="text-xs px-2 py-0.5 rounded bg-black text-white"
+                              >
+                                Make collector
+                              </button>
+                            </form>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {requestsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <button
