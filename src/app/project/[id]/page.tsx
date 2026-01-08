@@ -324,11 +324,10 @@ export default async function ProjectPage({
   // Calculate scenarios
   const totalCents = Number(project.total_cents ?? 0)
   const perPersonCents = Math.floor(totalCents / Math.max(1, participantsCount))
-  const participantsNow = paidIds.length || participantsCount
+  const participantsNow = participantsCount
   const viewerPaid = !!(myParticipantId && paidSet.has(myParticipantId))
   const viewerHasPendingSignal = !!(myParticipantId && pendingSignalsSet.has(myParticipantId))
   const viewerPaidCents = viewerPaid ? perPersonCents : 0
-  const collectedCents = perPersonCents * paidIds.length
   const formatEuro = (cents: number) => `€${(cents / 100).toFixed(2)}`
   const scenarios = {
     now: Math.floor(totalCents / Math.max(1, participantsNow)),
@@ -356,6 +355,11 @@ export default async function ProjectPage({
   const collectorLabel = collectorParticipant ? participantName(collectorParticipant) : 'Member'
   const collectorName = collectorLabel
   const viewerIsCollector = !!(myParticipantId && collectorId && myParticipantId === collectorId)
+  const collectedCents = perPersonCents * paidIds.length
+  const effectivePaidIds = new Set(paidIds)
+  if (collectorId) effectivePaidIds.add(collectorId)
+  const effectivePaidCount = Math.min(effectivePaidIds.size, participantsCount)
+  const collectedCentsDisplay = Math.min(perPersonCents * effectivePaidCount, totalCents)
   
   // Get collector options from payment_options (project-specific)
   let collectorOptions =
@@ -403,20 +407,6 @@ export default async function ProjectPage({
 
   const isMemberActive = isMeParticipant
   const viewerIsOrganizer = myParticipantRole === 'organizer'
-  const overflowItems = []
-  if (isClosedStatus) {
-    overflowItems.push({
-      label: 'Reopen project',
-      formAction: reopenProject.bind(null, projectId),
-    })
-  }
-  if (!isAborted) {
-    overflowItems.push({
-      label: 'Abort project',
-      type: 'danger' as const,
-      formAction: abortProject.bind(null, projectId),
-    })
-  }
   const joinCta = (() => {
     if (!uid) {
       return (
@@ -491,18 +481,11 @@ export default async function ProjectPage({
             <div className="text-sm opacity-70 mt-2">{project.description}</div>
           )}
         </div>
-        {viewerIsOrganizer && (
+        {isMemberActive && !viewerIsCollector ? (
           <div className="flex items-center gap-2">
-            {isCollectingStatus && (
-              <form action={finalizeProject.bind(null, projectId)}>
-                <button className="px-3 py-1.5 rounded bg-black text-white" type="submit">
-                  Finalize project
-                </button>
-              </form>
-            )}
-            {overflowItems.length > 0 && <OverflowMenu items={overflowItems} />}
+            <LeaveProjectButton projectId={projectId} isOnlyOrganizer={isOnlyOrganizer} />
           </div>
-        )}
+        ) : null}
       </div>
 
       {isAborted && (
@@ -577,7 +560,7 @@ export default async function ProjectPage({
                     <div className="text-xs uppercase opacity-60">Funds</div>
                     <div className="font-medium">
                       {viewerIsOrganizer
-                        ? `Collected ${formatEuro(collectedCents)} out of ${formatEuro(totalCents)}`
+                        ? `Collected ${formatEuro(collectedCentsDisplay)} out of ${formatEuro(totalCents)}`
                         : `Paid ${formatEuro(viewerPaidCents)} out of ${formatEuro(perPersonCents)}`}
                     </div>
                   </div>
@@ -585,7 +568,7 @@ export default async function ProjectPage({
                     <div className="text-xs uppercase opacity-60">SETTLED</div>
                     <div className="font-medium">
                       {viewerIsOrganizer
-                        ? `Settled ${paidIds.length} out of ${participantsCount}`
+                        ? `Settled ${effectivePaidCount} out of ${participantsCount}`
                         : `Settled ${viewerPaid ? 1 : 0} out of ${participantsCount}`}
                     </div>
                   </div>
@@ -603,13 +586,20 @@ export default async function ProjectPage({
                       <div className="divide-y">
                         {incoming.map(p => (
                           <div key={p.id} className="flex items-center justify-between py-2 text-sm">
-                            <div>
-                              {participantName(p)}{' '}
-                              — {formatEuro(perPersonCents)}
+                            <div className="flex items-center gap-2">
+                              <span>
+                                {participantName(p)}{' '}
+                                — {formatEuro(perPersonCents)}
+                              </span>
+                              {pendingSignalsSet.has(p.id) && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-300 text-amber-900">
+                                  Reported paid
+                                </span>
+                              )}
                             </div>
                             <form action={markReceived.bind(null, p.id)}>
                               <button className="px-3 py-1.5 rounded border text-xs" type="submit">
-                                Mark received
+                                {pendingSignalsSet.has(p.id) ? 'Confirm received' : 'Mark received'}
                               </button>
                             </form>
                           </div>

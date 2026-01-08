@@ -106,6 +106,14 @@ export function OutgoingTransfer({
         <div>{collectorName} — {amountLabel}</div>
         {viewerPaid ? (
           <span className="text-xs opacity-70">Settled</span>
+        ) : viewerHasPendingSignal ? (
+          <button
+            type="button"
+            className="px-3 py-1.5 rounded border border-amber-500 bg-amber-300 text-xs text-amber-900 cursor-default"
+            disabled
+          >
+            Waiting Payment Confirmation
+          </button>
         ) : (
           <button
             type="button"

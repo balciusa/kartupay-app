@@ -128,7 +128,6 @@ export function AdminPanel({
               Cancel project
             </button>
           </form>
-          <div className="text-xs opacity-60">{pendingCount} pending join request(s).</div>
         </div>
       </div>
       {requestsOpen && (

@@ -390,12 +390,21 @@ export function Participants(props: {
             <div key={p.id} className="rounded border p-3 space-y-2">
               <div className="flex items-start justify-between gap-4">
                 <div className="space-y-1">
-                  <div className="font-medium flex items-center gap-2">
+                  <div className="font-medium flex items-center gap-2 flex-wrap">
                     <span>{name}</span>
-                    {isSelfRow && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-black text-white">You</span>
+                    {p.role === 'organizer' && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-200 text-black">
+                        Organizer
+                      </span>
                     )}
-                    <span className="text-xs uppercase opacity-50">{p.role}</span>
+                    {rowIsCollector && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600 text-white">
+                        Collector
+                      </span>
+                    )}
+                    {isSelfRow && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-black text-white">You</span>
+                    )}
                     {showPayments && (
                       <span
                         className={statusClass}
@@ -436,9 +445,7 @@ export function Participants(props: {
                       </form>
                     )}
                   </div>
-                  {rowIsCollector && (
-                    <div className="text-xs text-emerald-600">Collects payments</div>
-                  )}
+                  {rowIsCollector && null}
                 </div>
                 <div className="flex items-center gap-2">
                   {showPay && (
