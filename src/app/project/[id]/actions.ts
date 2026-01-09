@@ -1151,8 +1151,9 @@ export async function createPoll(projectId: string, formData: FormData) {
   if (!uid) throw new Error('You must be signed in')
   if (!projectId) throw new Error('Missing project id')
 
-  const title = (formData.get('title') as string)?.trim()
-  const description = (formData.get('description') as string)?.trim() || null
+  const title = ((formData.get('project_title') as string) || (formData.get('title') as string) || '').trim()
+  const description =
+    ((formData.get('project_description') as string) || (formData.get('description') as string) || '').trim() || null
   const extraCostRaw = (formData.get('extra_cost') as string)?.trim() || ''
   const requiredVotesRaw = (formData.get('required_votes') as string)?.trim() || ''
   const optionsRaw = (formData.get('options') as string)?.trim() || ''
@@ -1292,8 +1293,9 @@ export async function updatePoll(projectId: string, pollId: string, formData: Fo
 
   await requirePollManager(projectId, pollId, uid)
 
-  const title = (formData.get('title') as string)?.trim()
-  const description = (formData.get('description') as string)?.trim() || null
+  const title = ((formData.get('project_title') as string) || (formData.get('title') as string) || '').trim()
+  const description =
+    ((formData.get('project_description') as string) || (formData.get('description') as string) || '').trim() || null
   const extraCostRaw = (formData.get('extra_cost') as string)?.trim() || ''
   const requiredVotesRaw = (formData.get('required_votes') as string)?.trim() || ''
   const optionsRaw = (formData.get('options') as string)?.trim() || ''
@@ -1351,6 +1353,90 @@ export async function deletePoll(projectId: string, pollId: string) {
     .delete()
     .eq('id', pollId)
     .eq('project_id', projectId)
+  if (error) throw error
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function updateProjectSettings(projectId: string, formData: FormData) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+
+  const { data: project, error: projectErr } = await supabaseAdmin
+    .from('projects')
+    .select('id, collector_participant_id')
+    .eq('id', projectId)
+    .single()
+  if (projectErr || !project) throw projectErr || new Error('Project not found')
+
+  if (!project.collector_participant_id) {
+    throw new Error('Collector not set')
+  }
+
+  const { data: collector, error: collectorErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('id', project.collector_participant_id)
+    .eq('user_id', uid)
+    .is('left_at', null)
+    .maybeSingle()
+  if (collectorErr) throw collectorErr
+  if (!collector) throw new Error('Not authorized')
+
+  const title = ((formData.get('project_title') as string) || (formData.get('title') as string) || '').trim()
+  const description =
+    ((formData.get('project_description') as string) || (formData.get('description') as string) || '').trim() || null
+  const totalEur = (formData.get('totalEur') as string) ?? ''
+  const totalIsPerPerson = (formData.get('total_is_per_person') as string) === 'true'
+  const minRaw = String(formData.get('min_participants') ?? '').trim()
+  const maxRaw = String(formData.get('max_participants') ?? '').trim()
+  const deadlineDate = (formData.get('deadlineDate') as string) ?? null
+  const deadlineTime = (formData.get('deadlineTime') as string) ?? null
+
+  if (!title) throw new Error('Title is required')
+
+  const normalizedAmount = totalEur.replace(',', '.').trim()
+  const amountFloat = parseFloat(normalizedAmount)
+  if (!isFinite(amountFloat) || amountFloat < 0) {
+    throw new Error('Invalid total amount')
+  }
+  const total_cents = Math.round(amountFloat * 100)
+
+  const minParticipants = minRaw === '' ? null : Number(minRaw)
+  const maxParticipants = maxRaw === '' ? null : Number(maxRaw)
+  if (minParticipants !== null && (!Number.isFinite(minParticipants) || minParticipants < 1)) {
+    throw new Error('Min participants must be at least 1')
+  }
+  if (maxParticipants !== null && (!Number.isFinite(maxParticipants) || maxParticipants < 1)) {
+    throw new Error('Max participants must be at least 1')
+  }
+  if (minParticipants !== null && maxParticipants !== null && maxParticipants < minParticipants) {
+    throw new Error('Max participants must be greater than or equal to min participants')
+  }
+
+  let deadline_at: string | null = null
+  if (deadlineDate && deadlineTime) {
+    const combined = new Date(`${deadlineDate}T${deadlineTime}:00`)
+    if (isNaN(+combined)) {
+      throw new Error('Invalid deadline date or time')
+    }
+    deadline_at = combined.toISOString()
+  }
+
+  const { error } = await supabaseAdmin
+    .from('projects')
+    .update({
+      title,
+      description,
+      total_cents,
+      total_is_per_person: totalIsPerPerson,
+      min_participants: minParticipants,
+      max_participants: maxParticipants,
+      deadline_at,
+    })
+    .eq('id', projectId)
   if (error) throw error
 
   revalidatePath(`/project/${projectId}`)

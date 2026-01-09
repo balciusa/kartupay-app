@@ -10,6 +10,7 @@ const schema = z.object({
   title: z.string().min(3).max(120),
   description: z.string().max(2000).optional().nullable(),
   totalEur: z.string().regex(/^\d+(\.\d{1,2})?$/),
+  total_is_per_person: z.enum(['true', 'false']),
   min_participants: z.string().optional().nullable(),
   max_participants: z.string().optional().nullable(),
   deadlineDate: z.string().optional().nullable(),
@@ -26,6 +27,7 @@ export async function createProject(formData: FormData) {
     title: formData.get('title') as string,
     description: (formData.get('description') as string) || null,
     totalEur: (formData.get('totalEur') as string) ?? '',
+    total_is_per_person: (formData.get('total_is_per_person') as string) ?? 'false',
     min_participants: formData.get('min_participants') as any,
     max_participants: formData.get('max_participants') as any,
     deadlineDate: (formData.get('deadlineDate') as string) ?? null,
@@ -37,7 +39,16 @@ export async function createProject(formData: FormData) {
     throw new Error('Invalid form: ' + JSON.stringify(parsed.error.flatten().fieldErrors))
   }
 
-  const { title, description, totalEur, min_participants, max_participants, deadlineDate, deadlineTime } = parsed.data
+  const {
+    title,
+    description,
+    totalEur,
+    total_is_per_person,
+    min_participants,
+    max_participants,
+    deadlineDate,
+    deadlineTime,
+  } = parsed.data
 
   const minRaw = String(min_participants ?? '').trim()
   const maxRaw = String(max_participants ?? '').trim()
@@ -60,6 +71,7 @@ export async function createProject(formData: FormData) {
     throw new Error('Invalid total amount')
   }
   const total_cents = Math.round(amountFloat * 100)
+  const totalIsPerPerson = total_is_per_person === 'true'
 
   let deadline_at: string | null = null
   if (deadlineDate && deadlineTime) {
@@ -76,6 +88,7 @@ export async function createProject(formData: FormData) {
       title,
       description,
       total_cents,
+      total_is_per_person: totalIsPerPerson,
       min_participants: minParticipants,
       max_participants: maxParticipants,
       deadline_at,

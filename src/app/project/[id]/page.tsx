@@ -7,6 +7,7 @@ import { AdminPanel } from '@/components/Project/AdminPanel'
 import { OutgoingTransfer } from '@/components/Project/OutgoingTransfer'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { ProfileTab } from '@/components/Project/ProfileTab'
+import { ProjectSettingsTab } from '@/components/Project/ProjectSettingsTab'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { markReceived } from './actions'
@@ -60,7 +61,7 @@ export default async function ProjectPage({
   const supabase = await getSupabaseServer()
 
   const baseProjectFields =
-    'id, title, description, total_cents, min_participants, max_participants, deadline_at, status, canceled_at, collector_participant_id'
+    'id, title, description, total_cents, total_is_per_person, min_participants, max_participants, deadline_at, status, canceled_at, collector_participant_id'
   const optionalProjectFields = ['closed_at', 'aborted_at', 'finalized_at'] as const
   let optionalFields = [...optionalProjectFields]
   const missingFields = new Set<string>()
@@ -350,18 +351,30 @@ export default async function ProjectPage({
   const afterDeadlineSet = new Set(afterDeadlineIds)
 
   // Calculate scenarios
-  const totalCents = Number(project.total_cents ?? 0)
-  const perPersonCents = Math.floor(totalCents / Math.max(1, participantsCount))
+  const totalIsPerPerson = !!project.total_is_per_person
+  const storedTotalCents = Number(project.total_cents ?? 0)
+  const perPersonCents = totalIsPerPerson
+    ? storedTotalCents
+    : Math.floor(storedTotalCents / Math.max(1, participantsCount))
+  const totalCents = totalIsPerPerson
+    ? perPersonCents * Math.max(1, participantsCount)
+    : storedTotalCents
   const participantsNow = participantsCount
   const viewerPaid = !!(myParticipantId && paidSet.has(myParticipantId))
   const viewerHasPendingSignal = !!(myParticipantId && pendingSignalsSet.has(myParticipantId))
   const viewerPaidCents = viewerPaid ? perPersonCents : 0
   const formatEuro = (cents: number) => `€${(cents / 100).toFixed(2)}`
-  const scenarios = {
-    now: Math.floor(totalCents / Math.max(1, participantsNow)),
-    plus1: Math.floor(totalCents / Math.max(1, participantsNow + 1)),
-    plus2: Math.floor(totalCents / Math.max(1, participantsNow + 2))
-  }
+  const scenarios = totalIsPerPerson
+    ? {
+        now: perPersonCents,
+        plus1: perPersonCents,
+        plus2: perPersonCents
+      }
+    : {
+        now: Math.floor(totalCents / Math.max(1, participantsNow)),
+        plus1: Math.floor(totalCents / Math.max(1, participantsNow + 1)),
+        plus2: Math.floor(totalCents / Math.max(1, participantsNow + 2))
+      }
 
   const optionVoteCounts = new Map<string, number>()
   for (const vote of pollVotes ?? []) {
@@ -652,6 +665,7 @@ export default async function ProjectPage({
               userVotes={userVotes}
             />
           ),
+          settings: viewerIsCollector ? <ProjectSettingsTab projectId={projectId} /> : null,
           activity: (
             <Chat
               projectId={projectId}

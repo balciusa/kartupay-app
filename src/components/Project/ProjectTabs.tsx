@@ -2,7 +2,7 @@
 
 import { ReactNode, useMemo, useState } from 'react'
 
-type TabKey = 'overview' | 'participants' | 'payments' | 'activity' | 'profile' | 'voting' | 'admin'
+type TabKey = 'overview' | 'participants' | 'payments' | 'activity' | 'profile' | 'voting' | 'settings' | 'admin'
 
 type TabCounts = {
   participants?: number
@@ -40,6 +40,10 @@ export function ProjectTabs({
       { key: 'profile' as const, label: 'Profile' },
       { key: 'voting' as const, label: 'Voting' },
     ]
+
+    if (sections.settings) {
+      baseTabs.push({ key: 'settings' as const, label: 'Settings' })
+    }
 
     if (sections.admin) {
       baseTabs.push({

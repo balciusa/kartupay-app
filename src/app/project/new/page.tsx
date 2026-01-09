@@ -35,6 +35,19 @@ export default async function NewProjectPage() {
             />
           </div>
           <div>
+            <label className="text-sm block mb-1">Total type</label>
+            <div className="flex flex-col gap-2 border rounded px-3 py-2">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="radio" name="total_is_per_person" value="false" defaultChecked />
+                Grand total (fixed)
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="radio" name="total_is_per_person" value="true" />
+                Per person (fixed)
+              </label>
+            </div>
+          </div>
+          <div>
             <label className="text-sm block mb-1">Min participants</label>
             <input
               name="min_participants"
