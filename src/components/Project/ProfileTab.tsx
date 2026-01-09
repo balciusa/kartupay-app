@@ -1,15 +1,31 @@
+import { revalidatePath } from 'next/cache'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
-import { revalidatePath } from 'next/cache'
-import SetPasswordForm from './SetPasswordForm'
-import { updateDisplayName } from './actions'
+import SetPasswordForm from '@/app/settings/SetPasswordForm'
 
-async function addLink(formData: FormData) {
+async function updateDisplayName(projectId: string, formData: FormData) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+
+  const displayName = (formData.get('display_name') as string)?.trim() || null
+
+  const supabase = await getSupabaseServer()
+  const { error } = await supabase
+    .from('users')
+    .update({ display_name: displayName })
+    .eq('id', uid)
+
+  if (error) throw error
+  revalidatePath(`/project/${projectId}`)
+}
+
+async function addLink(projectId: string, formData: FormData) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('Sign in required')
 
-  const type = (formData.get('ptype') as string) as 'revolut'|'swedbank'|'iban'
+  const type = (formData.get('ptype') as string) as 'revolut' | 'swedbank' | 'iban'
   const label = (formData.get('plabel') as string) || null
   const value = (formData.get('pvalue') as string) || ''
   if (!value) return
@@ -28,25 +44,30 @@ async function addLink(formData: FormData) {
   const { error } = await supabaseAdmin
     .from('user_payment_options')
     .insert({
-      user_id: uid, type, label, value, priority, is_active: true
+      user_id: uid,
+      type,
+      label,
+      value,
+      priority,
+      is_active: true,
     })
     .select('id')
     .single()
   if (error) throw error
 
-  revalidatePath('/settings')
+  revalidatePath(`/project/${projectId}`)
 }
 
-async function removeLink(id: string) {
+async function removeLink(projectId: string, id: string) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('Sign in required')
   const { error } = await supabaseAdmin.from('user_payment_options').delete().eq('id', id).eq('user_id', uid)
   if (error) throw error
-  revalidatePath('/settings')
+  revalidatePath(`/project/${projectId}`)
 }
 
-async function setDefaultLink(id: string) {
+async function setDefaultLink(projectId: string, id: string) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('Sign in required')
@@ -71,12 +92,14 @@ async function setDefaultLink(id: string) {
   const results = await Promise.all(updates)
   const failed = results.find(r => 'error' in r && r.error)
   if (failed && 'error' in failed && failed.error) throw failed.error
-  revalidatePath('/settings')
+  revalidatePath(`/project/${projectId}`)
 }
 
-export default async function SettingsPage() {
+export async function ProfileTab({ projectId }: { projectId: string }) {
   const uid = await getCurrentUserId()
-  if (!uid) return <main className="p-6 max-w-3xl mx-auto">Please sign in.</main>
+  if (!uid) {
+    return <div className="text-sm opacity-70">Please sign in to manage your profile.</div>
+  }
 
   const supabase = await getSupabaseServer()
   const { data: me } = await supabase
@@ -92,12 +115,10 @@ export default async function SettingsPage() {
     .order('priority', { ascending: true })
 
   return (
-    <main className="p-6 max-w-3xl mx-auto space-y-6">
-      <h1 className="text-2xl font-semibold">User Settings</h1>
-
+    <div className="space-y-6">
       <section className="border rounded-xl p-4 space-y-3">
         <h2 className="text-lg font-medium">Profile</h2>
-        <form action={updateDisplayName} className="flex items-center gap-2">
+        <form action={updateDisplayName.bind(null, projectId)} className="flex items-center gap-2">
           <input
             name="display_name"
             defaultValue={me?.display_name ?? ''}
@@ -107,13 +128,14 @@ export default async function SettingsPage() {
           <button className="px-3 py-1.5 rounded bg-black text-white">Save</button>
         </form>
         <p className="text-xs opacity-70">
-          This name is shown to other project participants. If empty, others see a masked email prefix or your short code.
+          This name is shown to other project participants. If empty, others see a masked email prefix or your short
+          code.
         </p>
       </section>
 
       <section className="border rounded-xl p-4 space-y-3">
         <h2 className="text-lg font-medium">Payment links</h2>
-        <form action={addLink} className="grid md:grid-cols-4 gap-2 items-center">
+        <form action={addLink.bind(null, projectId)} className="grid md:grid-cols-4 gap-2 items-center">
           <select name="ptype" className="border rounded px-2 py-1">
             <option value="revolut">Revolut</option>
             <option value="swedbank">Swedbank</option>
@@ -135,17 +157,23 @@ export default async function SettingsPage() {
                 {(() => {
                   const bank = link.type === 'revolut' ? 'Revolut' : link.type === 'swedbank' ? 'Swedbank' : 'IBAN'
                   const paymentType = link.label ?? (link.type === 'iban' ? 'IBAN' : 'Payment Link')
-                  return <span><b>{bank}</b> — {paymentType} — {link.value}</span>
+                  return (
+                    <span>
+                      <b>{bank}</b> - {paymentType} - {link.value}
+                    </span>
+                  )
                 })()}
-                {links?.[0]?.id === link.id && <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-700">Default</span>}
+                {links?.[0]?.id === link.id && (
+                  <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-700">Default</span>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 {links?.[0]?.id !== link.id && (
-                  <form action={async () => { 'use server'; await setDefaultLink(link.id) }}>
+                  <form action={setDefaultLink.bind(null, projectId, link.id)}>
                     <button className="px-2 py-1 rounded border">Set default</button>
                   </form>
                 )}
-                <form action={async () => { 'use server'; await removeLink(link.id) }}>
+                <form action={removeLink.bind(null, projectId, link.id)}>
                   <button className="px-2 py-1 rounded border">Delete</button>
                 </form>
               </div>
@@ -157,6 +185,6 @@ export default async function SettingsPage() {
       <section className="border rounded-xl p-4">
         <SetPasswordForm />
       </section>
-    </main>
+    </div>
   )
 }

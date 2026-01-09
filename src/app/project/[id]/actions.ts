@@ -1144,13 +1144,216 @@ export async function postMessage(projectId: string, body: string, parentId?: st
   revalidatePath(`/project/${projectId}`)
 }
 
-/** Cast a vote for an add-on */
-export async function castVote(addonId: string) {
-  const { error } = await supabaseAdmin
-    .from('addon_votes')
-    .insert({ addon_id: addonId })
+/** Create a poll with options (single choice). */
+export async function createPoll(projectId: string, formData: FormData) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+
+  const title = (formData.get('title') as string)?.trim()
+  const description = (formData.get('description') as string)?.trim() || null
+  const extraCostRaw = (formData.get('extra_cost') as string)?.trim() || ''
+  const requiredVotesRaw = (formData.get('required_votes') as string)?.trim() || ''
+  const optionsRaw = (formData.get('options') as string)?.trim() || ''
+  if (!title) throw new Error('Title is required')
+
+  const extraCost = extraCostRaw ? Number(extraCostRaw.replace(',', '.')) : 0
+  if (!Number.isFinite(extraCost) || extraCost < 0) throw new Error('Invalid extra cost')
+  const extraCents = Math.round(extraCost * 100)
+
+  const requiredVotes = requiredVotesRaw ? Number.parseInt(requiredVotesRaw, 10) : 1
+  if (!Number.isFinite(requiredVotes) || requiredVotes < 1) throw new Error('Invalid required votes')
+
+  const options = optionsRaw
+    .split(/\r?\n/)
+    .map(opt => opt.trim())
+    .filter(Boolean)
+  if (options.length === 0) throw new Error('At least one option is required')
+
+  const { data: participant, error: participantErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('user_id', uid)
+    .is('left_at', null)
+    .limit(1)
+  if (participantErr) throw participantErr
+  if (!participant?.length) throw new Error('Only participants can create proposals')
+
+  const { data: poll, error } = await supabaseAdmin
+    .from('polls')
+    .insert({
+      project_id: projectId,
+      title,
+      description,
+      extra_cents: extraCents,
+      required_votes: requiredVotes,
+      created_by: uid,
+    })
+    .select('id')
+    .single()
   if (error) throw error
-  revalidatePath('/') // simple revalidate; UI may refetch counts where needed
+  if (!poll?.id) throw new Error('Failed to create poll')
+
+  const { error: optionsErr } = await supabaseAdmin
+    .from('poll_options')
+    .insert(options.map(label => ({ poll_id: poll.id, label })))
+  if (optionsErr) throw optionsErr
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+/** Cast a vote for a poll option (single choice per poll). */
+export async function castPollVote(projectId: string, pollId: string, optionId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+
+  const { data: poll, error: pollErr } = await supabaseAdmin
+    .from('polls')
+    .select('id, project_id')
+    .eq('id', pollId)
+    .single()
+  if (pollErr || !poll) throw pollErr || new Error('Poll not found')
+  if (poll.project_id !== projectId) throw new Error('Invalid poll')
+
+  const { data: option, error: optionErr } = await supabaseAdmin
+    .from('poll_options')
+    .select('id, poll_id')
+    .eq('id', optionId)
+    .single()
+  if (optionErr || !option) throw optionErr || new Error('Option not found')
+  if (option.poll_id !== pollId) throw new Error('Invalid option')
+
+  const { data: participant, error: participantErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('user_id', uid)
+    .is('left_at', null)
+    .limit(1)
+  if (participantErr) throw participantErr
+  if (!participant?.length) throw new Error('Only participants can vote')
+
+  const { error: deleteErr } = await supabaseAdmin
+    .from('poll_votes')
+    .delete()
+    .eq('user_id', uid)
+    .eq('poll_id', pollId)
+  if (deleteErr) throw deleteErr
+
+  const { error } = await supabaseAdmin
+    .from('poll_votes')
+    .insert({ poll_id: pollId, option_id: optionId, user_id: uid })
+  if (error) throw error
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+async function requirePollManager(projectId: string, pollId: string, uid: string) {
+  const { data: poll, error: pollErr } = await supabaseAdmin
+    .from('polls')
+    .select('id, project_id, created_by')
+    .eq('id', pollId)
+    .single()
+  if (pollErr || !poll) throw pollErr || new Error('Poll not found')
+  if (poll.project_id !== projectId) throw new Error('Invalid poll')
+  if (poll.created_by === uid) return poll
+
+  const { data: project, error: projectErr } = await supabaseAdmin
+    .from('projects')
+    .select('collector_participant_id')
+    .eq('id', projectId)
+    .single()
+  if (projectErr) throw projectErr
+
+  if (project?.collector_participant_id) {
+    const { data: collector, error: collectorErr } = await supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('id', project.collector_participant_id)
+      .eq('user_id', uid)
+      .is('left_at', null)
+      .maybeSingle()
+    if (collectorErr) throw collectorErr
+    if (collector) return poll
+  }
+
+  throw new Error('Not authorized')
+}
+
+export async function updatePoll(projectId: string, pollId: string, formData: FormData) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+
+  await requirePollManager(projectId, pollId, uid)
+
+  const title = (formData.get('title') as string)?.trim()
+  const description = (formData.get('description') as string)?.trim() || null
+  const extraCostRaw = (formData.get('extra_cost') as string)?.trim() || ''
+  const requiredVotesRaw = (formData.get('required_votes') as string)?.trim() || ''
+  const optionsRaw = (formData.get('options') as string)?.trim() || ''
+  if (!title) throw new Error('Title is required')
+
+  const extraCost = extraCostRaw ? Number(extraCostRaw.replace(',', '.')) : 0
+  if (!Number.isFinite(extraCost) || extraCost < 0) throw new Error('Invalid extra cost')
+  const extraCents = Math.round(extraCost * 100)
+
+  const requiredVotes = requiredVotesRaw ? Number.parseInt(requiredVotesRaw, 10) : 1
+  if (!Number.isFinite(requiredVotes) || requiredVotes < 1) throw new Error('Invalid required votes')
+
+  const options = optionsRaw
+    .split(/\r?\n/)
+    .map(opt => opt.trim())
+    .filter(Boolean)
+  if (options.length === 0) throw new Error('At least one option is required')
+
+  const { error: updateErr } = await supabaseAdmin
+    .from('polls')
+    .update({
+      title,
+      description,
+      extra_cents: extraCents,
+      required_votes: requiredVotes,
+    })
+    .eq('id', pollId)
+    .eq('project_id', projectId)
+  if (updateErr) throw updateErr
+
+  const { error: deleteErr } = await supabaseAdmin
+    .from('poll_options')
+    .delete()
+    .eq('poll_id', pollId)
+  if (deleteErr) throw deleteErr
+
+  const { error: optionsErr } = await supabaseAdmin
+    .from('poll_options')
+    .insert(options.map(label => ({ poll_id: pollId, label })))
+  if (optionsErr) throw optionsErr
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function deletePoll(projectId: string, pollId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+
+  await requirePollManager(projectId, pollId, uid)
+
+  const { error } = await supabaseAdmin
+    .from('polls')
+    .delete()
+    .eq('id', pollId)
+    .eq('project_id', projectId)
+  if (error) throw error
+
+  revalidatePath(`/project/${projectId}`)
 }
 
 /**

@@ -2,7 +2,7 @@
 
 import { ReactNode, useMemo, useState } from 'react'
 
-type TabKey = 'overview' | 'participants' | 'payments' | 'activity' | 'admin'
+type TabKey = 'overview' | 'participants' | 'payments' | 'activity' | 'profile' | 'voting' | 'admin'
 
 type TabCounts = {
   participants?: number
@@ -37,6 +37,8 @@ export function ProjectTabs({
       { key: 'participants' as const, label: 'Participants', badge: counts?.participants, badgeStyle: 'neutral' },
       { key: 'payments' as const, label: 'Payments' },
       { key: 'activity' as const, label: 'Chat', badge: activityBadge, badgeStyle: 'solid' },
+      { key: 'profile' as const, label: 'Profile' },
+      { key: 'voting' as const, label: 'Voting' },
     ]
 
     if (sections.admin) {

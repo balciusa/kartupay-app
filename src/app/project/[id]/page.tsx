@@ -6,6 +6,7 @@ import { ProjectTabs } from '@/components/Project/ProjectTabs'
 import { AdminPanel } from '@/components/Project/AdminPanel'
 import { OutgoingTransfer } from '@/components/Project/OutgoingTransfer'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
+import { ProfileTab } from '@/components/Project/ProfileTab'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { markReceived } from './actions'
@@ -134,9 +135,8 @@ export default async function ProjectPage({
   const [
     { data: participants },
     { data: messages },
-    { data: addons },
-    { data: allPayments },
-    { data: addonVotes }
+    { data: polls },
+    { data: allPayments }
   ] = await Promise.all([
     supabase
       .from('participants')
@@ -149,10 +149,26 @@ export default async function ProjectPage({
       .select('id, project_id, user_id, author_user_id, parent_id, body, created_at')
       .eq('project_id', projectId)
       .order('created_at', { ascending: true }),
-    supabase.from('addons').select('*').eq('project_id', projectId),
-    supabase.from('payments').select('participant_id, is_counted, created_at'),
-    supabase.from('addon_votes').select('addon_id')
+    supabase
+      .from('polls')
+      .select('id, title, description, extra_cents, required_votes, created_by')
+      .eq('project_id', projectId)
+    ,
+    supabase.from('payments').select('participant_id, is_counted, created_at')
   ])
+  const pollIds = (polls ?? []).map(poll => poll.id)
+  const { data: pollOptions } = pollIds.length
+    ? await supabase
+        .from('poll_options')
+        .select('id, poll_id, label')
+        .in('poll_id', pollIds)
+    : { data: [] as Array<{ id: string; poll_id: string; label: string }> }
+  const { data: pollVotes } = pollIds.length
+    ? await supabase
+        .from('poll_votes')
+        .select('poll_id, option_id, user_id')
+        .in('poll_id', pollIds)
+    : { data: [] as Array<{ poll_id: string; option_id: string; user_id: string }> }
   const messageAuthorIds = Array.from(
     new Set((messages ?? []).map(m => m.user_id ?? m.author_user_id).filter(Boolean))
   )
@@ -347,17 +363,31 @@ export default async function ProjectPage({
     plus2: Math.floor(totalCents / Math.max(1, participantsNow + 2))
   }
 
-  // Process addon votes - filter to only votes for addons in this project
-  const addonIds = new Set((addons ?? []).map(a => a.id))
-  const projectAddonVotes = (addonVotes ?? []).filter(v => addonIds.has(v.addon_id))
-  const voteCount: Record<string, number> = {}
-  for (const vote of projectAddonVotes) {
-    voteCount[vote.addon_id] = (voteCount[vote.addon_id] ?? 0) + 1
+  const optionVoteCounts = new Map<string, number>()
+  for (const vote of pollVotes ?? []) {
+    optionVoteCounts.set(vote.option_id, (optionVoteCounts.get(vote.option_id) ?? 0) + 1)
   }
-  const addonsWithCounts = (addons ?? []).map(a => ({
-    ...a,
-    current_votes: voteCount[a.id] ?? 0,
-  }))
+  const optionsByPoll = new Map<string, Array<{ id: string; label: string; votes: number }>>()
+  for (const option of pollOptions ?? []) {
+    const list = optionsByPoll.get(option.poll_id) ?? []
+    list.push({
+      id: option.id,
+      label: option.label,
+      votes: optionVoteCounts.get(option.id) ?? 0,
+    })
+    optionsByPoll.set(option.poll_id, list)
+  }
+  const pollsForVotingBase = (polls ?? [])
+    .filter(poll => (poll.title ?? '').trim().length > 0)
+    .map(poll => ({
+      id: poll.id,
+      title: poll.title,
+      description: poll.description ?? null,
+      extra_cents: Number(poll.extra_cents ?? 0),
+      required_votes: Number(poll.required_votes ?? 1),
+      options: optionsByPoll.get(poll.id) ?? [],
+      created_by: poll.created_by ?? null,
+    }))
 
   // Find organizer
   const organizer = participantsClean.find(p => p.role === 'organizer')
@@ -372,6 +402,16 @@ export default async function ProjectPage({
   if (collectorId) effectivePaidIds.add(collectorId)
   const effectivePaidCount = Math.min(effectivePaidIds.size, participantsCount)
   const collectedCentsDisplay = Math.min(perPersonCents * effectivePaidCount, totalCents)
+
+  const pollsForVoting = pollsForVotingBase.map(poll => ({
+    id: poll.id,
+    title: poll.title,
+    description: poll.description,
+    extra_cents: poll.extra_cents,
+    required_votes: poll.required_votes,
+    options: poll.options,
+    can_edit: !!uid && (poll.created_by === uid || viewerIsCollector),
+  }))
   
   // Get collector options from payment_options (project-specific)
   let collectorOptions =
@@ -419,6 +459,14 @@ export default async function ProjectPage({
 
   const isMemberActive = isMeParticipant
   const viewerIsOrganizer = myParticipantRole === 'organizer'
+  const userVotes: Record<string, string | null> = {}
+  if (uid) {
+    for (const vote of pollVotes ?? []) {
+      if (vote.user_id === uid) {
+        userVotes[vote.poll_id] = vote.option_id
+      }
+    }
+  }
   let unreadCount = 0
   if (uid && isMeParticipant) {
     const { data: chatRead, error: chatReadErr } = await supabaseAdmin
@@ -470,16 +518,6 @@ export default async function ProjectPage({
         </div>
       )}
 
-      <SummaryCards
-        totalCents={totalCents}
-        minParticipants={project.min_participants as number | null}
-        participantsNow={participantsNow}
-        scenarios={scenarios}
-        deadlineISO={(project.deadline_at as string) ?? undefined}
-        maxParticipants={project.max_participants as number | null}
-        collectorLabel={collectorLabel}
-      />
-
       <ProjectTabs
         counts={{
           participants: participantsCount,
@@ -487,7 +525,20 @@ export default async function ProjectPage({
           adminPending: viewerIsCollector ? (pendingForOrganizer ?? []).length : 0,
         }}
         sections={{
-          overview: <div className="space-y-6" />,
+          overview: (
+            <div className="space-y-6">
+              <SummaryCards
+                totalCents={totalCents}
+                minParticipants={project.min_participants as number | null}
+                participantsNow={participantsNow}
+                scenarios={scenarios}
+                deadlineISO={(project.deadline_at as string) ?? undefined}
+                maxParticipants={project.max_participants as number | null}
+                collectorLabel={collectorLabel}
+              />
+            </div>
+          ),
+          profile: <ProfileTab projectId={projectId} />,
           participants: (
             <Participants
               projectId={projectId}
@@ -590,8 +641,16 @@ export default async function ProjectPage({
                   <div className="text-sm opacity-70">No outgoing transfers.</div>
                 )}
               </section>
-              <Voting addons={addonsWithCounts} projectCanceled={isAborted} />
             </div>
+          ),
+          voting: (
+            <Voting
+              projectId={projectId}
+              polls={pollsForVoting}
+              projectCanceled={isAborted}
+              canVote={isMemberActive}
+              userVotes={userVotes}
+            />
           ),
           activity: (
             <Chat
