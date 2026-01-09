@@ -146,7 +146,7 @@ export default async function ProjectPage({
       .order('joined_at', { ascending: true }),
     supabase
       .from('messages')
-      .select('id, project_id, user_id, author_user_id, body, created_at')
+      .select('id, project_id, user_id, author_user_id, parent_id, body, created_at')
       .eq('project_id', projectId)
       .order('created_at', { ascending: true }),
     supabase.from('addons').select('*').eq('project_id', projectId),
@@ -421,7 +421,7 @@ export default async function ProjectPage({
   const viewerIsOrganizer = myParticipantRole === 'organizer'
   let unreadCount = 0
   if (uid && isMeParticipant) {
-    const { data: chatRead, error: chatReadErr } = await supabase
+    const { data: chatRead, error: chatReadErr } = await supabaseAdmin
       .from('chat_reads')
       .select('last_read_at')
       .eq('project_id', projectId)
@@ -484,7 +484,7 @@ export default async function ProjectPage({
         counts={{
           participants: participantsCount,
           activity: unreadCount,
-          adminPending: viewerIsOrganizer ? (pendingForOrganizer ?? []).length : 0,
+          adminPending: viewerIsCollector ? (pendingForOrganizer ?? []).length : 0,
         }}
         sections={{
           overview: <div className="space-y-6" />,
@@ -601,7 +601,7 @@ export default async function ProjectPage({
               canRead={isMeParticipant}
             />
           ),
-          admin: (
+          admin: viewerIsCollector ? (
             <AdminPanel
               projectId={projectId}
               participants={participantsClean}
@@ -613,7 +613,7 @@ export default async function ProjectPage({
               canFinalize={isCollectingStatus && !isAborted}
               canCancel={!isAborted}
             />
-          ),
+          ) : null,
         }}
       />
     </main>

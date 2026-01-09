@@ -1,6 +1,6 @@
 'use client'
 
-import { ReactNode, useEffect, useMemo, useState } from 'react'
+import { ReactNode, useMemo, useState } from 'react'
 
 type TabKey = 'overview' | 'participants' | 'payments' | 'activity' | 'admin'
 
@@ -28,32 +28,28 @@ export function ProjectTabs({
   defaultTab?: TabKey
 }) {
   const [active, setActive] = useState<TabKey>(defaultTab)
-  const [activityBadge, setActivityBadge] = useState<number | undefined>(counts?.activity)
+  const [chatSeen, setChatSeen] = useState(false)
 
-  useEffect(() => {
-    setActivityBadge(counts?.activity)
-  }, [counts?.activity])
-
-  useEffect(() => {
-    if (active === 'activity') {
-      setActivityBadge(undefined)
-    }
-  }, [active])
-  const tabs = useMemo(
-    () => [
+  const activityBadge = active === 'activity' || chatSeen ? undefined : counts?.activity
+  const tabs = useMemo(() => {
+    const baseTabs = [
       { key: 'overview' as const, label: 'Overview' },
       { key: 'participants' as const, label: 'Participants', badge: counts?.participants, badgeStyle: 'neutral' },
       { key: 'payments' as const, label: 'Payments' },
       { key: 'activity' as const, label: 'Chat', badge: activityBadge, badgeStyle: 'solid' },
-      {
+    ]
+
+    if (sections.admin) {
+      baseTabs.push({
         key: 'admin' as const,
         label: 'Admin',
         badge: counts?.adminPending ? `${counts.adminPending} pending` : null,
         badgeStyle: 'warning',
-      },
-    ],
-    [counts]
-  )
+      })
+    }
+
+    return baseTabs
+  }, [counts, activityBadge, sections.admin])
 
   return (
     <section className="border rounded-xl overflow-hidden">
@@ -66,7 +62,12 @@ export function ProjectTabs({
               type="button"
               role="tab"
               aria-selected={isActive}
-              onClick={() => setActive(tab.key)}
+              onClick={() => {
+                setActive(tab.key)
+                if (tab.key === 'activity') {
+                  setChatSeen(true)
+                }
+              }}
               className={[
                 'flex items-center gap-2 px-3 py-2 text-sm',
                 'border-b-2 -mb-px transition-colors',

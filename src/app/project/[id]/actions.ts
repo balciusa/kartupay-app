@@ -1097,7 +1097,7 @@ export async function markReceived(participantId: string) {
   revalidatePath(`/project/${participant.project_id}`)
 }
 
-export async function postMessage(projectId: string, body: string) {
+export async function postMessage(projectId: string, body: string, parentId?: string | null) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('You must be signed in to post')
@@ -1107,9 +1107,11 @@ export async function postMessage(projectId: string, body: string) {
   if (!text) throw new Error('Message cannot be empty')
   if (text.length > 2000) throw new Error('Message is too long')
 
+  const parent = parentId?.trim() ? parentId : null
+
   const { error } = await supabaseAdmin
     .from('messages')
-    .insert({ project_id: projectId, user_id: uid, author_user_id: uid, body: text })
+    .insert({ project_id: projectId, user_id: uid, author_user_id: uid, body: text, parent_id: parent })
 
   if (error) {
     console.error('[postMessage] failed', {
@@ -1119,6 +1121,24 @@ export async function postMessage(projectId: string, body: string) {
       hint: error.hint,
     })
     throw new Error(error.message || 'Failed to post message')
+  }
+
+  const { error: readErr } = await supabaseAdmin
+    .from('chat_reads')
+    .upsert(
+      {
+        project_id: projectId,
+        user_id: uid,
+        last_read_at: new Date().toISOString(),
+      },
+      { onConflict: 'project_id,user_id' }
+    )
+  if (readErr) {
+    const msg = readErr.message?.toLowerCase() ?? ''
+    const missingTable = readErr.code === '42P01' || msg.includes('chat_reads')
+    if (!missingTable) {
+      console.error('[postMessage] chat_reads upsert failed', readErr)
+    }
   }
 
   revalidatePath(`/project/${projectId}`)
