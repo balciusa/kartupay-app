@@ -1,6 +1,6 @@
 'use client'
 
-import { ReactNode, useMemo, useState } from 'react'
+import { ReactNode, useEffect, useMemo, useState } from 'react'
 
 type TabKey = 'overview' | 'participants' | 'payments' | 'activity' | 'admin'
 
@@ -28,12 +28,23 @@ export function ProjectTabs({
   defaultTab?: TabKey
 }) {
   const [active, setActive] = useState<TabKey>(defaultTab)
+  const [activityBadge, setActivityBadge] = useState<number | undefined>(counts?.activity)
+
+  useEffect(() => {
+    setActivityBadge(counts?.activity)
+  }, [counts?.activity])
+
+  useEffect(() => {
+    if (active === 'activity') {
+      setActivityBadge(undefined)
+    }
+  }, [active])
   const tabs = useMemo(
     () => [
       { key: 'overview' as const, label: 'Overview' },
       { key: 'participants' as const, label: 'Participants', badge: counts?.participants, badgeStyle: 'neutral' },
       { key: 'payments' as const, label: 'Payments' },
-      { key: 'activity' as const, label: 'Activity', badge: counts?.activity, badgeStyle: 'solid' },
+      { key: 'activity' as const, label: 'Chat', badge: activityBadge, badgeStyle: 'solid' },
       {
         key: 'admin' as const,
         label: 'Admin',

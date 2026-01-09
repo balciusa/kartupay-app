@@ -1,12 +1,11 @@
 import { SummaryCards } from '@/components/Project/SummaryCards'
 import { Participants } from '@/components/Project/Participants'
-import { Discussions } from '@/components/Project/Discussions'
+import Chat from '@/components/Project/Chat'
 import Voting from '@/components/Project/Voting'
 import { ProjectTabs } from '@/components/Project/ProjectTabs'
 import { AdminPanel } from '@/components/Project/AdminPanel'
 import { OutgoingTransfer } from '@/components/Project/OutgoingTransfer'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
-import { JoinButton } from '@/components/Project/JoinButton'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { markReceived } from './actions'
@@ -145,11 +144,36 @@ export default async function ProjectPage({
       .eq('project_id', projectId)
       .is('left_at', null)
       .order('joined_at', { ascending: true }),
-    supabase.from('messages').select('*').eq('project_id', projectId).order('created_at', { ascending: false }),
+    supabase
+      .from('messages')
+      .select('id, project_id, user_id, author_user_id, body, created_at')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: true }),
     supabase.from('addons').select('*').eq('project_id', projectId),
     supabase.from('payments').select('participant_id, is_counted, created_at'),
     supabase.from('addon_votes').select('addon_id')
   ])
+  const messageAuthorIds = Array.from(
+    new Set((messages ?? []).map(m => m.user_id ?? m.author_user_id).filter(Boolean))
+  )
+  let userDisplayMap: Record<string, string> = {}
+  if (messageAuthorIds.length) {
+    const { data: messageUsers, error: usersErr } = await supabase
+      .from('users')
+      .select('id, display_name, email')
+      .in('id', messageAuthorIds)
+    if (usersErr) {
+      console.error('[ProjectPage] users fetch error', usersErr)
+    } else {
+      userDisplayMap = (messageUsers ?? []).reduce<Record<string, string>>((acc, user) => {
+        const displayName = user.display_name?.trim()
+        const fallback = user.email ? user.email.split('@')[0] : `#${user.id.slice(0, 6)}`
+        acc[user.id] = displayName || fallback
+        return acc
+      }, {})
+    }
+  }
+
   const lateTransfersResult = await supabase
     .from('late_join_transfers')
     .select('id, project_id, from_participant_id, to_participant_id, expected_cents, received_at, sender_marked_at')
@@ -232,17 +256,6 @@ export default async function ProjectPage({
       participantData: mine 
     })
   }
-
-  const { data: myPendingReq } = uid
-    ? await supabase
-        .from('join_requests')
-        .select('id, created_at, status')
-        .eq('project_id', projectId)
-        .eq('requester_user_id', uid)
-        .eq('status', 'pending')
-        .maybeSingle()
-    : { data: null as any }
-  const hasPending = !!myPendingReq
 
   const { data: pendingForOrganizer, error: pendingErr } = await supabase
     .from('join_requests')
@@ -406,62 +419,26 @@ export default async function ProjectPage({
 
   const isMemberActive = isMeParticipant
   const viewerIsOrganizer = myParticipantRole === 'organizer'
-  const joinCta = (() => {
-    if (!uid) {
-      return (
-        <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
-          Sign in to join
-        </button>
-      )
-    }
-    if (isAborted) {
-      return (
-        <button className="px-3 py-1.5 rounded border" disabled title="Project aborted">
-          Project aborted
-        </button>
-      )
-    }
-    if (isMemberActive) {
-      if (isOnlyOrganizer) {
-        return null
+  let unreadCount = 0
+  if (uid && isMeParticipant) {
+    const { data: chatRead, error: chatReadErr } = await supabase
+      .from('chat_reads')
+      .select('last_read_at')
+      .eq('project_id', projectId)
+      .eq('user_id', uid)
+      .maybeSingle()
+    if (chatReadErr) {
+      const msg = chatReadErr.message?.toLowerCase() ?? ''
+      const missingTable = chatReadErr.code === '42P01' || msg.includes('chat_reads')
+      if (!missingTable) {
+        console.error('[ProjectPage] chat_reads fetch error', chatReadErr)
       }
-      return (
-        <button className="px-3 py-1.5 rounded border" disabled>
-          You are in
-        </button>
-      )
     }
-    if (isCollectingStatus) {
-      if (hasPending) {
-        return (
-          <div className="space-y-1">
-            <button className="px-3 py-1.5 rounded border" disabled>
-              Request sent
-            </button>
-            <div className="text-xs opacity-60">
-              Waiting for organizer approval
-              {myPendingReq?.created_at ? ` since ${new Date(myPendingReq.created_at).toLocaleString()}` : ''}
-            </div>
-          </div>
-        )
-      }
-      return <JoinButton projectId={projectId} canJoinNow={true} />
-    }
-    if (hasPending) {
-      return (
-        <div className="space-y-1">
-          <button className="px-3 py-1.5 rounded border" disabled>
-            Request sent
-          </button>
-          <div className="text-xs opacity-60">
-            Waiting for organizer approval
-            {myPendingReq?.created_at ? ` since ${new Date(myPendingReq.created_at).toLocaleString()}` : ''}
-          </div>
-        </div>
-      )
-    }
-    return <JoinButton projectId={projectId} canJoinNow={false} />
-  })()
+    const lastReadAt = chatRead?.last_read_at ? new Date(chatRead.last_read_at) : null
+    unreadCount = lastReadAt
+      ? (messages ?? []).filter(m => new Date(m.created_at) > lastReadAt).length
+      : (messages ?? []).length
+  }
 
   return (
     <main className="p-6 max-w-4xl mx-auto space-y-6">
@@ -506,26 +483,11 @@ export default async function ProjectPage({
       <ProjectTabs
         counts={{
           participants: participantsCount,
-          activity: (messages ?? []).length,
+          activity: unreadCount,
           adminPending: viewerIsOrganizer ? (pendingForOrganizer ?? []).length : 0,
         }}
         sections={{
-          overview: (
-            <div className="space-y-6">
-              <div className="border rounded-xl p-4 space-y-2">
-                <div className="font-medium">Join this project</div>
-                {joinCta}
-                {isMemberActive && (
-                  <div>
-                    <LeaveProjectButton projectId={projectId} isOnlyOrganizer={isOnlyOrganizer} />
-                  </div>
-                )}
-                <div className="text-xs opacity-60 mt-1">
-                  On join, your active payment links from Settings will be copied here.
-                </div>
-              </div>
-            </div>
-          ),
+          overview: <div className="space-y-6" />,
           participants: (
             <Participants
               projectId={projectId}
@@ -632,7 +594,12 @@ export default async function ProjectPage({
             </div>
           ),
           activity: (
-            <Discussions projectId={projectId} messages={messages ?? []} projectCanceled={isAborted} />
+            <Chat
+              projectId={projectId}
+              messages={messages ?? []}
+              userDisplayMap={userDisplayMap}
+              canRead={isMeParticipant}
+            />
           ),
           admin: (
             <AdminPanel

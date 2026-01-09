@@ -159,13 +159,6 @@ export function AdminPanel({
           </button>
           <button
             type="button"
-            className="w-full px-3 py-2 rounded border text-sm"
-            disabled={!isOrganizer}
-          >
-            Edit totals
-          </button>
-          <button
-            type="button"
             className="w-full px-3 py-2 rounded border text-sm text-center disabled:opacity-50 flex items-center justify-center gap-2"
             disabled={!canManage}
             onClick={() => setRequestsOpen(true)}

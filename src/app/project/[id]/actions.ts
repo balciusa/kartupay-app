@@ -1097,12 +1097,30 @@ export async function markReceived(participantId: string) {
   revalidatePath(`/project/${participant.project_id}`)
 }
 
-/** Post a discussion message */
 export async function postMessage(projectId: string, body: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in to post')
+  if (!projectId) throw new Error('Missing project id')
+
+  const text = (body ?? '').trim()
+  if (!text) throw new Error('Message cannot be empty')
+  if (text.length > 2000) throw new Error('Message is too long')
+
   const { error } = await supabaseAdmin
     .from('messages')
-    .insert({ project_id: projectId, body })
-  if (error) throw error
+    .insert({ project_id: projectId, user_id: uid, author_user_id: uid, body: text })
+
+  if (error) {
+    console.error('[postMessage] failed', {
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+    })
+    throw new Error(error.message || 'Failed to post message')
+  }
+
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -1194,4 +1212,38 @@ export async function addSampleAddon(projectId: string) {
     })
   if (error) throw error
   revalidatePath(`/project/${projectId}`)
+}
+
+export async function markChatRead(projectId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+
+  const { data: participant, error: participantErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('user_id', uid)
+    .is('left_at', null)
+    .limit(1)
+  if (participantErr) throw participantErr
+  if (!participant?.length) return
+
+  const { error } = await supabaseAdmin
+    .from('chat_reads')
+    .upsert(
+      {
+        project_id: projectId,
+        user_id: uid,
+        last_read_at: new Date().toISOString(),
+      },
+      { onConflict: 'project_id,user_id' }
+    )
+  if (error) {
+    const msg = error.message?.toLowerCase() ?? ''
+    const missingTable = error.code === '42P01' || msg.includes('chat_reads')
+    if (missingTable) return
+    throw error
+  }
 }
