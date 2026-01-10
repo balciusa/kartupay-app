@@ -9,9 +9,10 @@ import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { JoinButton } from '@/components/Project/JoinButton'
 import { ProfileTab } from '@/components/Project/ProfileTab'
 import { ProjectSettingsTab } from '@/components/Project/ProjectSettingsTab'
+import { LateOutgoingTransfers } from '@/components/Project/LateOutgoingTransfers'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
-import { markReceived } from './actions'
+import { confirmLateJoinReceipt, markReceived } from './actions'
 
 type LateTransferRow = {
   id: string
@@ -129,6 +130,7 @@ export default async function ProjectPage({
   const isClosedStatus = project.status === 'closed'
   const isCancelledStatus = project.status === 'cancelled' || project.status === 'canceled'
   const isAborted = isCancelledStatus || !!project.aborted_at || !!project.canceled_at
+  const isFinalized = isClosedStatus || !!project.finalized_at || !!project.closed_at
   const abortedAtDisplay = (project.aborted_at as string | null) ?? (project.canceled_at as string | null) ?? null
   const abortedAtLocale = abortedAtDisplay ? new Date(abortedAtDisplay).toLocaleString() : null
   const closedAt = (project.closed_at as string | null) ?? null
@@ -283,17 +285,6 @@ export default async function ProjectPage({
     })
   }
 
-  const { data: pendingForOrganizer, error: pendingErr } = await supabase
-    .from('join_requests')
-    .select('id, requester_user_id, created_at, status')
-    .eq('project_id', projectId)
-    .eq('status', 'pending')
-  
-  if (pendingErr) {
-    console.error('[ProjectPage] Error fetching pending requests:', pendingErr)
-  }
-  console.log('[ProjectPage] Pending requests for organizer:', { count: pendingForOrganizer?.length ?? 0, requests: pendingForOrganizer })
-
   const participantsClean = rawParticipants
   const maskEmail = (email?: string | null) => {
     if (!email) return null
@@ -311,7 +302,16 @@ export default async function ProjectPage({
     return 'Member'
   }
   const participantsCount = participantsClean.length
+  const minParticipants = project.min_participants as number | null
   const maxParticipants = project.max_participants as number | null
+  const finalizedAt = (project.finalized_at as string | null) ?? (project.closed_at as string | null) ?? null
+  const finalizedAtDate = finalizedAt ? new Date(finalizedAt) : null
+  const baseParticipants = finalizedAtDate
+    ? participantsClean.filter(p => !p.joined_at || new Date(p.joined_at) <= finalizedAtDate)
+    : participantsClean
+  const baseParticipantIds = new Set(baseParticipants.map(p => p.id))
+  const baseParticipantsCount = baseParticipants.length
+  const minParticipantsReached = !minParticipants || participantsCount >= minParticipants
   const canJoinNow =
     isCollectingStatus &&
     !isAborted &&
@@ -372,6 +372,9 @@ export default async function ProjectPage({
   const perPersonCents = totalIsPerPerson
     ? storedTotalCents
     : Math.floor(storedTotalCents / Math.max(1, participantsCount))
+  const perPersonCentsAtFinalize = totalIsPerPerson
+    ? storedTotalCents
+    : Math.floor(storedTotalCents / Math.max(1, baseParticipantsCount))
   const totalCents = totalIsPerPerson
     ? perPersonCents * Math.max(1, participantsCount)
     : storedTotalCents
@@ -426,11 +429,56 @@ export default async function ProjectPage({
   const collectorLabel = collectorParticipant ? participantName(collectorParticipant) : 'Member'
   const collectorName = collectorLabel
   const viewerIsCollector = !!(myParticipantId && collectorId && myParticipantId === collectorId)
-  const collectedCents = perPersonCents * paidIds.length
+  const viewerIsOrganizer = myParticipantRole === 'organizer'
+  const shouldLoadPendingRequests = viewerIsOrganizer || viewerIsCollector
+  const { data: pendingForOrganizer, error: pendingErr } = shouldLoadPendingRequests
+    ? await supabaseAdmin
+        .from('join_requests')
+        .select('id, requester_user_id, created_at, status')
+        .eq('project_id', projectId)
+        .eq('status', 'pending')
+    : { data: [] as Array<{ id: string; requester_user_id: string; created_at: string; status: string }>, error: null }
+  
+  if (pendingErr) {
+    console.error('[ProjectPage] Error fetching pending requests:', pendingErr)
+  }
+  console.log('[ProjectPage] Pending requests for organizer:', { count: pendingForOrganizer?.length ?? 0, requests: pendingForOrganizer })
   const effectivePaidIds = new Set(paidIds)
   if (collectorId) effectivePaidIds.add(collectorId)
-  const effectivePaidCount = Math.min(effectivePaidIds.size, participantsCount)
-  const collectedCentsDisplay = Math.min(perPersonCents * effectivePaidCount, totalCents)
+  const basePaidIds = countedPayments
+    .filter(p => baseParticipantIds.has(p.participant_id))
+    .map(p => p.participant_id)
+  const basePaidSet = new Set(basePaidIds)
+  if (collectorId && baseParticipantIds.has(collectorId)) basePaidSet.add(collectorId)
+  const collectedCentsDisplay = Math.min(perPersonCentsAtFinalize * basePaidSet.size, totalCents)
+  const lateJoinerIds = new Set(
+    finalizedAtDate
+      ? participantsClean
+          .filter(p => p.joined_at && new Date(p.joined_at) > finalizedAtDate)
+          .map(p => p.id)
+      : []
+  )
+  const lateJoinerPendingIds = new Set(
+    lateTransfers.filter(t => !t.received_at).map(t => t.from_participant_id)
+  )
+  const settledIds = new Set<string>(basePaidSet)
+  for (const id of lateJoinerIds) {
+    if (!lateJoinerPendingIds.has(id)) settledIds.add(id)
+  }
+  const effectivePaidCount = Math.min(settledIds.size, participantsCount)
+  const lateIncomingPendingCents = myParticipantId
+    ? lateTransfers
+        .filter(t => t.to_participant_id === myParticipantId && !t.received_at)
+        .reduce((sum, t) => sum + t.expected_cents, 0)
+    : 0
+  const lateOutgoingPendingCents = myParticipantId
+    ? lateTransfers
+        .filter(t => t.from_participant_id === myParticipantId && !t.received_at)
+        .reduce((sum, t) => sum + t.expected_cents, 0)
+    : 0
+  const lateOutgoingTransfers = myParticipantId
+    ? lateTransfers.filter(t => t.from_participant_id === myParticipantId)
+    : []
   const pendingSignalCount = viewerIsCollector ? pendingSignalsSet.size : 0
   const pendingLateConfirmations = myParticipantId
     ? lateTransfers.filter(t => t.to_participant_id === myParticipantId && t.sender_marked_at && !t.received_at).length
@@ -438,6 +486,7 @@ export default async function ProjectPage({
   const outgoingPayAvailable =
     !viewerIsCollector &&
     !isAborted &&
+    minParticipantsReached &&
     !!myParticipantId &&
     !!collectorId &&
     !viewerPaid &&
@@ -500,7 +549,6 @@ export default async function ProjectPage({
   })
 
   const isMemberActive = isMeParticipant
-  const viewerIsOrganizer = myParticipantRole === 'organizer'
   const userVotes: Record<string, string | null> = {}
   if (uid) {
     for (const vote of pollVotes ?? []) {
@@ -599,7 +647,7 @@ export default async function ProjectPage({
               paidSet={paidSet}
               afterDeadlineSet={afterDeadlineSet}
               organizerId={organizerId}
-              pendingRequests={pendingForOrganizer ?? []}
+              pendingRequests={viewerIsCollector ? (pendingForOrganizer ?? []) : []}
               showPendingRequests={false}
               showPayments={false}
               myParticipantId={myParticipantId}
@@ -618,7 +666,13 @@ export default async function ProjectPage({
             <div className="space-y-4">
               <section className="border rounded-xl p-4 space-y-2">
                 <h2 className="text-lg font-semibold">Balances</h2>
-                <div className="grid gap-3 md:grid-cols-2">
+                <div
+                  className={`grid gap-3 ${
+                    lateIncomingPendingCents > 0 || lateOutgoingPendingCents > 0
+                      ? 'md:grid-cols-3'
+                      : 'md:grid-cols-2'
+                  }`}
+                >
                   <div className="border rounded-lg p-3 text-sm space-y-1">
                     <div className="text-xs uppercase opacity-60">Funds</div>
                     <div className="font-medium">
@@ -631,59 +685,114 @@ export default async function ProjectPage({
                       {`Settled ${effectivePaidCount} out of ${participantsCount}`}
                     </div>
                   </div>
+                  {lateIncomingPendingCents > 0 && (
+                    <div className="border rounded-lg p-3 text-sm space-y-1">
+                      <div className="text-xs uppercase opacity-60">Late joiner due</div>
+                      <div className="font-medium">{formatEuro(lateIncomingPendingCents)}</div>
+                    </div>
+                  )}
+                  {lateOutgoingPendingCents > 0 && (
+                    <div className="border rounded-lg p-3 text-sm space-y-1">
+                      <div className="text-xs uppercase opacity-60">Late payments due</div>
+                      <div className="font-medium">{formatEuro(lateOutgoingPendingCents)}</div>
+                    </div>
+                  )}
                 </div>
               </section>
               <section className="border rounded-xl p-4 space-y-3">
                 <div className="font-medium">Incoming transfers</div>
-                {viewerIsCollector ? (
-                  (() => {
-                    const incoming = participantsClean.filter(p => p.id !== collectorId && !paidSet.has(p.id))
-                    if (incoming.length === 0) {
-                      return <div className="text-sm opacity-70">No incoming transfers.</div>
-                    }
-                    return (
-                      <div className="divide-y">
-                        {incoming.map(p => (
-                          <div key={p.id} className="flex items-center justify-between py-2 text-sm">
+                {(() => {
+                  const incomingLate = myParticipantId
+                    ? lateTransfers.filter(t => t.to_participant_id === myParticipantId && !t.received_at)
+                    : []
+                  const incomingStandard = viewerIsCollector
+                    ? participantsClean.filter(
+                        p =>
+                          p.id !== collectorId &&
+                          !paidSet.has(p.id) &&
+                          baseParticipantIds.has(p.id)
+                      )
+                    : []
+                  const hasAny = incomingStandard.length > 0 || incomingLate.length > 0
+                  if (!hasAny) {
+                    return <div className="text-sm opacity-70">No incoming transfers.</div>
+                  }
+                  return (
+                    <div className="divide-y">
+                      {incomingStandard.map(p => (
+                        <div key={p.id} className="flex items-center justify-between py-2 text-sm">
+                          <div className="flex items-center gap-2">
+                            <span>
+                              {participantName(p)} {formatEuro(perPersonCentsAtFinalize)}
+                            </span>
+                            {pendingSignalsSet.has(p.id) && (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-300 text-amber-900">
+                                Reported paid
+                              </span>
+                            )}
+                          </div>
+                          <form action={markReceived.bind(null, p.id)}>
+                            <button className="px-3 py-1.5 rounded border text-xs" type="submit">
+                              {pendingSignalsSet.has(p.id) ? 'Confirm received' : 'Mark received'}
+                            </button>
+                          </form>
+                        </div>
+                      ))}
+                      {incomingLate.map(transfer => {
+                        const sender = participantsClean.find(p => p.id === transfer.from_participant_id)
+                        const senderName = sender ? participantName(sender) : 'Participant'
+                        const awaiting = !!transfer.sender_marked_at && !transfer.received_at
+                        return (
+                          <div key={transfer.id} className="flex items-center justify-between py-2 text-sm">
                             <div className="flex items-center gap-2">
                               <span>
-                                {participantName(p)}{' '}
-                                — {formatEuro(perPersonCents)}
+                                {senderName} {formatEuro(transfer.expected_cents)}
                               </span>
-                              {pendingSignalsSet.has(p.id) && (
+                              {awaiting && (
                                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-300 text-amber-900">
                                   Reported paid
                                 </span>
                               )}
                             </div>
-                            <form action={markReceived.bind(null, p.id)}>
+                            <form action={confirmLateJoinReceipt.bind(null, transfer.id)}>
                               <button className="px-3 py-1.5 rounded border text-xs" type="submit">
-                                {pendingSignalsSet.has(p.id) ? 'Confirm received' : 'Mark received'}
+                                {awaiting ? 'Confirm received' : 'Mark received'}
                               </button>
                             </form>
                           </div>
-                        ))}
-                      </div>
-                    )
-                  })()
-                ) : (
-                  <div className="text-sm opacity-70">No incoming transfers.</div>
-                )}
+                        )
+                      })}
+                    </div>
+                  )
+                })()}
               </section>
               <section className="border rounded-xl p-4 space-y-3">
                 <div className="font-medium">Outgoing transfers</div>
                 {!viewerIsCollector && myParticipantId && collectorId ? (
-                  <div className="divide-y">
-                    <OutgoingTransfer
-                      collectorName={collectorName}
-                      amountLabel={formatEuro(perPersonCents)}
-                      collectorOptions={collectorOptions}
-                      participantId={myParticipantId}
-                      viewerPaid={viewerPaid}
-                      viewerHasPendingSignal={viewerHasPendingSignal}
+                  isFinalized && lateOutgoingTransfers.length > 0 ? (
+                    <LateOutgoingTransfers
+                      transfers={lateOutgoingTransfers}
+                      participants={participantsClean}
+                      allOptions={allOptionsEntries}
+                      viewerParticipantId={myParticipantId}
                       projectCanceled={isAborted}
                     />
-                  </div>
+                  ) : !viewerPaid ? (
+                    <div className="divide-y">
+                      <OutgoingTransfer
+                        collectorName={collectorName}
+                        amountLabel={formatEuro(perPersonCents)}
+                        collectorOptions={collectorOptions}
+                        participantId={myParticipantId}
+                        viewerPaid={viewerPaid}
+                        viewerHasPendingSignal={viewerHasPendingSignal}
+                        projectCanceled={isAborted}
+                        canPay={minParticipantsReached}
+                      />
+                    </div>
+                  ) : (
+                    <div className="text-sm opacity-70">No outgoing transfers.</div>
+                  )
                 ) : (
                   <div className="text-sm opacity-70">No outgoing transfers.</div>
                 )}

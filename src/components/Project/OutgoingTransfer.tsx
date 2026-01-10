@@ -33,6 +33,7 @@ export function OutgoingTransfer({
   viewerPaid,
   viewerHasPendingSignal,
   projectCanceled,
+  canPay,
 }: {
   collectorName: string
   amountLabel: string
@@ -41,6 +42,7 @@ export function OutgoingTransfer({
   viewerPaid: boolean
   viewerHasPendingSignal: boolean
   projectCanceled: boolean
+  canPay: boolean
 }) {
   const [open, setOpen] = useState(false)
   const modalRef = useRef<HTMLDivElement | null>(null)
@@ -114,6 +116,8 @@ export function OutgoingTransfer({
           >
             Waiting Payment Confirmation
           </button>
+        ) : !canPay ? (
+          <span className="text-xs opacity-70">Waiting for minimum participants</span>
         ) : (
           <button
             type="button"
