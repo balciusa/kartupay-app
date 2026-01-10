@@ -263,18 +263,18 @@ export function Participants(props: {
     !modalLatePending && !modalLateAwaiting ? viewerModalTransfers.find(t => !!t.received_at) ?? null : null
 
   return (
-    <section className="border rounded-xl p-4 space-y-4">
-      <h2 className="text-lg font-semibold">Participants</h2>
+    <section className="border rounded-2xl bg-white p-4 space-y-4">
+      <h2 className="text-base font-semibold text-slate-900">Participants</h2>
 
       {showPendingRequests && isOrganizer && pendingRequests.length > 0 && (
-        <div className="rounded border p-3 space-y-3">
-          <div className="font-medium">Pending join requests</div>
+        <div className="rounded-xl border p-3 space-y-3">
+          <div className="text-sm font-semibold text-slate-900">Pending join requests</div>
           <div className="space-y-2">
             {pendingRequests.map(req => (
               <div key={req.id} className="flex items-center justify-between gap-3 text-sm">
                 <div className="space-y-0.5">
-                  <div className="font-medium">User {req.requester_user_id.slice(0, 6)}</div>
-                  <div className="text-xs opacity-70">
+                  <div className="font-medium text-slate-900">User {req.requester_user_id.slice(0, 6)}</div>
+                  <div className="text-xs text-slate-500">
                     {new Date(req.created_at).toLocaleString('en-US', {
                       year: 'numeric',
                       month: 'numeric',
@@ -387,13 +387,13 @@ export function Participants(props: {
           const markReceivedDisabled = pending || projectCanceled || paid || isLateParticipant
 
           return (
-            <div key={p.id} className="rounded border p-3 space-y-2">
+            <div key={p.id} className="rounded-lg border p-3">
               <div className="flex items-start justify-between gap-4">
                 <div className="space-y-1">
-                  <div className="font-medium flex items-center gap-2 flex-wrap">
+                  <div className="font-medium flex items-center gap-2 flex-wrap text-slate-900">
                     <span>{name}</span>
                     {p.role === 'organizer' && (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-200 text-black">
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-200 text-slate-900">
                         Organizer
                       </span>
                     )}

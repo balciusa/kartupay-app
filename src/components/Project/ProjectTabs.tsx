@@ -8,6 +8,7 @@ type TabCounts = {
   participants?: number
   activity?: number
   adminPending?: number
+  paymentsPending?: number
 }
 
 type TabSectionMap = Record<TabKey, ReactNode>
@@ -35,7 +36,12 @@ export function ProjectTabs({
     const baseTabs = [
       { key: 'overview' as const, label: 'Overview' },
       { key: 'participants' as const, label: 'Participants', badge: counts?.participants, badgeStyle: 'neutral' },
-      { key: 'payments' as const, label: 'Payments' },
+      {
+        key: 'payments' as const,
+        label: 'Payments',
+        badge: counts?.paymentsPending,
+        badgeStyle: 'warning',
+      },
       { key: 'activity' as const, label: 'Chat', badge: activityBadge, badgeStyle: 'solid' },
       { key: 'profile' as const, label: 'Profile' },
       { key: 'voting' as const, label: 'Voting' },

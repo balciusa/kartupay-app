@@ -51,25 +51,25 @@ export default function Voting({
         </div>
       )}
 
-      <Card className="p-4 space-y-3">
-        <div>
-          <div className="font-medium">Create poll</div>
+      <Card className="p-5 md:p-6 space-y-4">
+        <div className="space-y-1">
+          <div className="text-lg font-semibold">Create poll</div>
           <div className="text-sm text-muted-foreground">
             Add a new idea for the group to vote on. Optional extra cost is per person.
           </div>
         </div>
-        <form action={createPoll.bind(null, projectId)} className="grid gap-2 md:grid-cols-6">
+        <form action={createPoll.bind(null, projectId)} className="grid gap-3 md:grid-cols-6">
           <input
             name="title"
             placeholder="Poll title"
-            className="border rounded px-2 py-1 md:col-span-2"
+            className="border rounded-md px-3 py-2 md:col-span-2 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
             required
             disabled={!canVote || projectCanceled}
           />
           <input
             name="description"
             placeholder="Short description (optional)"
-            className="border rounded px-2 py-1 md:col-span-3"
+            className="border rounded-md px-3 py-2 md:col-span-3 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
             disabled={!canVote || projectCanceled}
           />
           <input
@@ -78,7 +78,7 @@ export default function Voting({
             min="0"
             step="0.01"
             placeholder="Extra cost"
-            className="border rounded px-2 py-1 md:col-span-1"
+            className="border rounded-md px-3 py-2 md:col-span-1 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
             disabled={!canVote || projectCanceled}
           />
           <input
@@ -87,17 +87,17 @@ export default function Voting({
             min="1"
             step="1"
             placeholder="Required votes"
-            className="border rounded px-2 py-1 md:col-span-1"
+            className="border rounded-md px-3 py-2 md:col-span-1 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
             disabled={!canVote || projectCanceled}
           />
           <textarea
             name="options"
             placeholder="Options (one per line)"
-            className="border rounded px-2 py-1 md:col-span-5 min-h-[90px]"
+            className="border rounded-md px-3 py-2 md:col-span-5 min-h-[110px] bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
             disabled={!canVote || projectCanceled}
           />
           <div className="md:col-span-6">
-            <Button type="submit" disabled={!canVote || projectCanceled}>
+            <Button type="submit" disabled={!canVote || projectCanceled} className="rounded-full px-5">
               Create poll
             </Button>
           </div>
@@ -111,26 +111,28 @@ export default function Voting({
           const userOptionId = voteMap[poll.id] ?? null
           const optionsValue = poll.options.map(option => option.label).join('\n')
           return (
-            <Card key={poll.id ?? `poll-${index}`} className="p-4 space-y-3">
-              <div>
-                <div className="font-medium">{poll.title}</div>
-                {poll.description ? (
-                  <div className="text-sm text-muted-foreground">{poll.description}</div>
-                ) : null}
-                <div className="text-sm mt-1">
-                  +{(poll.extra_cents / 100).toFixed(2)} per person - Required votes: {poll.required_votes}
+            <Card key={poll.id ?? `poll-${index}`} className="p-5 md:p-6 space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="text-lg font-semibold">{poll.title}</div>
+                  {poll.description ? (
+                    <div className="text-sm text-muted-foreground">{poll.description}</div>
+                  ) : null}
+                </div>
+                <div className="text-xs px-2 py-1 rounded-full border bg-white text-slate-700">
+                  +{(poll.extra_cents / 100).toFixed(2)} / person • {poll.required_votes} votes
                 </div>
               </div>
 
               {poll.options.length === 0 ? (
                 <div className="text-sm text-muted-foreground">No options yet.</div>
               ) : (
-                <div className="space-y-2">
+                <div className="divide-y border rounded-lg">
                   {poll.options.map(option => (
-                    <div key={option.id} className="flex items-center justify-between gap-3">
-                      <div className="text-sm">
+                    <div key={option.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                      <div className="text-sm font-medium">
                         {option.label}{' '}
-                        <span className="text-xs opacity-60">({option.votes} votes)</span>
+                        <span className="text-xs font-normal text-muted-foreground">({option.votes})</span>
                       </div>
                       {projectCanceled || !canVote ? (
                         <Button type="button" disabled>
@@ -138,7 +140,12 @@ export default function Voting({
                         </Button>
                       ) : (
                         <form action={castPollVote.bind(null, projectId, poll.id, option.id)}>
-                          <Button type="submit" disabled={userOptionId === option.id}>
+                          <Button
+                            type="submit"
+                            disabled={userOptionId === option.id}
+                            variant={userOptionId === option.id ? 'secondary' : 'default'}
+                            className="rounded-full px-4"
+                          >
                             {userOptionId === option.id ? 'Selected' : userOptionId ? 'Switch' : 'Vote'}
                           </Button>
                         </form>
@@ -150,14 +157,14 @@ export default function Voting({
 
               {poll.can_edit ? (
                 <details className="border-t pt-3">
-                  <summary className="text-sm cursor-pointer select-none">Edit poll</summary>
+                  <summary className="text-sm font-medium cursor-pointer select-none">Edit poll</summary>
                   <div className="mt-3 space-y-3">
-                    <form action={updatePoll.bind(null, projectId, poll.id)} className="grid gap-2 md:grid-cols-6">
+                    <form action={updatePoll.bind(null, projectId, poll.id)} className="grid gap-3 md:grid-cols-6">
                       <input
                         name="title"
                         defaultValue={poll.title}
                         placeholder="Poll title"
-                        className="border rounded px-2 py-1 md:col-span-2"
+                        className="border rounded-md px-3 py-2 md:col-span-2 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
                         required
                         disabled={projectCanceled}
                       />
@@ -165,7 +172,7 @@ export default function Voting({
                         name="description"
                         defaultValue={poll.description ?? ''}
                         placeholder="Short description (optional)"
-                        className="border rounded px-2 py-1 md:col-span-3"
+                        className="border rounded-md px-3 py-2 md:col-span-3 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
                         disabled={projectCanceled}
                       />
                       <input
@@ -175,7 +182,7 @@ export default function Voting({
                         step="0.01"
                         defaultValue={(poll.extra_cents / 100).toFixed(2)}
                         placeholder="Extra cost"
-                        className="border rounded px-2 py-1 md:col-span-1"
+                        className="border rounded-md px-3 py-2 md:col-span-1 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
                         disabled={projectCanceled}
                       />
                       <input
@@ -185,25 +192,25 @@ export default function Voting({
                         step="1"
                         defaultValue={poll.required_votes}
                         placeholder="Required votes"
-                        className="border rounded px-2 py-1 md:col-span-1"
+                        className="border rounded-md px-3 py-2 md:col-span-1 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
                         disabled={projectCanceled}
                       />
                       <textarea
                         name="options"
                         defaultValue={optionsValue}
                         placeholder="Options (one per line)"
-                        className="border rounded px-2 py-1 md:col-span-5 min-h-[90px]"
+                        className="border rounded-md px-3 py-2 md:col-span-5 min-h-[110px] bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
                         disabled={projectCanceled}
                       />
                       <div className="md:col-span-6">
-                        <Button type="submit" disabled={projectCanceled}>
+                        <Button type="submit" disabled={projectCanceled} className="rounded-full px-5">
                           Save changes
                         </Button>
                       </div>
                     </form>
 
                     <form action={deletePoll.bind(null, projectId, poll.id)}>
-                      <Button type="submit" variant="outline" disabled={projectCanceled}>
+                      <Button type="submit" variant="outline" disabled={projectCanceled} className="rounded-full">
                         Delete poll
                       </Button>
                     </form>

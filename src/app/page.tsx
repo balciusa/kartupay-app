@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { createSupabaseServerClient } from '@/lib/supabaseClient'
+import { NewProjectModal } from '@/components/Home/NewProjectModal'
 
 export default async function Home() {
   const supabase = createSupabaseServerClient()
@@ -12,9 +13,7 @@ export default async function Home() {
     <main className="p-6 max-w-4xl mx-auto space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Projects</h1>
-        <Link href="/project/new" className="px-3 py-1.5 rounded bg-black text-white hover:opacity-90">
-          New project
-        </Link>
+        <NewProjectModal />
       </div>
 
       {error && <div className="text-red-600">DB error: {error.message}</div>}

@@ -6,6 +6,7 @@ import { ProjectTabs } from '@/components/Project/ProjectTabs'
 import { AdminPanel } from '@/components/Project/AdminPanel'
 import { OutgoingTransfer } from '@/components/Project/OutgoingTransfer'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
+import { JoinButton } from '@/components/Project/JoinButton'
 import { ProfileTab } from '@/components/Project/ProfileTab'
 import { ProjectSettingsTab } from '@/components/Project/ProjectSettingsTab'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
@@ -132,12 +133,15 @@ export default async function ProjectPage({
   const abortedAtLocale = abortedAtDisplay ? new Date(abortedAtDisplay).toLocaleString() : null
   const closedAt = (project.closed_at as string | null) ?? null
 
+  const uid = await getCurrentUserId()
+
   // Fetch all related data in parallel
   const [
     { data: participants },
     { data: messages },
     { data: polls },
-    { data: allPayments }
+    { data: allPayments },
+    { data: myJoinRequest }
   ] = await Promise.all([
     supabase
       .from('participants')
@@ -155,7 +159,13 @@ export default async function ProjectPage({
       .select('id, title, description, extra_cents, required_votes, created_by')
       .eq('project_id', projectId)
     ,
-    supabase.from('payments').select('participant_id, is_counted, created_at')
+    supabase.from('payments').select('participant_id, is_counted, created_at'),
+    supabase
+      .from('join_requests')
+      .select('status')
+      .eq('project_id', projectId)
+      .eq('requester_user_id', uid ?? '')
+      .maybeSingle()
   ])
   const pollIds = (polls ?? []).map(poll => poll.id)
   const { data: pollOptions } = pollIds.length
@@ -247,7 +257,6 @@ export default async function ProjectPage({
 
   // Process participants and payment methods
   const rawParticipants = participants ?? []
-  const uid = await getCurrentUserId()
   let isMeParticipant = false
   let myParticipantId: string | null = null
   let myParticipantRole: string | null = null
@@ -302,6 +311,13 @@ export default async function ProjectPage({
     return 'Member'
   }
   const participantsCount = participantsClean.length
+  const maxParticipants = project.max_participants as number | null
+  const canJoinNow =
+    isCollectingStatus &&
+    !isAborted &&
+    (!maxParticipants || participantsCount < maxParticipants)
+  const myJoinRequestStatus =
+    (myJoinRequest as { status?: string } | null)?.status ?? null
   const participantIds = new Set(participantsClean.map(p => p.id))
   const paymentMethodsList = (paymentOptions ?? []).filter(pm => pm.is_active !== false)
   
@@ -415,6 +431,19 @@ export default async function ProjectPage({
   if (collectorId) effectivePaidIds.add(collectorId)
   const effectivePaidCount = Math.min(effectivePaidIds.size, participantsCount)
   const collectedCentsDisplay = Math.min(perPersonCents * effectivePaidCount, totalCents)
+  const pendingSignalCount = viewerIsCollector ? pendingSignalsSet.size : 0
+  const pendingLateConfirmations = myParticipantId
+    ? lateTransfers.filter(t => t.to_participant_id === myParticipantId && t.sender_marked_at && !t.received_at).length
+    : 0
+  const outgoingPayAvailable =
+    !viewerIsCollector &&
+    !isAborted &&
+    !!myParticipantId &&
+    !!collectorId &&
+    !viewerPaid &&
+    !viewerHasPendingSignal
+  const pendingPaymentsCount =
+    pendingSignalCount + pendingLateConfirmations + (outgoingPayAvailable ? 1 : 0)
 
   const pollsForVoting = pollsForVotingBase.map(poll => ({
     id: poll.id,
@@ -522,6 +551,14 @@ export default async function ProjectPage({
           <div className="flex items-center gap-2">
             <LeaveProjectButton projectId={projectId} isOnlyOrganizer={isOnlyOrganizer} />
           </div>
+        ) : !isMemberActive && !isAborted ? (
+          <div className="flex items-center gap-2">
+            <JoinButton
+              projectId={projectId}
+              canJoinNow={canJoinNow}
+              requestStatus={myJoinRequestStatus}
+            />
+          </div>
         ) : null}
       </div>
 
@@ -536,6 +573,7 @@ export default async function ProjectPage({
           participants: participantsCount,
           activity: unreadCount,
           adminPending: viewerIsCollector ? (pendingForOrganizer ?? []).length : 0,
+          paymentsPending: pendingPaymentsCount || undefined,
         }}
         sections={{
           overview: (
@@ -584,17 +622,13 @@ export default async function ProjectPage({
                   <div className="border rounded-lg p-3 text-sm space-y-1">
                     <div className="text-xs uppercase opacity-60">Funds</div>
                     <div className="font-medium">
-                      {viewerIsOrganizer
-                        ? `Collected ${formatEuro(collectedCentsDisplay)} out of ${formatEuro(totalCents)}`
-                        : `Paid ${formatEuro(viewerPaidCents)} out of ${formatEuro(perPersonCents)}`}
+                      {`Collected ${formatEuro(collectedCentsDisplay)} out of ${formatEuro(totalCents)}`}
                     </div>
                   </div>
                   <div className="border rounded-lg p-3 text-sm space-y-1">
                     <div className="text-xs uppercase opacity-60">SETTLED</div>
                     <div className="font-medium">
-                      {viewerIsOrganizer
-                        ? `Settled ${effectivePaidCount} out of ${participantsCount}`
-                        : `Settled ${viewerPaid ? 1 : 0} out of ${participantsCount}`}
+                      {`Settled ${effectivePaidCount} out of ${participantsCount}`}
                     </div>
                   </div>
                 </div>

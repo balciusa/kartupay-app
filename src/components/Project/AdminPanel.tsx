@@ -145,13 +145,16 @@ export function AdminPanel({
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [participantsOpen])
   return (
-    <section className="space-y-4">
+    <section className="space-y-5">
       <div className="grid gap-4 md:grid-cols-2">
-        <div className="border rounded-xl p-4 space-y-3">
-          <div className="text-sm font-semibold">Organize</div>
+        <div className="border rounded-xl p-5 md:p-6 space-y-4">
+          <div className="space-y-1">
+            <div className="text-lg font-semibold">Organize</div>
+            <div className="text-sm text-muted-foreground">Manage participants and join requests.</div>
+          </div>
           <button
             type="button"
-            className="w-full px-3 py-2 rounded border text-sm"
+            className="w-full px-4 py-2 rounded-full border text-sm bg-white hover:bg-slate-50 disabled:opacity-50"
             disabled={!isOrganizer}
             onClick={() => setParticipantsOpen(true)}
           >
@@ -159,7 +162,7 @@ export function AdminPanel({
           </button>
           <button
             type="button"
-            className="w-full px-3 py-2 rounded border text-sm text-center disabled:opacity-50 flex items-center justify-center gap-2"
+            className="w-full px-4 py-2 rounded-full border text-sm text-center disabled:opacity-50 flex items-center justify-center gap-2 bg-white hover:bg-slate-50"
             disabled={!canManage}
             onClick={() => setRequestsOpen(true)}
           >
@@ -171,12 +174,15 @@ export function AdminPanel({
             )}
           </button>
         </div>
-        <div className="border rounded-xl p-4 space-y-3">
-          <div className="text-sm font-semibold">Project status</div>
+        <div className="border rounded-xl p-5 md:p-6 space-y-4">
+          <div className="space-y-1">
+            <div className="text-lg font-semibold">Project status</div>
+            <div className="text-sm text-muted-foreground">Finalize or cancel when needed.</div>
+          </div>
           <form className="w-full">
             <button
               type="submit"
-              className="w-full px-3 py-2 rounded bg-black text-white text-sm disabled:opacity-50"
+              className="w-full px-4 py-2 rounded-full bg-black text-white text-sm disabled:opacity-50"
               formAction={isOrganizer && canFinalize ? finalizeProject.bind(null, projectId) : undefined}
               disabled={!isOrganizer || !canFinalize}
             >
@@ -186,7 +192,7 @@ export function AdminPanel({
           <form className="w-full">
             <button
               type="submit"
-              className="w-full px-3 py-2 rounded border text-sm disabled:opacity-50"
+              className="w-full px-4 py-2 rounded-full border text-sm disabled:opacity-50 bg-white hover:bg-slate-50"
               formAction={isOrganizer && canCancel ? abortProject.bind(null, projectId) : undefined}
               disabled={!isOrganizer || !canCancel}
             >

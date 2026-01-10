@@ -1556,3 +1556,42 @@ export async function markChatRead(projectId: string) {
     throw error
   }
 }
+
+export async function cancelJoinRequest(projectId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+
+  const { error: updErr } = await supabaseAdmin
+    .from('join_requests')
+    .update({ status: 'canceled' })
+    .eq('project_id', projectId)
+    .eq('requester_user_id', uid)
+
+  if (updErr) {
+    console.error('[cancelJoinRequest] update error', updErr)
+    revalidatePath(`/project/${projectId}`)
+    return { ok: false, error: updErr.message }
+  }
+
+  revalidatePath(`/project/${projectId}`)
+  return { ok: true }
+}
+
+export async function cancelJoinRequestFromForm(formData: FormData) {
+  const projectId = String(formData.get('projectId') || '')
+  if (!projectId) {
+    console.error('[cancelJoinRequestFromForm] Missing projectId')
+    return { ok: false, error: 'Missing projectId' }
+  }
+
+  try {
+    const result = await cancelJoinRequest(projectId)
+    console.log('[cancelJoinRequestFromForm] cancel result', { projectId, result })
+    return result
+  } catch (err: any) {
+    console.error('[cancelJoinRequestFromForm] error', { projectId, error: err?.message || err, stack: err?.stack })
+    revalidatePath(`/project/${projectId}`)
+    return { ok: false, error: err?.message || 'Unknown error' }
+  }
+}

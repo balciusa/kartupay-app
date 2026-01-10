@@ -69,7 +69,7 @@ export default function Chat({
   }
 
   return (
-    <section className="space-y-3">
+    <section className="space-y-5">
       <form
         action={formData =>
           start(async () => {
@@ -77,7 +77,7 @@ export default function Chat({
             await postMessage(projectId, body)
             setText('')
           })}
-        className="space-y-2"
+        className="space-y-3"
       >
         <textarea
           name="body"
@@ -86,28 +86,30 @@ export default function Chat({
           value={text}
           onChange={event => setText(event.target.value)}
           rows={1}
-          className="w-full border rounded-full px-4 py-2 min-h-[44px] max-h-48 resize-none overflow-hidden"
+          className="w-full border rounded-full px-4 py-2.5 min-h-[48px] max-h-56 resize-none overflow-hidden bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
         />
         <div>
-          <button className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50" disabled={pending}>
+          <button className="px-4 py-2 rounded-full bg-black text-white disabled:opacity-50" disabled={pending}>
             {pending ? 'Posting...' : 'Post'}
           </button>
         </div>
       </form>
 
-      <ul className="divide-y">
+      <ul className="divide-y border rounded-xl bg-white">
         {topLevel.map(m => (
-          <li key={m.id} className="py-2">
-            <div className="text-sm opacity-70">
-              <strong>{authorLabel(m)}</strong>
-              {' · '}
-              <time dateTime={m.created_at}>{new Date(m.created_at).toLocaleString()}</time>
+          <li key={m.id} className="px-4 py-3 space-y-2">
+            <div className="text-sm text-muted-foreground flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-slate-900">{authorLabel(m)}</span>
+              <span className="text-xs">-</span>
+              <time dateTime={m.created_at} className="text-xs">
+                {new Date(m.created_at).toLocaleString()}
+              </time>
             </div>
-            <div className="whitespace-pre-wrap">{m.body}</div>
+            <div className="whitespace-pre-wrap text-sm text-slate-900">{m.body}</div>
             <div className="mt-2">
               <button
                 type="button"
-                className="text-xs text-slate-600 hover:text-black"
+                className="text-xs font-medium text-slate-600 hover:text-black"
                 onClick={() => {
                   setReplyOpenId(replyOpenId === m.id ? null : m.id)
                   setReplyText('')
@@ -133,12 +135,12 @@ export default function Chat({
                   value={replyText}
                   onChange={event => setReplyText(event.target.value)}
                   rows={1}
-                  className="w-full border rounded-full px-4 py-2 min-h-[40px] max-h-40 resize-none overflow-hidden"
+                  className="w-full border rounded-full px-4 py-2 min-h-[40px] max-h-40 resize-none overflow-hidden bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
                   placeholder="Write a reply"
                 />
                 <div>
                   <button
-                    className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
+                    className="px-4 py-2 rounded-full bg-black text-white disabled:opacity-50"
                     disabled={pending || replyText.trim().length === 0}
                   >
                     {pending ? 'Posting...' : 'Reply'}
@@ -148,15 +150,17 @@ export default function Chat({
             ) : null}
 
             {(repliesByParent.get(m.id) ?? []).length ? (
-              <ul className="mt-3 space-y-3 border-l pl-4">
+              <ul className="mt-3 space-y-3 border-l-2 border-slate-100 pl-4">
                 {(repliesByParent.get(m.id) ?? []).map(r => (
                   <li key={r.id}>
-                    <div className="text-sm opacity-70">
-                      <strong>{authorLabel(r)}</strong>
-                      {' · '}
-                      <time dateTime={r.created_at}>{new Date(r.created_at).toLocaleString()}</time>
+                    <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-slate-800">{authorLabel(r)}</span>
+                      <span className="text-[10px]">-</span>
+                      <time dateTime={r.created_at} className="text-[11px]">
+                        {new Date(r.created_at).toLocaleString()}
+                      </time>
                     </div>
-                    <div className="whitespace-pre-wrap">{r.body}</div>
+                    <div className="whitespace-pre-wrap text-sm text-slate-900">{r.body}</div>
                   </li>
                 ))}
               </ul>
