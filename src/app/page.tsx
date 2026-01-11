@@ -6,7 +6,7 @@ export default async function Home() {
   const supabase = createSupabaseServerClient()
   const { data: projects, error } = await supabase
     .from('projects')
-    .select('id, title, total_cents, min_participants, deadline_at, status, canceled_at')
+    .select('id, title, total_cents, min_participants, status, canceled_at')
     .order('created_at', { ascending: false })
 
   return (
@@ -42,7 +42,6 @@ export default async function Home() {
                 <div className="text-sm opacity-80">
                   Total: €{(p.total_cents/100).toFixed(2)} · Min: {p.min_participants}
                 </div>
-                <div className="text-xs opacity-60">Deadline: {new Date(p.deadline_at as any).toLocaleString()}</div>
                 {isCanceled ? (
                   <div className="text-xs text-red-700">
                     Canceled on {new Date(p.canceled_at as any).toLocaleString()}

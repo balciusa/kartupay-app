@@ -104,7 +104,6 @@ export function Participants(props: {
   preferred: Array<[string, Pref]>
   allOptions: Array<[string, Array<Opt>]>
   paidSet: Set<string>
-  afterDeadlineSet: Set<string>
   organizerId: string | null
   pendingRequests?: Array<{ id: string; requester_user_id: string; created_at: string; status: string }>
   showPendingRequests?: boolean
@@ -405,6 +404,11 @@ export function Participants(props: {
                     {isSelfRow && (
                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-black text-white">You</span>
                     )}
+                    {isLateParticipant && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-200 text-amber-900">
+                        Late joiner
+                      </span>
+                    )}
                     {showPayments && (
                       <span
                         className={statusClass}
@@ -422,11 +426,6 @@ export function Participants(props: {
                         {incomingBadgeText}
                       </span>
                     )}
-                    {showPayments && viewerShowsLateAwaitingChip && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-600 text-white">
-                        Sent {euros(pendingMarkedCents)} (late), awaiting confirmation
-                      </span>
-                    )}
                     {showPayments && viewerShowsLateSettledChip && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-600 text-white">
                         Settled (late)
@@ -436,6 +435,11 @@ export function Participants(props: {
                   {rowIsCollector && null}
                 </div>
                 <div className="flex items-center gap-2">
+                  {showPayments && viewerShowsLateAwaitingChip && (
+                    <span className="text-[10px] px-2 py-1 rounded bg-amber-600 text-white">
+                      Sent {euros(pendingMarkedCents)} (late), awaiting confirmation
+                    </span>
+                  )}
                   {showPay && (
                     <button
                       className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"

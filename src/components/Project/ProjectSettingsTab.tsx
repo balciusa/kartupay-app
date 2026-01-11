@@ -1,8 +1,21 @@
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { updateProjectSettings } from '@/app/project/[id]/actions'
 
-const toDateInput = (iso?: string | null) => (iso ? iso.slice(0, 10) : '')
-const toTimeInput = (iso?: string | null) => (iso ? iso.slice(11, 16) : '')
+const toLocalDateInput = (iso?: string | null) => {
+  if (!iso) return ''
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+const toLocalTimeInput = (iso?: string | null) => {
+  if (!iso) return ''
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
 
 export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
   const uid = await getCurrentUserId()
@@ -14,7 +27,7 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
   const { data: project } = await supabase
     .from('projects')
     .select(
-      'id, title, description, total_cents, total_is_per_person, min_participants, max_participants, deadline_at'
+      'id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at'
     )
     .eq('id', projectId)
     .single()
@@ -24,6 +37,14 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
   }
 
   const totalEur = (Number(project.total_cents ?? 0) / 100).toFixed(2)
+  const timeOptions = [
+    '',
+    ...Array.from({ length: 48 }, (_, idx) => {
+      const hours = Math.floor(idx / 2)
+      const minutes = idx % 2 === 0 ? '00' : '30'
+      return `${String(hours).padStart(2, '0')}:${minutes}`
+    }),
+  ]
 
   return (
     <div className="space-y-6">
@@ -108,23 +129,52 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
                 defaultValue={project.max_participants ?? ''}
               />
             </div>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-3">
             <div>
-              <label className="text-sm block mb-1">Deadline date (optional)</label>
-              <input
-                name="deadlineDate"
-                type="date"
-                className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                defaultValue={toDateInput(project.deadline_at)}
-              />
+              <label className="text-sm block mb-1">Event starts (optional)</label>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  name="event_start_date"
+                  type="date"
+                  className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+                  defaultValue={toLocalDateInput(project.event_start_at)}
+                />
+                <select
+                  name="event_start_time"
+                  className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+                  defaultValue={toLocalTimeInput(project.event_start_at)}
+                >
+                  {timeOptions.map(value => (
+                    <option key={value || 'blank'} value={value}>
+                      {value || 'Time'}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div>
-              <label className="text-sm block mb-1">Deadline time (optional)</label>
-              <input
-                name="deadlineTime"
-                type="time"
-                className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                defaultValue={toTimeInput(project.deadline_at)}
-              />
+              <label className="text-sm block mb-1">Event ends (optional)</label>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  name="event_end_date"
+                  type="date"
+                  className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+                  defaultValue={toLocalDateInput(project.event_end_at)}
+                />
+                <select
+                  name="event_end_time"
+                  className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+                  defaultValue={toLocalTimeInput(project.event_end_at)}
+                >
+                  {timeOptions.map(value => (
+                    <option key={value || 'blank'} value={value}>
+                      {value || 'Time'}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
 

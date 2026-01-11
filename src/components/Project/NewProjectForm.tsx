@@ -9,6 +9,29 @@ type NewProjectFormProps = {
 }
 
 export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Create' }: NewProjectFormProps) {
+  const timeOptions = [
+    '',
+    ...Array.from({ length: 48 }, (_, idx) => {
+      const hours = Math.floor(idx / 2)
+      const minutes = idx % 2 === 0 ? '00' : '30'
+      return `${String(hours).padStart(2, '0')}:${minutes}`
+    }),
+  ]
+  const sanitizeAmount = (event: React.FormEvent<HTMLInputElement>) => {
+    const input = event.currentTarget
+    const raw = input.value
+    const cleaned = raw.replace(/[^0-9.,]/g, '')
+    const firstSeparatorIndex = cleaned.search(/[.,]/)
+    if (firstSeparatorIndex === -1) {
+      input.value = cleaned
+      return
+    }
+    const integerPart = cleaned.slice(0, firstSeparatorIndex).replace(/[.,]/g, '')
+    const decimalPart = cleaned.slice(firstSeparatorIndex + 1).replace(/[.,]/g, '').slice(0, 2)
+    const separator = cleaned[firstSeparatorIndex]
+    input.value = `${integerPart}${separator}${decimalPart}`
+  }
+
   return (
     <form action={createProject} className="grid gap-3">
       <input name="title" placeholder="Project title" className="border rounded px-3 py-2" required />
@@ -23,6 +46,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
             inputMode="decimal"
             placeholder="199.99"
             className="border rounded px-3 py-2 w-full"
+            onInput={sanitizeAmount}
             required
           />
         </div>
@@ -62,12 +86,30 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
 
       <div className="grid md:grid-cols-2 gap-3">
         <div>
-          <label className="text-sm block mb-1">Deadline date (optional)</label>
-          <input name="deadlineDate" type="date" className="border rounded px-3 py-2 w-full" />
+          <label className="text-sm block mb-1">Event starts (optional)</label>
+          <div className="grid grid-cols-2 gap-2">
+            <input name="event_start_date" type="date" className="border rounded px-3 py-2 w-full" />
+            <select name="event_start_time" className="border rounded px-3 py-2 w-full">
+              {timeOptions.map(value => (
+                <option key={value || 'blank'} value={value}>
+                  {value || 'Time'}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
         <div>
-          <label className="text-sm block mb-1">Deadline time (optional)</label>
-          <input name="deadlineTime" type="time" className="border rounded px-3 py-2 w-full" />
+          <label className="text-sm block mb-1">Event ends (optional)</label>
+          <div className="grid grid-cols-2 gap-2">
+            <input name="event_end_date" type="date" className="border rounded px-3 py-2 w-full" />
+            <select name="event_end_time" className="border rounded px-3 py-2 w-full">
+              {timeOptions.map(value => (
+                <option key={value || 'blank'} value={value}>
+                  {value || 'Time'}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 

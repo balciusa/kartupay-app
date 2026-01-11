@@ -114,7 +114,7 @@ export function OutgoingTransfer({
             className="px-3 py-1.5 rounded border border-amber-500 bg-amber-300 text-xs text-amber-900 cursor-default"
             disabled
           >
-            Waiting Payment Confirmation
+            Awaiting confirmation
           </button>
         ) : !canPay ? (
           <span className="text-xs opacity-70">Waiting for minimum participants</span>
@@ -182,7 +182,7 @@ export function OutgoingTransfer({
                     className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50 w-full sm:w-auto"
                     disabled={!canSelfReport}
                   >
-                    I&apos;ve paid
+                    I&apos;ve paid {amountLabel}
                   </button>
                 </form>
               ) : (

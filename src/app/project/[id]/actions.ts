@@ -503,7 +503,7 @@ export async function requestJoin(projectId: string) {
 
   const { data: project, error: pErr } = await supabaseAdmin
     .from('projects')
-    .select('id, status, deadline_at, canceled_at')
+    .select('id, status, canceled_at')
     .eq('id', projectId)
     .single()
   if (pErr || !project) {
@@ -1051,7 +1051,6 @@ export async function confirmLateJoinReceipt(transferId: string) {
 
 /**
  * Mark a participant's payment as received.
- * If after the deadline, it won't count toward the threshold (is_counted = false).
  */
 export async function markReceived(participantId: string) {
   const { data: participant, error: e1 } = await supabaseAdmin
@@ -1061,20 +1060,9 @@ export async function markReceived(participantId: string) {
     .single()
   if (e1 || !participant) throw new Error('Participant not found')
 
-  const { data: project, error: e2 } = await supabaseAdmin
-    .from('projects')
-    .select('deadline_at')
-    .eq('id', participant.project_id)
-    .single()
-  if (e2 || !project) throw new Error('Project not found')
-
-  const isCounted = project.deadline_at
-    ? new Date() <= new Date(project.deadline_at as any)
-    : true
-
   const { error: e3 } = await supabaseAdmin
     .from('payments')
-    .insert({ participant_id: participantId, is_counted: isCounted })
+    .insert({ participant_id: participantId, is_counted: true })
   if (e3) throw e3
 
   // Clear payment signals if they exist (ignore if table doesn't exist)
@@ -1392,9 +1380,10 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   const totalIsPerPerson = (formData.get('total_is_per_person') as string) === 'true'
   const minRaw = String(formData.get('min_participants') ?? '').trim()
   const maxRaw = String(formData.get('max_participants') ?? '').trim()
-  const deadlineDate = (formData.get('deadlineDate') as string) ?? null
-  const deadlineTime = (formData.get('deadlineTime') as string) ?? null
-
+  const eventStartDate = (formData.get('event_start_date') as string) ?? null
+  const eventStartTime = (formData.get('event_start_time') as string) ?? null
+  const eventEndDate = (formData.get('event_end_date') as string) ?? null
+  const eventEndTime = (formData.get('event_end_time') as string) ?? null
   if (!title) throw new Error('Title is required')
 
   const normalizedAmount = totalEur.replace(',', '.').trim()
@@ -1416,13 +1405,29 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     throw new Error('Max participants must be greater than or equal to min participants')
   }
 
-  let deadline_at: string | null = null
-  if (deadlineDate && deadlineTime) {
-    const combined = new Date(`${deadlineDate}T${deadlineTime}:00`)
-    if (isNaN(+combined)) {
-      throw new Error('Invalid deadline date or time')
+  const parseEventDateTime = (
+    dateValue: string | null | undefined,
+    timeValue: string | null | undefined,
+    defaultTime: string
+  ) => {
+    const dateRaw = (dateValue ?? '').trim()
+    const timeRaw = (timeValue ?? '').trim()
+    if (!dateRaw && !timeRaw) return null
+    if (!dateRaw && timeRaw) {
+      throw new Error('Event time requires a date')
     }
-    deadline_at = combined.toISOString()
+    const time = timeRaw || defaultTime
+    const combined = `${dateRaw}T${time}`
+    const parsed = new Date(combined)
+    if (Number.isNaN(parsed.getTime())) {
+      throw new Error('Invalid event date or time')
+    }
+    return parsed.toISOString()
+  }
+  const eventStartAt = parseEventDateTime(eventStartDate, eventStartTime, '09:00')
+  const eventEndAt = parseEventDateTime(eventEndDate, eventEndTime, '17:00')
+  if (eventStartAt && eventEndAt && new Date(eventEndAt) < new Date(eventStartAt)) {
+    throw new Error('Event end must be after event start')
   }
 
   const { error } = await supabaseAdmin
@@ -1434,7 +1439,8 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
       total_is_per_person: totalIsPerPerson,
       min_participants: minParticipants,
       max_participants: maxParticipants,
-      deadline_at,
+      event_start_at: eventStartAt,
+      event_end_at: eventEndAt,
     })
     .eq('id', projectId)
   if (error) throw error

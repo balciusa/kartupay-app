@@ -63,7 +63,7 @@ export default async function ProjectPage({
   const supabase = await getSupabaseServer()
 
   const baseProjectFields =
-    'id, title, description, total_cents, total_is_per_person, min_participants, max_participants, deadline_at, status, canceled_at, collector_participant_id'
+    'id, title, description, total_cents, total_is_per_person, min_participants, max_participants, status, canceled_at, collector_participant_id, event_start_at, event_end_at'
   const optionalProjectFields = ['closed_at', 'aborted_at', 'finalized_at'] as const
   let optionalFields = [...optionalProjectFields]
   const missingFields = new Set<string>()
@@ -134,6 +134,19 @@ export default async function ProjectPage({
   const abortedAtDisplay = (project.aborted_at as string | null) ?? (project.canceled_at as string | null) ?? null
   const abortedAtLocale = abortedAtDisplay ? new Date(abortedAtDisplay).toLocaleString() : null
   const closedAt = (project.closed_at as string | null) ?? null
+  const formatLocal24 = (value: string | null) =>
+    value
+      ? new Date(value).toLocaleString(undefined, {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        })
+      : null
+  const eventStartLocale = formatLocal24(project.event_start_at as string | null)
+  const eventEndLocale = formatLocal24(project.event_end_at as string | null)
 
   const uid = await getCurrentUserId()
 
@@ -360,12 +373,6 @@ export default async function ProjectPage({
   const countedPayments = payments.filter(p => p.is_counted === true)
   const paidIds = countedPayments.map(p => p.participant_id)
   
-  const deadline = project.deadline_at ? new Date(project.deadline_at as any) : null
-  const afterDeadlineIds = payments
-    .filter(p => (deadline ? new Date(p.created_at) > deadline : false))
-    .map(p => p.participant_id)
-  const afterDeadlineSet = new Set(afterDeadlineIds)
-
   // Calculate scenarios
   const totalIsPerPerson = !!project.total_is_per_person
   const storedTotalCents = Number(project.total_cents ?? 0)
@@ -461,6 +468,11 @@ export default async function ProjectPage({
   const lateJoinerPendingIds = new Set(
     lateTransfers.filter(t => !t.received_at).map(t => t.from_participant_id)
   )
+  const lateJoinersCount = lateJoinerIds.size
+  const lateTransfersPendingCount = lateTransfers.filter(t => !t.received_at).length
+  const lateTransfersPendingCents = lateTransfers
+    .filter(t => !t.received_at)
+    .reduce((sum, t) => sum + t.expected_cents, 0)
   const settledIds = new Set<string>(basePaidSet)
   for (const id of lateJoinerIds) {
     if (!lateJoinerPendingIds.has(id)) settledIds.add(id)
@@ -491,8 +503,14 @@ export default async function ProjectPage({
     !!collectorId &&
     !viewerPaid &&
     !viewerHasPendingSignal
+  const lateOutgoingDueCount = lateOutgoingTransfers.length
+  const outgoingPaymentsDueCount = isFinalized
+    ? lateOutgoingDueCount
+    : outgoingPayAvailable
+      ? 1
+      : 0
   const pendingPaymentsCount =
-    pendingSignalCount + pendingLateConfirmations + (outgoingPayAvailable ? 1 : 0)
+    pendingSignalCount + pendingLateConfirmations + outgoingPaymentsDueCount
 
   const pollsForVoting = pollsForVotingBase.map(poll => ({
     id: poll.id,
@@ -584,9 +602,6 @@ export default async function ProjectPage({
         <div>
           <h1 className="text-3xl font-semibold flex items-center gap-2">
             {project.title}
-            {isClosedStatus && (
-              <span className="text-xs px-2 py-0.5 rounded bg-black text-white">Finalized</span>
-            )}
             {isAborted && (
               <span className="text-xs px-2 py-0.5 rounded bg-red-600 text-white">Aborted</span>
             )}
@@ -594,8 +609,24 @@ export default async function ProjectPage({
           {project.description && (
             <div className="text-sm opacity-70 mt-2">{project.description}</div>
           )}
+          {(eventStartLocale || eventEndLocale) && (
+            <div className={`text-sm text-slate-600 ${project.description ? 'mt-1' : 'mt-2'}`}>
+              {eventStartLocale && eventEndLocale
+                ? `Event: ${eventStartLocale} – ${eventEndLocale}`
+                : eventStartLocale
+                  ? `Event starts: ${eventStartLocale}`
+                  : `Event ends: ${eventEndLocale}`}
+            </div>
+          )}
         </div>
-        {isMemberActive && !viewerIsCollector ? (
+        {isClosedStatus ? (
+          <div className="flex items-center gap-2">
+            <span className="px-3 py-1.5 rounded bg-black text-white text-sm">Finalized</span>
+            {!isMemberActive && !isAborted ? (
+              <JoinButton projectId={projectId} canJoinNow={canJoinNow} requestStatus={myJoinRequestStatus} />
+            ) : null}
+          </div>
+        ) : isMemberActive && !viewerIsCollector && !isFinalized && !isAborted ? (
           <div className="flex items-center gap-2">
             <LeaveProjectButton projectId={projectId} isOnlyOrganizer={isOnlyOrganizer} />
           </div>
@@ -631,9 +662,17 @@ export default async function ProjectPage({
                 minParticipants={project.min_participants as number | null}
                 participantsNow={participantsNow}
                 scenarios={scenarios}
-                deadlineISO={(project.deadline_at as string) ?? undefined}
                 maxParticipants={project.max_participants as number | null}
                 collectorLabel={collectorLabel}
+                lateSummary={
+                  lateJoinersCount > 0
+                    ? {
+                        joinersCount: lateJoinersCount,
+                        pendingCount: lateTransfersPendingCount,
+                        pendingCents: lateTransfersPendingCents,
+                      }
+                    : null
+                }
               />
             </div>
           ),
@@ -645,7 +684,6 @@ export default async function ProjectPage({
               preferred={preferredEntries}
               allOptions={allOptionsEntries}
               paidSet={paidSet}
-              afterDeadlineSet={afterDeadlineSet}
               organizerId={organizerId}
               pendingRequests={viewerIsCollector ? (pendingForOrganizer ?? []) : []}
               showPendingRequests={false}
@@ -827,7 +865,7 @@ export default async function ProjectPage({
               pendingCount={viewerIsOrganizer ? (pendingForOrganizer ?? []).length : 0}
               isOrganizer={viewerIsOrganizer}
               canFinalize={isCollectingStatus && !isAborted}
-              canCancel={!isAborted}
+              canCancel={!isAborted && !isFinalized}
             />
           ) : null,
         }}

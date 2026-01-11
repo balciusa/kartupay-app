@@ -9,13 +9,35 @@ import { getCurrentUserId } from '@/lib/supabaseServer'
 const schema = z.object({
   title: z.string().min(3).max(120),
   description: z.string().max(2000).optional().nullable(),
-  totalEur: z.string().regex(/^\d+(\.\d{1,2})?$/),
+  totalEur: z.string().trim().regex(/^\d+([.,]\d{1,2})?$/),
   total_is_per_person: z.enum(['true', 'false']),
   min_participants: z.string().optional().nullable(),
   max_participants: z.string().optional().nullable(),
-  deadlineDate: z.string().optional().nullable(),
-  deadlineTime: z.string().optional().nullable(),
+  event_start_date: z.string().optional().nullable(),
+  event_start_time: z.string().optional().nullable(),
+  event_end_date: z.string().optional().nullable(),
+  event_end_time: z.string().optional().nullable(),
 })
+
+const parseEventDateTime = (
+  dateValue: string | null | undefined,
+  timeValue: string | null | undefined,
+  defaultTime: string
+) => {
+  const dateRaw = (dateValue ?? '').trim()
+  const timeRaw = (timeValue ?? '').trim()
+  if (!dateRaw && !timeRaw) return null
+  if (!dateRaw && timeRaw) {
+    throw new Error('Event time requires a date')
+  }
+  const time = timeRaw || defaultTime
+  const combined = `${dateRaw}T${time}`
+  const parsed = new Date(combined)
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error('Invalid event date or time')
+  }
+  return parsed.toISOString()
+}
 
 export async function createProject(formData: FormData) {
   const uid = await getCurrentUserId()
@@ -30,8 +52,10 @@ export async function createProject(formData: FormData) {
     total_is_per_person: (formData.get('total_is_per_person') as string) ?? 'false',
     min_participants: formData.get('min_participants') as any,
     max_participants: formData.get('max_participants') as any,
-    deadlineDate: (formData.get('deadlineDate') as string) ?? null,
-    deadlineTime: (formData.get('deadlineTime') as string) ?? null,
+    event_start_date: (formData.get('event_start_date') as string) ?? null,
+    event_start_time: (formData.get('event_start_time') as string) ?? null,
+    event_end_date: (formData.get('event_end_date') as string) ?? null,
+    event_end_time: (formData.get('event_end_time') as string) ?? null,
   }
 
   const parsed = schema.safeParse(payload)
@@ -46,8 +70,10 @@ export async function createProject(formData: FormData) {
     total_is_per_person,
     min_participants,
     max_participants,
-    deadlineDate,
-    deadlineTime,
+    event_start_date,
+    event_start_time,
+    event_end_date,
+    event_end_time,
   } = parsed.data
 
   const minRaw = String(min_participants ?? '').trim()
@@ -72,14 +98,10 @@ export async function createProject(formData: FormData) {
   }
   const total_cents = Math.round(amountFloat * 100)
   const totalIsPerPerson = total_is_per_person === 'true'
-
-  let deadline_at: string | null = null
-  if (deadlineDate && deadlineTime) {
-    const combined = new Date(`${deadlineDate}T${deadlineTime}:00`)
-    if (isNaN(+combined)) {
-      throw new Error('Invalid deadline date or time')
-    }
-    deadline_at = combined.toISOString()
+  const eventStartAt = parseEventDateTime(event_start_date, event_start_time, '09:00')
+  const eventEndAt = parseEventDateTime(event_end_date, event_end_time, '17:00')
+  if (eventStartAt && eventEndAt && new Date(eventEndAt) < new Date(eventStartAt)) {
+    throw new Error('Event end must be after event start')
   }
 
   const { data: proj, error: pErr } = await supabaseAdmin
@@ -91,7 +113,8 @@ export async function createProject(formData: FormData) {
       total_is_per_person: totalIsPerPerson,
       min_participants: minParticipants,
       max_participants: maxParticipants,
-      deadline_at,
+      event_start_at: eventStartAt,
+      event_end_at: eventEndAt,
       status: 'collecting',
     })
     .select('id')
