@@ -1,6 +1,6 @@
 'use client'
 
-import { ReactNode, useMemo, useState } from 'react'
+import { ReactNode, useEffect, useMemo, useState } from 'react'
 
 type TabKey = 'overview' | 'participants' | 'payments' | 'activity' | 'profile' | 'voting' | 'settings' | 'admin'
 
@@ -11,7 +11,7 @@ type TabCounts = {
   paymentsPending?: number
 }
 
-type TabSectionMap = Record<TabKey, ReactNode>
+type TabSectionMap = Partial<Record<TabKey, ReactNode>>
 
 const badgeClasses = {
   neutral: 'bg-slate-100 text-slate-700 border border-slate-200',
@@ -34,21 +34,28 @@ export function ProjectTabs({
   const activityBadge = active === 'activity' || chatSeen ? undefined : counts?.activity
   const tabs = useMemo(() => {
     const baseTabs = [
-      { key: 'overview' as const, label: 'Overview' },
-      { key: 'participants' as const, label: 'Participants', badge: counts?.participants, badgeStyle: 'neutral' },
+      { key: 'overview' as const, label: 'Overview', enabled: !!sections.overview },
+      {
+        key: 'participants' as const,
+        label: 'Participants',
+        badge: counts?.participants,
+        badgeStyle: 'neutral',
+        enabled: !!sections.participants,
+      },
       {
         key: 'payments' as const,
         label: 'Payments',
         badge: counts?.paymentsPending,
         badgeStyle: 'warning',
+        enabled: !!sections.payments,
       },
-      { key: 'activity' as const, label: 'Chat', badge: activityBadge, badgeStyle: 'solid' },
-      { key: 'profile' as const, label: 'Profile' },
-      { key: 'voting' as const, label: 'Voting' },
+      { key: 'activity' as const, label: 'Chat', badge: activityBadge, badgeStyle: 'solid', enabled: !!sections.activity },
+      { key: 'profile' as const, label: 'Profile', enabled: !!sections.profile },
+      { key: 'voting' as const, label: 'Voting', enabled: !!sections.voting },
     ]
 
     if (sections.settings) {
-      baseTabs.push({ key: 'settings' as const, label: 'Settings' })
+      baseTabs.push({ key: 'settings' as const, label: 'Settings', enabled: true })
     }
 
     if (sections.admin) {
@@ -57,17 +64,26 @@ export function ProjectTabs({
         label: 'Admin',
         badge: counts?.adminPending ? `${counts.adminPending} pending` : null,
         badgeStyle: 'warning',
+        enabled: true,
       })
     }
 
-    return baseTabs
-  }, [counts, activityBadge, sections.admin])
+    return baseTabs.filter(tab => tab.enabled)
+  }, [counts, activityBadge, sections])
+
+  const resolvedActive = tabs.some(tab => tab.key === active) ? active : (tabs[0]?.key ?? defaultTab)
+
+  useEffect(() => {
+    if (active !== resolvedActive) {
+      setActive(resolvedActive)
+    }
+  }, [active, resolvedActive])
 
   return (
     <section className="border rounded-xl overflow-hidden">
       <div className="flex flex-wrap items-center gap-1 border-b bg-white px-2" role="tablist">
         {tabs.map(tab => {
-          const isActive = active === tab.key
+          const isActive = resolvedActive === tab.key
           return (
             <button
               key={tab.key}
@@ -102,7 +118,7 @@ export function ProjectTabs({
         })}
       </div>
 
-      <div className="p-4">{sections[active]}</div>
+      <div className="p-4">{sections[resolvedActive]}</div>
     </section>
   )
 }

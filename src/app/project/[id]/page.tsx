@@ -386,6 +386,7 @@ export default async function ProjectPage({
     ? perPersonCents * Math.max(1, participantsCount)
     : storedTotalCents
   const participantsNow = participantsCount
+  const showPaymentsTab = participantsCount > 1
   const viewerPaid = !!(myParticipantId && paidSet.has(myParticipantId))
   const viewerHasPendingSignal = !!(myParticipantId && pendingSignalsSet.has(myParticipantId))
   const viewerPaidCents = viewerPaid ? perPersonCents : 0
@@ -700,7 +701,7 @@ export default async function ProjectPage({
               projectStatus={project.status}
             />
           ),
-          payments: (
+          payments: showPaymentsTab ? (
             <div className="space-y-4">
               <section className="border rounded-xl p-4 space-y-2">
                 <h2 className="text-lg font-semibold">Balances</h2>
@@ -836,7 +837,7 @@ export default async function ProjectPage({
                 )}
               </section>
             </div>
-          ),
+          ) : undefined,
           voting: (
             <Voting
               projectId={projectId}
