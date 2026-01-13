@@ -622,7 +622,7 @@ export default async function ProjectPage({
         </div>
         {isClosedStatus ? (
           <div className="flex items-center gap-2">
-            <span className="px-3 py-1.5 rounded bg-black text-white text-sm">Finalized</span>
+            <span className="px-3 py-1.5 rounded bg-black text-white text-sm">Closed</span>
             {!isMemberActive && !isAborted ? (
               <JoinButton projectId={projectId} canJoinNow={canJoinNow} requestStatus={myJoinRequestStatus} />
             ) : null}

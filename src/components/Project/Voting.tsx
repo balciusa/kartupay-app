@@ -51,53 +51,77 @@ export default function Voting({
         </div>
       )}
 
-      <Card className="p-5 md:p-6 space-y-4">
+      <Card className="p-4 md:p-5 space-y-3">
         <div className="space-y-1">
-          <div className="text-lg font-semibold">Create poll</div>
+          <div className="text-base font-semibold">Create poll</div>
           <div className="text-sm text-muted-foreground">
             Add a new idea for the group to vote on. Optional extra cost is per person.
           </div>
         </div>
-        <form action={createPoll.bind(null, projectId)} className="grid gap-3 md:grid-cols-6">
+        <form action={createPoll.bind(null, projectId)} className="grid gap-2 md:grid-cols-12">
           <input
             name="title"
             placeholder="Poll title"
-            className="border rounded-md px-3 py-2 md:col-span-2 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+            className="border rounded-md px-3 py-2 md:col-span-5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
             required
             disabled={!canVote || projectCanceled}
           />
           <input
             name="description"
             placeholder="Short description (optional)"
-            className="border rounded-md px-3 py-2 md:col-span-3 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+            className="border rounded-md px-3 py-2 md:col-span-5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
             disabled={!canVote || projectCanceled}
           />
-          <input
-            name="extra_cost"
-            type="number"
-            min="0"
-            step="0.01"
-            placeholder="Extra cost"
-            className="border rounded-md px-3 py-2 md:col-span-1 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-            disabled={!canVote || projectCanceled}
-          />
-          <input
-            name="required_votes"
-            type="number"
-            min="1"
-            step="1"
-            placeholder="Required votes"
-            className="border rounded-md px-3 py-2 md:col-span-1 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-            disabled={!canVote || projectCanceled}
-          />
+          <div className="md:col-span-2 grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label
+                htmlFor="create_extra_cost"
+                className="text-[11px] uppercase tracking-wide text-muted-foreground"
+              >
+                Extra per person
+              </label>
+              <input
+                id="create_extra_cost"
+                name="extra_cost"
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="0.00"
+                className="border rounded-md px-3 py-2 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+                disabled={!canVote || projectCanceled}
+              />
+            </div>
+            <div className="space-y-1">
+              <label
+                htmlFor="create_required_votes"
+                className="text-[11px] uppercase tracking-wide text-muted-foreground"
+              >
+                Votes needed
+              </label>
+              <input
+                id="create_required_votes"
+                name="required_votes"
+                type="number"
+                min="1"
+                step="1"
+                placeholder="1"
+                className="border rounded-md px-3 py-2 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+                disabled={!canVote || projectCanceled}
+              />
+            </div>
+          </div>
           <textarea
             name="options"
             placeholder="Options (one per line)"
-            className="border rounded-md px-3 py-2 md:col-span-5 min-h-[110px] bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+            className="border rounded-md px-3 py-2 md:col-span-10 min-h-[88px] bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
             disabled={!canVote || projectCanceled}
           />
-          <div className="md:col-span-6">
-            <Button type="submit" disabled={!canVote || projectCanceled} className="rounded-full px-5">
+          <div className="md:col-span-2 md:flex md:justify-end md:self-end">
+            <Button
+              type="submit"
+              disabled={!canVote || projectCanceled}
+              className="w-full md:w-auto rounded-full px-4 py-2 text-sm"
+            >
               Create poll
             </Button>
           </div>

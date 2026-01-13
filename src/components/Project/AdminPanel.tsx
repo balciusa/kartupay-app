@@ -177,7 +177,7 @@ export function AdminPanel({
         <div className="border rounded-xl p-5 md:p-6 space-y-4">
           <div className="space-y-1">
             <div className="text-lg font-semibold">Project status</div>
-            <div className="text-sm text-muted-foreground">Finalize or cancel when needed.</div>
+              <div className="text-sm text-muted-foreground">Close or cancel when needed.</div>
           </div>
           <form className="w-full">
             <button
@@ -186,8 +186,8 @@ export function AdminPanel({
               formAction={isOrganizer && canFinalize ? finalizeProject.bind(null, projectId) : undefined}
               disabled={!isOrganizer || !canFinalize}
             >
-              Finalize project
-            </button>
+                Close project
+              </button>
           </form>
           <form className="w-full">
             <button
