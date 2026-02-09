@@ -1143,6 +1143,7 @@ export async function createPoll(projectId: string, formData: FormData) {
   const description =
     ((formData.get('project_description') as string) || (formData.get('description') as string) || '').trim() || null
   const extraCostRaw = (formData.get('extra_cost') as string)?.trim() || ''
+  const extraIsPerPerson = (formData.get('extra_is_per_person') as string) === 'true'
   const requiredVotesRaw = (formData.get('required_votes') as string)?.trim() || ''
   const optionsRaw = (formData.get('options') as string)?.trim() || ''
   if (!title) throw new Error('Title is required')
@@ -1170,19 +1171,42 @@ export async function createPoll(projectId: string, formData: FormData) {
   if (participantErr) throw participantErr
   if (!participant?.length) throw new Error('Only participants can create proposals')
 
-  const { data: poll, error } = await supabaseAdmin
+  let poll: { id: string } | null = null
+  const insertWithType = await supabaseAdmin
     .from('polls')
     .insert({
       project_id: projectId,
       title,
       description,
       extra_cents: extraCents,
+      extra_is_per_person: extraIsPerPerson,
       required_votes: requiredVotes,
       created_by: uid,
     })
     .select('id')
     .single()
-  if (error) throw error
+  if (insertWithType.error) {
+    if (missingColumn(insertWithType.error, 'extra_is_per_person')) {
+      const fallbackInsert = await supabaseAdmin
+        .from('polls')
+        .insert({
+          project_id: projectId,
+          title,
+          description,
+          extra_cents: extraCents,
+          required_votes: requiredVotes,
+          created_by: uid,
+        })
+        .select('id')
+        .single()
+      if (fallbackInsert.error) throw fallbackInsert.error
+      poll = fallbackInsert.data
+    } else {
+      throw insertWithType.error
+    }
+  } else {
+    poll = insertWithType.data
+  }
   if (!poll?.id) throw new Error('Failed to create poll')
 
   const { error: optionsErr } = await supabaseAdmin
@@ -1285,6 +1309,7 @@ export async function updatePoll(projectId: string, pollId: string, formData: Fo
   const description =
     ((formData.get('project_description') as string) || (formData.get('description') as string) || '').trim() || null
   const extraCostRaw = (formData.get('extra_cost') as string)?.trim() || ''
+  const extraIsPerPerson = (formData.get('extra_is_per_person') as string) !== 'false'
   const requiredVotesRaw = (formData.get('required_votes') as string)?.trim() || ''
   const optionsRaw = (formData.get('options') as string)?.trim() || ''
   if (!title) throw new Error('Title is required')
@@ -1302,17 +1327,34 @@ export async function updatePoll(projectId: string, pollId: string, formData: Fo
     .filter(Boolean)
   if (options.length === 0) throw new Error('At least one option is required')
 
-  const { error: updateErr } = await supabaseAdmin
+  const updateWithType = await supabaseAdmin
     .from('polls')
     .update({
       title,
       description,
       extra_cents: extraCents,
+      extra_is_per_person: extraIsPerPerson,
       required_votes: requiredVotes,
     })
     .eq('id', pollId)
     .eq('project_id', projectId)
-  if (updateErr) throw updateErr
+  if (updateWithType.error) {
+    if (missingColumn(updateWithType.error, 'extra_is_per_person')) {
+      const fallbackUpdate = await supabaseAdmin
+        .from('polls')
+        .update({
+          title,
+          description,
+          extra_cents: extraCents,
+          required_votes: requiredVotes,
+        })
+        .eq('id', pollId)
+        .eq('project_id', projectId)
+      if (fallbackUpdate.error) throw fallbackUpdate.error
+    } else {
+      throw updateWithType.error
+    }
+  }
 
   const { error: deleteErr } = await supabaseAdmin
     .from('poll_options')

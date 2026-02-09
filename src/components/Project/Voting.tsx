@@ -1,6 +1,7 @@
-import { castPollVote, createPoll, deletePoll, updatePoll } from '@/app/project/[id]/actions'
+import { castPollVote, deletePoll, updatePoll } from '@/app/project/[id]/actions'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { CreatePollModal } from './CreatePollModal'
 
 type PollOption = {
   id: string
@@ -13,6 +14,7 @@ type Poll = {
   title: string
   description: string | null
   extra_cents: number
+  extra_is_per_person: boolean
   required_votes: number
   options: PollOption[]
   user_option_id?: string | null
@@ -51,82 +53,19 @@ export default function Voting({
         </div>
       )}
 
-      <Card className="p-4 md:p-5 space-y-3">
+      <div className="flex items-center justify-between">
         <div className="space-y-1">
-          <div className="text-base font-semibold">Create poll</div>
+          <div className="text-base font-semibold">Polls</div>
           <div className="text-sm text-muted-foreground">
-            Add a new idea for the group to vote on. Optional extra cost is per person.
+            Vote on ideas and proposals for the group
           </div>
         </div>
-        <form action={createPoll.bind(null, projectId)} className="grid gap-2 md:grid-cols-12">
-          <input
-            name="title"
-            placeholder="Poll title"
-            className="border rounded-md px-3 py-2 md:col-span-5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-            required
-            disabled={!canVote || projectCanceled}
-          />
-          <input
-            name="description"
-            placeholder="Short description (optional)"
-            className="border rounded-md px-3 py-2 md:col-span-5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-            disabled={!canVote || projectCanceled}
-          />
-          <div className="md:col-span-2 grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <label
-                htmlFor="create_extra_cost"
-                className="text-[11px] uppercase tracking-wide text-muted-foreground"
-              >
-                Extra per person
-              </label>
-              <input
-                id="create_extra_cost"
-                name="extra_cost"
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="0.00"
-                className="border rounded-md px-3 py-2 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                disabled={!canVote || projectCanceled}
-              />
-            </div>
-            <div className="space-y-1">
-              <label
-                htmlFor="create_required_votes"
-                className="text-[11px] uppercase tracking-wide text-muted-foreground"
-              >
-                Votes needed
-              </label>
-              <input
-                id="create_required_votes"
-                name="required_votes"
-                type="number"
-                min="1"
-                step="1"
-                placeholder="1"
-                className="border rounded-md px-3 py-2 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                disabled={!canVote || projectCanceled}
-              />
-            </div>
-          </div>
-          <textarea
-            name="options"
-            placeholder="Options (one per line)"
-            className="border rounded-md px-3 py-2 md:col-span-10 min-h-[88px] bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-            disabled={!canVote || projectCanceled}
-          />
-          <div className="md:col-span-2 md:flex md:justify-end md:self-end">
-            <Button
-              type="submit"
-              disabled={!canVote || projectCanceled}
-              className="w-full md:w-auto rounded-full px-4 py-2 text-sm"
-            >
-              Create poll
-            </Button>
-          </div>
-        </form>
-      </Card>
+        <CreatePollModal
+          projectId={projectId}
+          canVote={canVote}
+          projectCanceled={projectCanceled}
+        />
+      </div>
 
       {polls.length === 0 ? (
         <div className="text-sm text-muted-foreground">No polls yet.</div>
@@ -144,7 +83,8 @@ export default function Voting({
                   ) : null}
                 </div>
                 <div className="text-xs px-2 py-1 rounded-full border bg-white text-slate-700">
-                  +{(poll.extra_cents / 100).toFixed(2)} / person • {poll.required_votes} votes
+                  +{(poll.extra_cents / 100).toFixed(2)}{' '}
+                  {poll.extra_is_per_person ? '/ person' : 'grand total'} | {poll.required_votes} votes
                 </div>
               </div>
 
@@ -209,6 +149,31 @@ export default function Voting({
                         className="border rounded-md px-3 py-2 md:col-span-1 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
                         disabled={projectCanceled}
                       />
+                      <div className="border rounded-md px-3 py-2 md:col-span-2 bg-white">
+                        <div className="text-xs text-muted-foreground mb-2">Extra cost type</div>
+                        <div className="space-y-1">
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="radio"
+                              name="extra_is_per_person"
+                              value="true"
+                              defaultChecked={poll.extra_is_per_person}
+                              disabled={projectCanceled}
+                            />
+                            Extra cost per person
+                          </label>
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="radio"
+                              name="extra_is_per_person"
+                              value="false"
+                              defaultChecked={!poll.extra_is_per_person}
+                              disabled={projectCanceled}
+                            />
+                            Extra grand total
+                          </label>
+                        </div>
+                      </div>
                       <input
                         name="required_votes"
                         type="number"

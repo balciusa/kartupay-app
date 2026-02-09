@@ -67,15 +67,22 @@ export function NewProjectModal() {
             role="dialog"
             aria-modal="true"
             aria-label="New project"
-            className="relative w-full max-w-xl rounded-lg bg-white shadow-lg border flex flex-col max-h-[90vh]"
+            className="relative w-full max-w-2xl rounded-xl bg-white shadow-xl border flex flex-col max-h-[90vh]"
           >
-            <div className="px-4 py-3 border-b font-medium flex items-center justify-between">
-              <span>New project</span>
-              <button type="button" className="text-sm px-2 py-1 rounded border" onClick={() => setOpen(false)}>
-                Close
+            <div className="px-5 py-4 border-b flex items-center justify-between">
+              <div className="space-y-0.5">
+                <h2 className="text-lg font-semibold">New project</h2>
+                <p className="text-sm text-muted-foreground">Set up a project and invite members to join</p>
+              </div>
+              <button
+                type="button"
+                className="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50 transition-colors"
+                onClick={() => setOpen(false)}
+              >
+                Cancel
               </button>
             </div>
-            <div className="p-4 space-y-3 overflow-y-auto">
+            <div className="p-5 space-y-3 overflow-y-auto">
               <NewProjectForm showCancel onCancel={() => setOpen(false)} submitLabel="Create project" />
             </div>
           </div>

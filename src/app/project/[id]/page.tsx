@@ -151,6 +151,27 @@ export default async function ProjectPage({
   const uid = await getCurrentUserId()
 
   // Fetch all related data in parallel
+  const pollsPromise = (async () => {
+    const basePollFields = 'id, title, description, extra_cents, required_votes, created_by'
+    const withType = await supabase
+      .from('polls')
+      .select(`${basePollFields}, extra_is_per_person`)
+      .eq('project_id', projectId)
+
+    if (!missingColumn(withType.error, 'extra_is_per_person')) return withType
+
+    console.warn('[ProjectPage] extra_is_per_person missing, retrying polls without it')
+    const fallback = await supabase
+      .from('polls')
+      .select(basePollFields)
+      .eq('project_id', projectId)
+
+    return {
+      data: (fallback.data ?? []).map(poll => ({ ...poll, extra_is_per_person: true })),
+      error: fallback.error,
+    }
+  })()
+
   const [
     { data: participants },
     { data: messages },
@@ -169,11 +190,7 @@ export default async function ProjectPage({
       .select('id, project_id, user_id, author_user_id, parent_id, body, created_at')
       .eq('project_id', projectId)
       .order('created_at', { ascending: true }),
-    supabase
-      .from('polls')
-      .select('id, title, description, extra_cents, required_votes, created_by')
-      .eq('project_id', projectId)
-    ,
+    pollsPromise,
     supabase.from('payments').select('participant_id, is_counted, created_at'),
     supabase
       .from('join_requests')
@@ -424,6 +441,7 @@ export default async function ProjectPage({
       title: poll.title,
       description: poll.description ?? null,
       extra_cents: Number(poll.extra_cents ?? 0),
+      extra_is_per_person: poll.extra_is_per_person !== false,
       required_votes: Number(poll.required_votes ?? 1),
       options: optionsByPoll.get(poll.id) ?? [],
       created_by: poll.created_by ?? null,
@@ -518,6 +536,7 @@ export default async function ProjectPage({
     title: poll.title,
     description: poll.description,
     extra_cents: poll.extra_cents,
+    extra_is_per_person: poll.extra_is_per_person,
     required_votes: poll.required_votes,
     options: poll.options,
     can_edit: !!uid && (poll.created_by === uid || viewerIsCollector),
