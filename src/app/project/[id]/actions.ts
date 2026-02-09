@@ -10,18 +10,7 @@ export async function setCollector(projectId: string, participantId: string) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('Not signed in')
-
-  // Verify caller is an active organizer of this project
-  const { data: org, error: orgErr } = await supabaseAdmin
-    .from('participants')
-    .select('id')
-    .eq('project_id', projectId)
-    .eq('user_id', uid)
-    .eq('role', 'organizer')
-    .is('left_at', null)
-    .limit(1)
-  if (orgErr) throw orgErr
-  if (!org?.length) throw new Error('Not authorized')
+  await requireActiveManager(projectId, uid)
 
   // Ensure target participant belongs to this project and is active
   const { data: part, error: partErr } = await supabaseAdmin
@@ -46,16 +35,7 @@ export async function cancelProject(projectId: string) {
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('You must be signed in')
   const nowIso = new Date().toISOString()
-
-  const { data: me, error: meErr } = await supabaseAdmin
-    .from('participants')
-    .select('id, role')
-    .eq('project_id', projectId)
-    .eq('user_id', uid)
-    .is('left_at', null)
-    .limit(1)
-  if (meErr) throw meErr
-  if (!me?.length || me[0].role !== 'organizer') throw new Error('Not authorized')
+  await requireActiveManager(projectId, uid)
 
   const { error: uErr } = await supabaseAdmin
     .from('projects')
@@ -82,7 +62,7 @@ export async function finalizeProject(projectId: string) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('Not signed in')
-  await requireActiveOrganizer(projectId, uid)
+  await requireActiveManager(projectId, uid)
 
   const values = { status: 'closed' as const, finalized_at: new Date().toISOString() }
 
@@ -127,7 +107,7 @@ export async function reopenProject(projectId: string) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('Not signed in')
-  await requireActiveOrganizer(projectId, uid)
+  await requireActiveManager(projectId, uid)
 
   const values = { status: 'collecting' as const, finalized_at: null }
   const { error } = await supabaseAdmin
@@ -161,7 +141,7 @@ export async function abortProject(projectId: string) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('Not signed in')
-  await requireActiveOrganizer(projectId, uid)
+  await requireActiveManager(projectId, uid)
 
   const { data: participants, error: participantsErr } = await supabaseAdmin
     .from('participants')
@@ -226,19 +206,6 @@ export async function leaveProject(projectId: string) {
   if (meErr) throw meErr
   if (!me) { revalidatePath(`/project/${projectId}`); return { ok: true } }
 
-  if (me.role === 'organizer') {
-    const { data: organizers, error: orgErr } = await supabaseAdmin
-      .from('participants')
-      .select('id')
-      .eq('project_id', projectId)
-      .eq('role', 'organizer')
-      .is('left_at', null)
-    if (orgErr) throw orgErr
-    if ((organizers?.length ?? 0) <= 1) {
-      throw new Error('You are the only organizer. Assign another organizer before leaving.')
-    }
-  }
-
   const { error: updErr } = await supabaseAdmin
     .from('participants')
     .update({ left_at: new Date().toISOString() })
@@ -247,100 +214,6 @@ export async function leaveProject(projectId: string) {
 
   revalidatePath(`/project/${projectId}`)
   redirect(`/project/${projectId}`)
-}
-
-export async function promoteToOrganizer(participantId: string) {
-  'use server'
-  const organizerId = await getCurrentUserId()
-  if (!organizerId) throw new Error('You must be signed in')
-
-  // Get the participant to promote
-  const { data: targetParticipant, error: targetErr } = await supabaseAdmin
-    .from('participants')
-    .select('id, project_id, role, user_id')
-    .eq('id', participantId)
-    .single()
-  if (targetErr || !targetParticipant) throw new Error('Participant not found')
-
-  // Verify the current user is an organizer
-  const { data: organizerRow, error: orgErr } = await supabaseAdmin
-    .from('participants')
-    .select('id')
-    .eq('project_id', targetParticipant.project_id)
-    .eq('user_id', organizerId)
-    .eq('role', 'organizer')
-    .is('left_at', null)
-    .single()
-  if (orgErr || !organizerRow) throw new Error('Only organizers can promote members')
-
-  // Verify the target participant is a member (not already an organizer)
-  if (targetParticipant.role === 'organizer') {
-    throw new Error('This participant is already an organizer')
-  }
-
-  // Promote to organizer
-  const { error: updErr } = await supabaseAdmin
-    .from('participants')
-    .update({ role: 'organizer' })
-    .eq('id', participantId)
-  if (updErr) throw updErr
-
-  console.log('[promoteToOrganizer] Promoted participant to organizer', { participantId, projectId: targetParticipant.project_id })
-  revalidatePath(`/project/${targetParticipant.project_id}`)
-  redirect(`/project/${targetParticipant.project_id}`)
-}
-
-export async function demoteToMember(participantId: string) {
-  'use server'
-  const organizerId = await getCurrentUserId()
-  if (!organizerId) throw new Error('You must be signed in')
-
-  // Get the participant to demote
-  const { data: targetParticipant, error: targetErr } = await supabaseAdmin
-    .from('participants')
-    .select('id, project_id, role, user_id, left_at')
-    .eq('id', participantId)
-    .single()
-  if (targetErr || !targetParticipant) throw new Error('Participant not found')
-  if (targetParticipant.left_at) throw new Error('Cannot demote inactive participant')
-
-  // Verify the current user is an organizer in the same project
-  const { data: organizerRow, error: orgErr } = await supabaseAdmin
-    .from('participants')
-    .select('id')
-    .eq('project_id', targetParticipant.project_id)
-    .eq('user_id', organizerId)
-    .eq('role', 'organizer')
-    .is('left_at', null)
-    .single()
-  if (orgErr || !organizerRow) throw new Error('Only organizers can demote organizers')
-
-  // Verify target is currently an organizer
-  if (targetParticipant.role !== 'organizer') {
-    throw new Error('This participant is not an organizer')
-  }
-
-  // Keep at least one organizer
-  const { data: organizers, error: organizersErr } = await supabaseAdmin
-    .from('participants')
-    .select('id')
-    .eq('project_id', targetParticipant.project_id)
-    .eq('role', 'organizer')
-    .is('left_at', null)
-  if (organizersErr) throw organizersErr
-  if ((organizers?.length ?? 0) <= 1) {
-    throw new Error('Cannot demote the only organizer')
-  }
-
-  const { error: updErr } = await supabaseAdmin
-    .from('participants')
-    .update({ role: 'member' })
-    .eq('id', participantId)
-  if (updErr) throw updErr
-
-  console.log('[demoteToMember] Demoted organizer to member', { participantId, projectId: targetParticipant.project_id })
-  revalidatePath(`/project/${targetParticipant.project_id}`)
-  redirect(`/project/${targetParticipant.project_id}`)
 }
 
 // FormData-based wrapper for leaveProject
@@ -358,44 +231,6 @@ export async function leaveProjectFromForm(formData: FormData) {
     // Redirect is expected; surface it without logging as a failure.
     if (err?.message === 'NEXT_REDIRECT' || err?.digest === 'NEXT_REDIRECT') throw err
     console.error('[leaveProjectFromForm] error', err?.message || err)
-    throw err
-  }
-}
-
-// FormData-based wrapper for promoteToOrganizer
-export async function promoteToOrganizerFromForm(formData: FormData) {
-  'use server'
-  const participantId = String(formData.get('participantId') || '')
-  if (!participantId) {
-    console.error('[promoteToOrganizerFromForm] Missing participantId')
-    return
-  }
-  console.log('[promoteToOrganizerFromForm] Promoting participant', { participantId })
-  try {
-    await promoteToOrganizer(participantId)
-  } catch (err: any) {
-    // Redirect is expected; surface it without logging as a failure.
-    if (err?.message === 'NEXT_REDIRECT' || err?.digest === 'NEXT_REDIRECT') throw err
-    console.error('[promoteToOrganizerFromForm] error', err?.message || err)
-    throw err
-  }
-}
-
-// FormData-based wrapper for demoteToMember
-export async function demoteToMemberFromForm(formData: FormData) {
-  'use server'
-  const participantId = String(formData.get('participantId') || '')
-  if (!participantId) {
-    console.error('[demoteToMemberFromForm] Missing participantId')
-    return
-  }
-  console.log('[demoteToMemberFromForm] Demoting participant', { participantId })
-  try {
-    await demoteToMember(participantId)
-  } catch (err: any) {
-    // Redirect is expected; surface it without logging as a failure.
-    if (err?.message === 'NEXT_REDIRECT' || err?.digest === 'NEXT_REDIRECT') throw err
-    console.error('[demoteToMemberFromForm] error', err?.message || err)
     throw err
   }
 }
@@ -436,16 +271,38 @@ async function clonePaymentOptionsForParticipant(participantId: string, userId: 
   if (insertErr) throw insertErr
 }
 
-async function requireActiveOrganizer(projectId: string, userId: string) {
+async function requireActiveManager(projectId: string, userId: string) {
+  const { data: project, error: projectErr } = await supabaseAdmin
+    .from('projects')
+    .select('collector_participant_id')
+    .eq('id', projectId)
+    .maybeSingle()
+  if (projectErr) throw projectErr
+
+  if (project?.collector_participant_id) {
+    const { data: collector, error: collectorErr } = await supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('id', project.collector_participant_id)
+      .eq('user_id', userId)
+      .is('left_at', null)
+      .maybeSingle()
+    if (collectorErr) throw collectorErr
+    if (collector) return collector
+    throw new Error('Not authorized')
+  }
+
+  // Backward-compatible fallback for old projects without collector set.
   const { data: me, error: meErr } = await supabaseAdmin
     .from('participants')
     .select('id, role')
     .eq('project_id', projectId)
     .eq('user_id', userId)
     .is('left_at', null)
+    .eq('role', 'organizer')
     .limit(1)
   if (meErr) throw meErr
-  if (!me?.length || me[0].role !== 'organizer') throw new Error('Not authorized')
+  if (!me?.length) throw new Error('Not authorized')
   return me[0]
 }
 
@@ -708,15 +565,7 @@ export async function createLateJoinTransfers(
   if (!opts?.skipAuth) {
     const uid = await getCurrentUserId()
     if (!uid) throw new Error('You must be signed in')
-    const { data: organizerRow, error: organizerErr } = await supabaseAdmin
-      .from('participants')
-      .select('id')
-      .eq('project_id', projectId)
-      .eq('user_id', uid)
-      .eq('role', 'organizer')
-      .is('left_at', null)
-      .maybeSingle()
-    if (organizerErr || !organizerRow) throw new Error('Only organizers can manage late join transfers')
+    await requireActiveManager(projectId, uid)
   }
 
   const result = await runLateJoinTransferUpsert(projectId, newcomerParticipantId)
@@ -730,8 +579,8 @@ export async function createLateJoinTransfers(
 
 export async function approveJoinRequest(requestId: string) {
   'use server'
-  const organizerId = await getCurrentUserId()
-  if (!organizerId) throw new Error('You must be signed in')
+  const managerId = await getCurrentUserId()
+  if (!managerId) throw new Error('You must be signed in')
 
   const { data: req, error: reqErr } = await supabaseAdmin
     .from('join_requests')
@@ -740,14 +589,7 @@ export async function approveJoinRequest(requestId: string) {
     .single()
   if (reqErr || !req) throw new Error('Join request not found')
 
-  const { data: organizerRow, error: orgErr } = await supabaseAdmin
-    .from('participants')
-    .select('id')
-    .eq('project_id', req.project_id)
-    .eq('user_id', organizerId)
-    .eq('role', 'organizer')
-    .single()
-  if (orgErr || !organizerRow) throw new Error('Only organizers can approve requests')
+  await requireActiveManager(req.project_id, managerId)
 
   if (req.status !== 'pending') {
     revalidatePath(`/project/${req.project_id}`)
@@ -874,8 +716,8 @@ export async function approveJoinRequest(requestId: string) {
 
 export async function rejectJoinRequest(requestId: string) {
   'use server'
-  const organizerId = await getCurrentUserId()
-  if (!organizerId) throw new Error('You must be signed in')
+  const managerId = await getCurrentUserId()
+  if (!managerId) throw new Error('You must be signed in')
 
   const { data: req, error: reqErr } = await supabaseAdmin
     .from('join_requests')
@@ -884,14 +726,7 @@ export async function rejectJoinRequest(requestId: string) {
     .single()
   if (reqErr || !req) throw new Error('Join request not found')
 
-  const { data: organizerRow, error: orgErr } = await supabaseAdmin
-    .from('participants')
-    .select('id')
-    .eq('project_id', req.project_id)
-    .eq('user_id', organizerId)
-    .eq('role', 'organizer')
-    .single()
-  if (orgErr || !organizerRow) throw new Error('Only organizers can reject requests')
+  await requireActiveManager(req.project_id, managerId)
 
   if (req.status !== 'pending') {
     revalidatePath(`/project/${req.project_id}`)

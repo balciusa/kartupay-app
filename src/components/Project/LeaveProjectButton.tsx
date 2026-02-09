@@ -4,18 +4,9 @@ import { useTransition } from 'react'
 import { leaveProjectFromForm } from '@/app/project/[id]/actions'
 import { useRouter } from 'next/navigation'
 
-export function LeaveProjectButton({ projectId, isOnlyOrganizer }: { projectId: string; isOnlyOrganizer: boolean }) {
+export function LeaveProjectButton({ projectId }: { projectId: string }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
-
-  // If user is the only organizer, show disabled "You are in" button
-  if (isOnlyOrganizer) {
-    return (
-      <button className="px-3 py-1.5 rounded bg-black text-white opacity-50" disabled>
-        You are in
-      </button>
-    )
-  }
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -30,14 +21,15 @@ export function LeaveProjectButton({ projectId, isOnlyOrganizer }: { projectId: 
         await leaveProjectFromForm(formData)
         console.log('[LeaveProjectButton] Left project successfully')
         router.refresh()
-      } catch (error: any) {
+      } catch (error: unknown) {
         // Redirect is expected; surface it without logging as a failure.
-        if (error?.message === 'NEXT_REDIRECT' || error?.digest === 'NEXT_REDIRECT') {
+        const maybeError = error as { message?: string; digest?: string } | null
+        if (maybeError?.message === 'NEXT_REDIRECT' || maybeError?.digest === 'NEXT_REDIRECT') {
           router.refresh()
           return
         }
         console.error('[LeaveProjectButton] Error leaving project:', error)
-        alert(error?.message || 'Failed to leave project. Please try again.')
+        alert(maybeError?.message || 'Failed to leave project. Please try again.')
         router.refresh()
       }
     })

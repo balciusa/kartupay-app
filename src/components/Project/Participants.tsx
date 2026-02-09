@@ -390,11 +390,6 @@ export function Participants(props: {
                 <div className="space-y-1">
                   <div className="font-medium flex items-center gap-2 flex-wrap text-slate-900">
                     <span>{name}</span>
-                    {p.role === 'organizer' && (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-200 text-slate-900">
-                        Organizer
-                      </span>
-                    )}
                     {rowIsCollector && (
                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600 text-white">
                         Collector

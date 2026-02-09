@@ -6,8 +6,6 @@ import {
   finalizeProject,
   approveJoinRequestFromForm,
   rejectJoinRequestFromForm,
-  demoteToMemberFromForm,
-  promoteToOrganizerFromForm,
   setCollector,
 } from '@/app/project/[id]/actions'
 
@@ -47,25 +45,25 @@ export function AdminPanel({
   projectId,
   participants,
   collectorId,
+  myParticipantId,
   pendingRequests,
   pendingCount,
-  isOrganizer,
+  canManage,
   canFinalize,
   canCancel,
 }: {
   projectId: string
   participants: Participant[]
   collectorId: string | null
+  myParticipantId: string | null
   pendingRequests: JoinRequest[]
   pendingCount: number
-  isOrganizer: boolean
+  canManage: boolean
   canFinalize: boolean
   canCancel: boolean
 }) {
   const [requestsOpen, setRequestsOpen] = useState(false)
   const [participantsOpen, setParticipantsOpen] = useState(false)
-  const canManage = isOrganizer
-  const organizerCount = participants.filter(p => p.role === 'organizer').length
   const modalRef = useRef<HTMLDivElement | null>(null)
   const participantsModalRef = useRef<HTMLDivElement | null>(null)
 
@@ -155,7 +153,7 @@ export function AdminPanel({
           <button
             type="button"
             className="w-full px-4 py-2 rounded-full border text-sm bg-white hover:bg-slate-50 disabled:opacity-50"
-            disabled={!isOrganizer}
+            disabled={!canManage}
             onClick={() => setParticipantsOpen(true)}
           >
             Manage participants
@@ -183,8 +181,8 @@ export function AdminPanel({
             <button
               type="submit"
               className="w-full px-4 py-2 rounded-full bg-black text-white text-sm disabled:opacity-50"
-              formAction={isOrganizer && canFinalize ? finalizeProject.bind(null, projectId) : undefined}
-              disabled={!isOrganizer || !canFinalize}
+              formAction={canManage && canFinalize ? finalizeProject.bind(null, projectId) : undefined}
+              disabled={!canManage || !canFinalize}
             >
                 Close project
               </button>
@@ -193,8 +191,8 @@ export function AdminPanel({
             <button
               type="submit"
               className="w-full px-4 py-2 rounded-full border text-sm disabled:opacity-50 bg-white hover:bg-slate-50"
-              formAction={isOrganizer && canCancel ? abortProject.bind(null, projectId) : undefined}
-              disabled={!isOrganizer || !canCancel}
+              formAction={canManage && canCancel ? abortProject.bind(null, projectId) : undefined}
+              disabled={!canManage || !canCancel}
             >
               Cancel project
             </button>
@@ -227,26 +225,20 @@ export function AdminPanel({
               </button>
             </div>
             <div className="p-4 space-y-3 overflow-y-auto">
-              {!isOrganizer ? (
-                <div className="text-sm opacity-70">Organizer-only tools live here.</div>
+              {!canManage ? (
+                <div className="text-sm opacity-70">Collector-only tools live here.</div>
               ) : participants.length === 0 ? (
                 <div className="text-sm opacity-70">No participants found.</div>
               ) : (
                 <div className="space-y-2">
                   {participants.map(p => {
                     const isCollector = !!(collectorId && p.id === collectorId)
-                    const isOrganizerRow = p.role === 'organizer'
-                    const isOnlyOrganizer = isOrganizerRow && organizerCount <= 1
+                    const isSelf = !!(myParticipantId && p.id === myParticipantId)
                     return (
                       <div key={p.id} className="flex items-center justify-between gap-3 text-sm">
                         <div className="space-y-0.5">
                           <div className="font-medium flex items-center gap-2 flex-wrap">
                             <span>{displayName(p)}</span>
-                            {p.role === 'organizer' && (
-                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-200 text-black">
-                                Organizer
-                              </span>
-                            )}
                             {isCollector && (
                               <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600 text-white">
                                 Collector
@@ -255,78 +247,31 @@ export function AdminPanel({
                           </div>
                         </div>
                         <div className="flex items-center gap-3">
-                          {isOrganizerRow ? (
+                          {!isSelf && (
                             <form
-                              action={demoteToMemberFromForm}
+                              action={setCollector.bind(null, projectId, p.id)}
                               className="inline-flex items-center"
                             >
-                              <input type="hidden" name="participantId" value={p.id} />
                               <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
                                 <input
-                                  type="checkbox"
-                                  name="organizer_selection"
+                                  type="radio"
+                                  name="collector_selection"
                                   className="h-4 w-4 accent-black"
-                                  defaultChecked
-                                  disabled={isOnlyOrganizer}
-                                  onChange={event => {
-                                    if (!event.currentTarget.checked) {
-                                      event.currentTarget.form?.requestSubmit()
-                                    }
-                                  }}
-                                />
-                                Organizer
-                              </label>
-                              <button type="submit" className="sr-only">
-                                Demote to member
-                              </button>
-                            </form>
-                          ) : (
-                            <form
-                              action={promoteToOrganizerFromForm}
-                              className="inline-flex items-center"
-                            >
-                              <input type="hidden" name="participantId" value={p.id} />
-                              <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  name="organizer_selection"
-                                  className="h-4 w-4 accent-black"
+                                  defaultChecked={isCollector}
+                                  disabled={isCollector}
                                   onChange={event => {
                                     if (event.currentTarget.checked) {
                                       event.currentTarget.form?.requestSubmit()
                                     }
                                   }}
                                 />
-                                Organizer
+                                Collector
                               </label>
                               <button type="submit" className="sr-only">
-                                Promote to organizer
+                                Set collector
                               </button>
                             </form>
                           )}
-                          <form
-                            action={setCollector.bind(null, projectId, p.id)}
-                            className="inline-flex items-center"
-                          >
-                            <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
-                              <input
-                                type="radio"
-                                name="collector_selection"
-                                className="h-4 w-4 accent-black"
-                                defaultChecked={isCollector}
-                                disabled={isCollector}
-                                onChange={event => {
-                                  if (event.currentTarget.checked) {
-                                    event.currentTarget.form?.requestSubmit()
-                                  }
-                                }}
-                              />
-                              Collector
-                            </label>
-                            <button type="submit" className="sr-only">
-                              Set collector
-                            </button>
-                          </form>
                         </div>
                       </div>
                     )
@@ -359,8 +304,8 @@ export function AdminPanel({
               </button>
             </div>
             <div className="p-4 space-y-3 overflow-y-auto">
-              {!isOrganizer ? (
-                <div className="text-sm opacity-70">Organizer-only tools live here.</div>
+              {!canManage ? (
+                <div className="text-sm opacity-70">Collector-only tools live here.</div>
               ) : pendingRequests.length === 0 ? (
                 <div className="text-sm opacity-70">No pending join requests.</div>
               ) : (

@@ -455,8 +455,7 @@ export default async function ProjectPage({
   const collectorLabel = collectorParticipant ? participantName(collectorParticipant) : 'Member'
   const collectorName = collectorLabel
   const viewerIsCollector = !!(myParticipantId && collectorId && myParticipantId === collectorId)
-  const viewerIsOrganizer = myParticipantRole === 'organizer'
-  const shouldLoadPendingRequests = viewerIsOrganizer || viewerIsCollector
+  const shouldLoadPendingRequests = viewerIsCollector
   const { data: pendingForOrganizer, error: pendingErr } = shouldLoadPendingRequests
     ? await supabaseAdmin
         .from('join_requests')
@@ -468,7 +467,7 @@ export default async function ProjectPage({
   if (pendingErr) {
     console.error('[ProjectPage] Error fetching pending requests:', pendingErr)
   }
-  console.log('[ProjectPage] Pending requests for organizer:', { count: pendingForOrganizer?.length ?? 0, requests: pendingForOrganizer })
+  console.log('[ProjectPage] Pending requests for collector:', { count: pendingForOrganizer?.length ?? 0, requests: pendingForOrganizer })
   const effectivePaidIds = new Set(paidIds)
   if (collectorId) effectivePaidIds.add(collectorId)
   const basePaidIds = countedPayments
@@ -571,19 +570,13 @@ export default async function ProjectPage({
     }))
   }
   
-  // Count active organizers
-  const organizerCount = participantsClean.filter(p => p.role === 'organizer').length
-  const isOnlyOrganizer = myParticipantRole === 'organizer' && organizerCount === 1
-  
-  console.log('[ProjectPage] Organizer check:', { 
-    myParticipantRole, 
-    myParticipantId, 
-    organizerId, 
+  console.log('[ProjectPage] Manager check:', {
+    myParticipantRole,
+    myParticipantId,
+    organizerId,
     organizerFound: organizer?.id,
-    isMeOrganizer: myParticipantRole === 'organizer',
-    organizerCount,
-    isOnlyOrganizer,
-    pendingRequestsCount: pendingForOrganizer?.length ?? 0
+    isCollector: viewerIsCollector,
+    pendingRequestsCount: pendingForOrganizer?.length ?? 0,
   })
 
   const isMemberActive = isMeParticipant
@@ -648,7 +641,7 @@ export default async function ProjectPage({
           </div>
         ) : isMemberActive && !viewerIsCollector && !isFinalized && !isAborted ? (
           <div className="flex items-center gap-2">
-            <LeaveProjectButton projectId={projectId} isOnlyOrganizer={isOnlyOrganizer} />
+            <LeaveProjectButton projectId={projectId} />
           </div>
         ) : !isMemberActive && !isAborted ? (
           <div className="flex items-center gap-2">
@@ -888,9 +881,10 @@ export default async function ProjectPage({
               projectId={projectId}
               participants={participantsClean}
               collectorId={collectorId}
+              myParticipantId={myParticipantId}
               pendingRequests={pendingForOrganizer ?? []}
-              pendingCount={viewerIsOrganizer ? (pendingForOrganizer ?? []).length : 0}
-              isOrganizer={viewerIsOrganizer}
+              pendingCount={viewerIsCollector ? (pendingForOrganizer ?? []).length : 0}
+              canManage={viewerIsCollector}
               canFinalize={isCollectingStatus && !isAborted}
               canCancel={!isAborted && !isFinalized}
             />
