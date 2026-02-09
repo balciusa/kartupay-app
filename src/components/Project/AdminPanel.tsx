@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   abortProject,
   finalizeProject,
@@ -64,6 +65,9 @@ export function AdminPanel({
 }) {
   const [requestsOpen, setRequestsOpen] = useState(false)
   const [participantsOpen, setParticipantsOpen] = useState(false)
+  const [assigningCollector, startAssigningCollector] = useTransition()
+  const [selectedCollectorId, setSelectedCollectorId] = useState<string | null>(collectorId)
+  const router = useRouter()
   const modalRef = useRef<HTMLDivElement | null>(null)
   const participantsModalRef = useRef<HTMLDivElement | null>(null)
 
@@ -154,7 +158,10 @@ export function AdminPanel({
             type="button"
             className="w-full px-4 py-2 rounded-full border text-sm bg-white hover:bg-slate-50 disabled:opacity-50"
             disabled={!canManage}
-            onClick={() => setParticipantsOpen(true)}
+            onClick={() => {
+              setSelectedCollectorId(collectorId)
+              setParticipantsOpen(true)
+            }}
           >
             Manage participants
           </button>
@@ -248,34 +255,44 @@ export function AdminPanel({
                         </div>
                         <div className="flex items-center gap-3">
                           {!isSelf && (
-                            <form
-                              action={setCollector.bind(null, projectId, p.id)}
-                              className="inline-flex items-center"
-                            >
-                              <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
-                                <input
-                                  type="radio"
-                                  name="collector_selection"
-                                  className="h-4 w-4 accent-black"
-                                  defaultChecked={isCollector}
-                                  disabled={isCollector}
-                                  onChange={event => {
-                                    if (event.currentTarget.checked) {
-                                      event.currentTarget.form?.requestSubmit()
-                                    }
-                                  }}
-                                />
-                                Collector
-                              </label>
-                              <button type="submit" className="sr-only">
-                                Set collector
-                              </button>
-                            </form>
+                            <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                              <input
+                                type="radio"
+                                name="collector_selection"
+                                className="h-4 w-4 accent-black"
+                                checked={selectedCollectorId === p.id}
+                                onChange={() => setSelectedCollectorId(p.id)}
+                              />
+                              Select collector
+                            </label>
                           )}
                         </div>
                       </div>
                     )
                   })}
+                  <div className="pt-2 border-t flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 rounded border text-xs disabled:opacity-50"
+                      disabled={!selectedCollectorId || selectedCollectorId === collectorId || assigningCollector}
+                      onClick={() => {
+                        if (!selectedCollectorId || selectedCollectorId === collectorId) return
+                        startAssigningCollector(async () => {
+                          try {
+                            await setCollector(projectId, selectedCollectorId)
+                            setParticipantsOpen(false)
+                            router.refresh()
+                          } catch (error: unknown) {
+                            console.error('[AdminPanel] Failed to set collector', error)
+                            const maybeError = error as { message?: string } | null
+                            alert(maybeError?.message || 'Failed to assign collector')
+                          }
+                        })
+                      }}
+                    >
+                      {assigningCollector ? 'Saving...' : 'Confirm collector'}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

@@ -27,9 +27,20 @@ type LateTransferRow = {
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
 
-const missingColumn = (error: { message?: string } | null, column: string) => {
-  const msg = error?.message?.toLowerCase() ?? ''
-  return msg.includes('does not exist') && msg.includes(column.toLowerCase())
+const missingColumn = (
+  error: { message?: string; details?: string | null; hint?: string | null; code?: string } | null,
+  column: string
+) => {
+  const haystack = `${error?.message ?? ''} ${error?.details ?? ''} ${error?.hint ?? ''}`.toLowerCase()
+  const columnName = column.toLowerCase()
+  if (!haystack.includes(columnName)) return false
+  return (
+    haystack.includes('does not exist') ||
+    haystack.includes('could not find') ||
+    haystack.includes('schema cache') ||
+    haystack.includes('unknown column') ||
+    error?.code === 'PGRST204'
+  )
 }
 
 export default async function ProjectPage({
@@ -130,6 +141,30 @@ export default async function ProjectPage({
   const isClosedStatus = project.status === 'closed'
   const isCancelledStatus = project.status === 'cancelled' || project.status === 'canceled'
   const isAborted = isCancelledStatus || !!project.aborted_at || !!project.canceled_at
+  const statusPill = (() => {
+    if (isAborted) {
+      return {
+        label: 'Canceled',
+        className: 'border-red-200 bg-red-50 text-red-700',
+      }
+    }
+    if (isClosedStatus) {
+      return {
+        label: 'Closed',
+        className: 'border-slate-200 bg-slate-100 text-slate-700',
+      }
+    }
+    if (isCollectingStatus) {
+      return {
+        label: 'Collecting',
+        className: 'border-emerald-200 bg-emerald-100 text-emerald-700',
+      }
+    }
+    return {
+      label: typeof project.status === 'string' && project.status.trim() ? project.status : 'Unknown',
+      className: 'border-border bg-muted text-muted-foreground',
+    }
+  })()
   const isFinalized = isClosedStatus || !!project.finalized_at || !!project.closed_at
   const abortedAtDisplay = (project.aborted_at as string | null) ?? (project.canceled_at as string | null) ?? null
   const abortedAtLocale = abortedAtDisplay ? new Date(abortedAtDisplay).toLocaleString() : null
@@ -167,7 +202,7 @@ export default async function ProjectPage({
       .eq('project_id', projectId)
 
     return {
-      data: (fallback.data ?? []).map(poll => ({ ...poll, extra_is_per_person: true })),
+      data: (fallback.data ?? []).map(poll => ({ ...poll, extra_is_per_person: false })),
       error: fallback.error,
     }
   })()
@@ -441,7 +476,7 @@ export default async function ProjectPage({
       title: poll.title,
       description: poll.description ?? null,
       extra_cents: Number(poll.extra_cents ?? 0),
-      extra_is_per_person: poll.extra_is_per_person !== false,
+      extra_is_per_person: poll.extra_is_per_person === true,
       required_votes: Number(poll.required_votes ?? 1),
       options: optionsByPoll.get(poll.id) ?? [],
       created_by: poll.created_by ?? null,
@@ -611,48 +646,51 @@ export default async function ProjectPage({
 
   return (
     <main className="p-6 max-w-4xl mx-auto space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-3xl font-semibold flex items-center gap-2">
-            {project.title}
-            {isAborted && (
-              <span className="text-xs px-2 py-0.5 rounded bg-red-600 text-white">Aborted</span>
-            )}
-          </h1>
-          {project.description && (
-            <div className="text-sm opacity-70 mt-2">{project.description}</div>
-          )}
-          {(eventStartLocale || eventEndLocale) && (
-            <div className={`text-sm text-slate-600 ${project.description ? 'mt-1' : 'mt-2'}`}>
-              {eventStartLocale && eventEndLocale
-                ? `Event: ${eventStartLocale} – ${eventEndLocale}`
-                : eventStartLocale
-                  ? `Event starts: ${eventStartLocale}`
-                  : `Event ends: ${eventEndLocale}`}
+      <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.14),transparent_45%),linear-gradient(to_bottom,#ffffff,#f8fafc)] p-5 md:p-7">
+        <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0 space-y-3">
+            <div>
+              <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${statusPill.className}`}>
+                {statusPill.label}
+              </span>
             </div>
-          )}
-        </div>
-        {isClosedStatus ? (
-          <div className="flex items-center gap-2">
-            <span className="px-3 py-1.5 rounded bg-black text-white text-sm">Closed</span>
-            {!isMemberActive && !isAborted ? (
-              <JoinButton projectId={projectId} canJoinNow={canJoinNow} requestStatus={myJoinRequestStatus} />
+            <h1 className="break-words text-3xl font-semibold tracking-tight text-slate-900 md:text-4xl">{project.title}</h1>
+            {project.description && (
+              <div className="max-w-2xl text-sm text-slate-600 md:text-base">{project.description}</div>
+            )}
+            {(eventStartLocale || eventEndLocale) && (
+              <div className="inline-flex max-w-full items-center rounded-full border border-slate-200 bg-white/85 px-3 py-1 text-sm text-slate-700">
+                {eventStartLocale && eventEndLocale
+                  ? `Event window: ${eventStartLocale} - ${eventEndLocale}`
+                  : eventStartLocale
+                    ? `Event starts: ${eventStartLocale}`
+                    : `Event ends: ${eventEndLocale}`}
+              </div>
+            )}
+          </div>
+          <div className="flex items-start gap-2 md:items-center">
+            {isClosedStatus ? (
+              !isMemberActive && !isAborted ? (
+                <div className="flex items-center gap-2">
+                  <JoinButton projectId={projectId} canJoinNow={canJoinNow} requestStatus={myJoinRequestStatus} />
+                </div>
+              ) : null
+            ) : isMemberActive && !viewerIsCollector && !isFinalized && !isAborted ? (
+              <div className="flex items-center gap-2">
+                <LeaveProjectButton projectId={projectId} />
+              </div>
+            ) : !isMemberActive && !isAborted ? (
+              <div className="flex items-center gap-2">
+                <JoinButton
+                  projectId={projectId}
+                  canJoinNow={canJoinNow}
+                  requestStatus={myJoinRequestStatus}
+                />
+              </div>
             ) : null}
           </div>
-        ) : isMemberActive && !viewerIsCollector && !isFinalized && !isAborted ? (
-          <div className="flex items-center gap-2">
-            <LeaveProjectButton projectId={projectId} />
-          </div>
-        ) : !isMemberActive && !isAborted ? (
-          <div className="flex items-center gap-2">
-            <JoinButton
-              projectId={projectId}
-              canJoinNow={canJoinNow}
-              requestStatus={myJoinRequestStatus}
-            />
-          </div>
-        ) : null}
-      </div>
+        </div>
+      </section>
 
       {isAborted && (
         <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm">
@@ -672,20 +710,17 @@ export default async function ProjectPage({
             <div className="space-y-6">
               <SummaryCards
                 totalCents={totalCents}
+                collectedCents={collectedCentsDisplay}
+                totalIsPerPerson={totalIsPerPerson}
                 minParticipants={project.min_participants as number | null}
+                maxParticipants={project.max_participants as number | null}
                 participantsNow={participantsNow}
                 scenarios={scenarios}
-                maxParticipants={project.max_participants as number | null}
-                collectorLabel={collectorLabel}
-                lateSummary={
-                  lateJoinersCount > 0
-                    ? {
-                        joinersCount: lateJoinersCount,
-                        pendingCount: lateTransfersPendingCount,
-                        pendingCents: lateTransfersPendingCents,
-                      }
-                    : null
-                }
+                lateSummary={{
+                  joinersCount: lateJoinersCount,
+                  pendingCount: lateTransfersPendingCount,
+                  pendingCents: lateTransfersPendingCents,
+                }}
               />
             </div>
           ),
@@ -894,3 +929,4 @@ export default async function ProjectPage({
     </main>
   )
 }
+

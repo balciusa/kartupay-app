@@ -62,29 +62,31 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
       <div className="grid md:grid-cols-2 gap-4">
         <div className="space-y-2">
           <label htmlFor="project_total" className="text-sm font-medium">
-            Total (EUR) <span className="text-red-500">*</span>
+            Total <span className="text-red-500">*</span>
           </label>
-          <input
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">€</span>
+            <input
             id="project_total"
             name="totalEur"
             type="text"
             inputMode="decimal"
-            placeholder="199.99"
-            className="w-full border rounded-lg px-3 py-2.5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+            className="w-full border rounded-lg pl-7 pr-3 py-2.5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
             onInput={sanitizeAmount}
             required
           />
+          </div>
         </div>
         <div className="space-y-2">
           <label className="text-sm font-medium">Total type</label>
           <div className="rounded-lg border px-3 py-2.5 space-y-2">
             <label className="flex items-center gap-2 text-sm">
               <input type="radio" name="total_is_per_person" value="false" defaultChecked />
-              Grand total (fixed)
+              Grand total
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input type="radio" name="total_is_per_person" value="true" />
-              Per person (fixed)
+              Per person
             </label>
           </div>
         </div>
@@ -101,12 +103,11 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
             type="number"
             min={1}
             className="w-full border rounded-lg px-3 py-2.5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-            placeholder="e.g. 5 (optional)"
           />
         </div>
         <div className="space-y-2">
           <label htmlFor="project_max_participants" className="text-sm font-medium">
-            Max participants <span className="text-muted-foreground font-normal">(optional)</span>
+            Max participants
           </label>
           <input
             id="project_max_participants"
@@ -179,9 +180,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
           {submitLabel}
         </button>
       </div>
-      <p className="text-xs text-muted-foreground">
-        You will be added as the organizer, and your active payment links from Settings will be copied.
-      </p>
     </form>
   )
 }
+

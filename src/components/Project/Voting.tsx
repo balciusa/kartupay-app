@@ -1,7 +1,8 @@
-import { castPollVote, deletePoll, updatePoll } from '@/app/project/[id]/actions'
+import { castPollVote } from '@/app/project/[id]/actions'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { CreatePollModal } from './CreatePollModal'
+import { EditPollPanel } from './EditPollPanel'
 
 type PollOption = {
   id: string
@@ -72,7 +73,6 @@ export default function Voting({
       ) : (
         polls.map((poll, index) => {
           const userOptionId = voteMap[poll.id] ?? null
-          const optionsValue = poll.options.map(option => option.label).join('\n')
           return (
             <Card key={poll.id ?? `poll-${index}`} className="p-5 md:p-6 space-y-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -122,88 +122,7 @@ export default function Voting({
               {poll.can_edit ? (
                 <details className="border-t pt-3">
                   <summary className="text-sm font-medium cursor-pointer select-none">Edit poll</summary>
-                  <div className="mt-3 space-y-3">
-                    <form action={updatePoll.bind(null, projectId, poll.id)} className="grid gap-3 md:grid-cols-6">
-                      <input
-                        name="title"
-                        defaultValue={poll.title}
-                        placeholder="Poll title"
-                        className="border rounded-md px-3 py-2 md:col-span-2 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                        required
-                        disabled={projectCanceled}
-                      />
-                      <input
-                        name="description"
-                        defaultValue={poll.description ?? ''}
-                        placeholder="Short description (optional)"
-                        className="border rounded-md px-3 py-2 md:col-span-3 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                        disabled={projectCanceled}
-                      />
-                      <input
-                        name="extra_cost"
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        defaultValue={(poll.extra_cents / 100).toFixed(2)}
-                        placeholder="Extra cost"
-                        className="border rounded-md px-3 py-2 md:col-span-1 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                        disabled={projectCanceled}
-                      />
-                      <div className="border rounded-md px-3 py-2 md:col-span-2 bg-white">
-                        <div className="text-xs text-muted-foreground mb-2">Extra cost type</div>
-                        <div className="space-y-1">
-                          <label className="flex items-center gap-2 text-sm">
-                            <input
-                              type="radio"
-                              name="extra_is_per_person"
-                              value="true"
-                              defaultChecked={poll.extra_is_per_person}
-                              disabled={projectCanceled}
-                            />
-                            Extra cost per person
-                          </label>
-                          <label className="flex items-center gap-2 text-sm">
-                            <input
-                              type="radio"
-                              name="extra_is_per_person"
-                              value="false"
-                              defaultChecked={!poll.extra_is_per_person}
-                              disabled={projectCanceled}
-                            />
-                            Extra grand total
-                          </label>
-                        </div>
-                      </div>
-                      <input
-                        name="required_votes"
-                        type="number"
-                        min="1"
-                        step="1"
-                        defaultValue={poll.required_votes}
-                        placeholder="Required votes"
-                        className="border rounded-md px-3 py-2 md:col-span-1 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                        disabled={projectCanceled}
-                      />
-                      <textarea
-                        name="options"
-                        defaultValue={optionsValue}
-                        placeholder="Options (one per line)"
-                        className="border rounded-md px-3 py-2 md:col-span-5 min-h-[110px] bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                        disabled={projectCanceled}
-                      />
-                      <div className="md:col-span-6">
-                        <Button type="submit" disabled={projectCanceled} className="rounded-full px-5">
-                          Save changes
-                        </Button>
-                      </div>
-                    </form>
-
-                    <form action={deletePoll.bind(null, projectId, poll.id)}>
-                      <Button type="submit" variant="outline" disabled={projectCanceled} className="rounded-full">
-                        Delete poll
-                      </Button>
-                    </form>
-                  </div>
+                  <EditPollPanel projectId={projectId} poll={poll} projectCanceled={projectCanceled} />
                 </details>
               ) : null}
             </Card>

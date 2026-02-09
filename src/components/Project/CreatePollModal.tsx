@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { ClipboardEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { createPoll } from '@/app/project/[id]/actions'
 import { Button } from '@/components/ui/button'
 import { Plus } from 'lucide-react'
@@ -15,13 +15,32 @@ export function CreatePollModal({
   projectCanceled?: boolean
 }) {
   const [isOpen, setIsOpen] = useState(false)
+  const [optionRows, setOptionRows] = useState<string[]>(['', ''])
+  const [optionsError, setOptionsError] = useState<string | null>(null)
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const modalRef = useRef<HTMLDivElement | null>(null)
+
+  const resetDraft = useCallback(() => {
+    setOptionRows(['', ''])
+    setOptionsError(null)
+    setSubmitError(null)
+  }, [])
+
+  const closeModal = useCallback(() => {
+    setIsOpen(false)
+    resetDraft()
+  }, [resetDraft])
+
+  const openModal = useCallback(() => {
+    resetDraft()
+    setIsOpen(true)
+  }, [resetDraft])
 
   useEffect(() => {
     if (!isOpen) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setIsOpen(false)
+        closeModal()
         return
       }
       if (event.key !== 'Tab') return
@@ -53,11 +72,68 @@ export function CreatePollModal({
       focusable[0].focus()
     }
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [isOpen])
+  }, [isOpen, closeModal])
 
   const handleSubmit = async (formData: FormData) => {
-    await createPoll(projectId, formData)
-    setIsOpen(false)
+    const normalizedOptions = optionRows.map(option => option.trim()).filter(Boolean)
+    if (normalizedOptions.length === 0) {
+      setOptionsError('Add at least one option.')
+      return
+    }
+    setOptionsError(null)
+    setSubmitError(null)
+
+    formData.set('options', normalizedOptions.join('\n'))
+    try {
+      await createPoll(projectId, formData)
+      closeModal()
+    } catch (error: unknown) {
+      const maybeError = error as { message?: string } | null
+      setSubmitError(maybeError?.message || 'Failed to create poll')
+    }
+  }
+
+  const updateOption = (index: number, value: string) => {
+    setOptionRows(prev => prev.map((option, idx) => (idx === index ? value : option)))
+    if (optionsError) setOptionsError(null)
+    if (submitError) setSubmitError(null)
+  }
+
+  const addOptionRow = () => {
+    setOptionRows(prev => [...prev, ''])
+    if (optionsError) setOptionsError(null)
+    if (submitError) setSubmitError(null)
+  }
+
+  const removeOptionRow = (index: number) => {
+    setOptionRows(prev => {
+      if (prev.length <= 1) return ['']
+      const next = prev.filter((_, idx) => idx !== index)
+      return next.length > 0 ? next : ['']
+    })
+    if (optionsError) setOptionsError(null)
+    if (submitError) setSubmitError(null)
+  }
+
+  const handleOptionPaste = (index: number, event: ClipboardEvent<HTMLInputElement>) => {
+    const pasted = event.clipboardData.getData('text')
+    if (!pasted.includes('\n')) return
+    event.preventDefault()
+    const lines = pasted
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean)
+    if (lines.length === 0) return
+    setOptionRows(prev => {
+      const next = [...prev]
+      next[index] = lines[0]
+      for (let i = 1; i < lines.length; i += 1) {
+        next.splice(index + i, 0, lines[i])
+      }
+      return next
+    })
+    if (optionsError) setOptionsError(null)
+    if (submitError) setSubmitError(null)
   }
 
   const isDisabled = !canVote || projectCanceled
@@ -66,7 +142,7 @@ export function CreatePollModal({
     <>
       <Button
         type="button"
-        onClick={() => setIsOpen(true)}
+        onClick={openModal}
         disabled={isDisabled}
         className="rounded-full px-5 py-2.5 text-sm flex items-center gap-2"
       >
@@ -80,7 +156,7 @@ export function CreatePollModal({
             type="button"
             aria-label="Close create poll modal"
             className="absolute inset-0 bg-black/40"
-            onClick={() => setIsOpen(false)}
+            onClick={closeModal}
           />
           <div
             ref={modalRef}
@@ -99,7 +175,7 @@ export function CreatePollModal({
               <button
                 type="button"
                 className="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50 transition-colors"
-                onClick={() => setIsOpen(false)}
+                onClick={closeModal}
               >
                 Cancel
               </button>
@@ -138,7 +214,7 @@ export function CreatePollModal({
                     Extra cost
                   </label>
                   <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">€</span>
                     <input
                       id="create_extra_cost"
                       name="extra_cost"
@@ -192,23 +268,64 @@ export function CreatePollModal({
               </div>
 
               <div className="space-y-2">
-                <label htmlFor="poll_options" className="text-sm font-medium">
-                  Options <span className="text-muted-foreground font-normal">(one per line)</span>
+                <label className="text-sm font-medium">
+                  Options <span className="text-red-500">*</span>
                 </label>
-                <textarea
-                  id="poll_options"
-                  name="options"
-                  placeholder="Option 1&#10;Option 2&#10;Option 3"
-                  className="w-full border rounded-lg px-3 py-2.5 min-h-[120px] bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40 resize-none"
-                  disabled={isDisabled}
-                />
+                <div className="space-y-2">
+                  {optionRows.map((option, index) => (
+                    <div key={`option-${index}`} className="flex items-center gap-2">
+                      <span className="w-6 text-center text-xs text-muted-foreground">{index + 1}.</span>
+                      <input
+                        value={option}
+                        onChange={event => updateOption(index, event.target.value)}
+                        onPaste={event => handleOptionPaste(index, event)}
+                        placeholder={`Option ${index + 1}`}
+                        className="w-full border rounded-lg px-3 py-2.5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+                        disabled={isDisabled}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="px-3"
+                        onClick={() => removeOptionRow(index)}
+                        disabled={isDisabled || optionRows.length <= 1}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-full px-4"
+                    onClick={addOptionRow}
+                    disabled={isDisabled}
+                  >
+                    Add option
+                  </Button>
+                  <p className="text-xs text-muted-foreground text-right">
+                    Tip: paste multiple lines to add several options at once.
+                  </p>
+                </div>
+                {optionsError && (
+                  <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {optionsError}
+                  </div>
+                )}
+                {submitError && (
+                  <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {submitError}
+                  </div>
+                )}
               </div>
 
               <div className="pt-2 flex justify-end gap-3">
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setIsOpen(false)}
+                  onClick={closeModal}
                   className="rounded-full px-5"
                 >
                   Cancel

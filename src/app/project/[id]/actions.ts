@@ -306,9 +306,20 @@ async function requireActiveManager(projectId: string, userId: string) {
   return me[0]
 }
 
-const missingColumn = (error: { message?: string } | null, column: string) => {
-  const msg = error?.message?.toLowerCase() ?? ''
-  return msg.includes('does not exist') && msg.includes(column.toLowerCase())
+const missingColumn = (
+  error: { message?: string; details?: string | null; hint?: string | null; code?: string } | null,
+  column: string
+) => {
+  const haystack = `${error?.message ?? ''} ${error?.details ?? ''} ${error?.hint ?? ''}`.toLowerCase()
+  const columnName = column.toLowerCase()
+  if (!haystack.includes(columnName)) return false
+  return (
+    haystack.includes('does not exist') ||
+    haystack.includes('could not find') ||
+    haystack.includes('schema cache') ||
+    haystack.includes('unknown column') ||
+    error?.code === 'PGRST204'
+  )
 }
 
 const statusConstraintViolated = (error?: { message?: string; code?: string } | null) =>
@@ -1075,7 +1086,7 @@ export async function createPoll(projectId: string, formData: FormData) {
     .eq('user_id', uid)
     .is('left_at', null)
     .limit(1)
-  if (participantErr) throw participantErr
+  if (participantErr) throw new Error(participantErr.message ?? 'Failed to verify participant access')
   if (!participant?.length) throw new Error('Only participants can create proposals')
 
   let poll: { id: string } | null = null
@@ -1106,10 +1117,10 @@ export async function createPoll(projectId: string, formData: FormData) {
         })
         .select('id')
         .single()
-      if (fallbackInsert.error) throw fallbackInsert.error
+      if (fallbackInsert.error) throw new Error(fallbackInsert.error.message ?? 'Failed to create poll')
       poll = fallbackInsert.data
     } else {
-      throw insertWithType.error
+      throw new Error(insertWithType.error.message ?? 'Failed to create poll')
     }
   } else {
     poll = insertWithType.data
@@ -1119,7 +1130,7 @@ export async function createPoll(projectId: string, formData: FormData) {
   const { error: optionsErr } = await supabaseAdmin
     .from('poll_options')
     .insert(options.map(label => ({ poll_id: poll.id, label })))
-  if (optionsErr) throw optionsErr
+  if (optionsErr) throw new Error(optionsErr.message ?? 'Failed to create poll options')
 
   revalidatePath(`/project/${projectId}`)
 }
@@ -1303,7 +1314,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
 
   const { data: project, error: projectErr } = await supabaseAdmin
     .from('projects')
-    .select('id, collector_participant_id')
+    .select('id, collector_participant_id, event_start_at, event_end_at')
     .eq('id', projectId)
     .single()
   if (projectErr || !project) throw projectErr || new Error('Project not found')
@@ -1354,9 +1365,27 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     throw new Error('Max participants must be greater than or equal to min participants')
   }
 
+  const toInputDate = (iso: string | null | undefined) => {
+    if (!iso) return ''
+    const parsed = new Date(iso)
+    if (Number.isNaN(parsed.getTime())) return ''
+    const month = String(parsed.getMonth() + 1).padStart(2, '0')
+    const day = String(parsed.getDate()).padStart(2, '0')
+    return `${parsed.getFullYear()}-${month}-${day}`
+  }
+  const toInputTime = (iso: string | null | undefined) => {
+    if (!iso) return ''
+    const parsed = new Date(iso)
+    if (Number.isNaN(parsed.getTime())) return ''
+    const hours = String(parsed.getHours()).padStart(2, '0')
+    const minutes = String(parsed.getMinutes()).padStart(2, '0')
+    return `${hours}:${minutes}`
+  }
+
   const parseEventDateTime = (
     dateValue: string | null | undefined,
     timeValue: string | null | undefined,
+    existingIso: string | null | undefined,
     defaultTime: string
   ) => {
     const dateRaw = (dateValue ?? '').trim()
@@ -1365,17 +1394,38 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     if (!dateRaw && timeRaw) {
       throw new Error('Event time requires a date')
     }
-    const time = timeRaw || defaultTime
+
+    const existingDate = toInputDate(existingIso)
+    const existingTime = toInputTime(existingIso)
+    if (existingIso && dateRaw && dateRaw === existingDate) {
+      if (!timeRaw || timeRaw === existingTime) {
+        const localKey = `${existingDate}T${existingTime || defaultTime}`
+        return { iso: existingIso, localKey }
+      }
+    }
+
+    const time =
+      timeRaw ||
+      (() => {
+        if (existingTime) return existingTime
+        return defaultTime
+      })()
     const combined = `${dateRaw}T${time}`
     const parsed = new Date(combined)
     if (Number.isNaN(parsed.getTime())) {
       throw new Error('Invalid event date or time')
     }
-    return parsed.toISOString()
+    return { iso: parsed.toISOString(), localKey: combined }
   }
-  const eventStartAt = parseEventDateTime(eventStartDate, eventStartTime, '09:00')
-  const eventEndAt = parseEventDateTime(eventEndDate, eventEndTime, '17:00')
-  if (eventStartAt && eventEndAt && new Date(eventEndAt) < new Date(eventStartAt)) {
+  const parsedEventStart = parseEventDateTime(eventStartDate, eventStartTime, project.event_start_at, '09:00')
+  const parsedEventEnd = parseEventDateTime(eventEndDate, eventEndTime, project.event_end_at, '17:00')
+  const eventStartAt = parsedEventStart?.iso ?? null
+  const eventEndAt = parsedEventEnd?.iso ?? null
+  if (
+    parsedEventStart?.localKey &&
+    parsedEventEnd?.localKey &&
+    parsedEventEnd.localKey < parsedEventStart.localKey
+  ) {
     throw new Error('Event end must be after event start')
   }
 

@@ -1,5 +1,6 @@
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { updateProjectSettings } from '@/app/project/[id]/actions'
+import { ProjectSettingsForm } from '@/components/Project/ProjectSettingsForm'
 
 const toLocalDateInput = (iso?: string | null) => {
   if (!iso) return ''
@@ -37,14 +38,8 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
   }
 
   const totalEur = (Number(project.total_cents ?? 0) / 100).toFixed(2)
-  const timeOptions = [
-    '',
-    ...Array.from({ length: 48 }, (_, idx) => {
-      const hours = Math.floor(idx / 2)
-      const minutes = idx % 2 === 0 ? '00' : '30'
-      return `${String(hours).padStart(2, '0')}:${minutes}`
-    }),
-  ]
+  const startTimeValue = toLocalTimeInput(project.event_start_at)
+  const endTimeValue = toLocalTimeInput(project.event_end_at)
 
   return (
     <div className="space-y-6">
@@ -55,131 +50,21 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
             Update the core project details and how totals are calculated.
           </p>
         </div>
-        <form action={updateProjectSettings.bind(null, projectId)} className="grid gap-4">
-          <input
-            name="project_title"
-            defaultValue={project.title ?? ''}
-            placeholder="Project title"
-            className="border rounded-md px-3 py-2 bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-            required
-          />
-          <textarea
-            name="project_description"
-            defaultValue={project.description ?? ''}
-            placeholder="Description (optional)"
-            className="border rounded-md px-3 py-2 bg-white min-h-[120px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-          />
-
-          <div className="grid md:grid-cols-3 gap-3">
-            <div>
-              <label className="text-sm block mb-1">Total (EUR)</label>
-              <input
-                name="totalEur"
-                type="text"
-                inputMode="decimal"
-                defaultValue={totalEur}
-                className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                required
-              />
-            </div>
-            <div>
-              <label className="text-sm block mb-1">Total type</label>
-              <div className="border rounded-md px-3 py-2 space-y-2 bg-white">
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name="total_is_per_person"
-                    value="false"
-                    defaultChecked={!project.total_is_per_person}
-                  />
-                  Grand total (fixed)
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name="total_is_per_person"
-                    value="true"
-                    defaultChecked={!!project.total_is_per_person}
-                  />
-                  Per person (fixed)
-                </label>
-              </div>
-            </div>
-            <div>
-              <label className="text-sm block mb-1">Min participants</label>
-              <input
-                name="min_participants"
-                type="number"
-                min={1}
-                className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                defaultValue={project.min_participants ?? ''}
-                placeholder="e.g. 5 (optional)"
-              />
-            </div>
-          </div>
-
-          <div className="grid md:grid-cols-2 gap-3">
-            <div>
-              <label className="text-sm block mb-1">Max participants (optional)</label>
-              <input
-                name="max_participants"
-                type="number"
-                min={1}
-                className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                defaultValue={project.max_participants ?? ''}
-              />
-            </div>
-          </div>
-
-          <div className="grid md:grid-cols-2 gap-3">
-            <div>
-              <label className="text-sm block mb-1">Event starts (optional)</label>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  name="event_start_date"
-                  type="date"
-                  className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                  defaultValue={toLocalDateInput(project.event_start_at)}
-                />
-                <select
-                  name="event_start_time"
-                  className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                  defaultValue={toLocalTimeInput(project.event_start_at)}
-                >
-                  {timeOptions.map(value => (
-                    <option key={value || 'blank'} value={value}>
-                      {value || 'Time'}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className="text-sm block mb-1">Event ends (optional)</label>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  name="event_end_date"
-                  type="date"
-                  className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                  defaultValue={toLocalDateInput(project.event_end_at)}
-                />
-                <select
-                  name="event_end_time"
-                  className="border rounded-md px-3 py-2 w-full bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-                  defaultValue={toLocalTimeInput(project.event_end_at)}
-                >
-                  {timeOptions.map(value => (
-                    <option key={value || 'blank'} value={value}>
-                      {value || 'Time'}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <button className="px-5 py-2 rounded-full bg-black text-white w-fit">Save settings</button>
-        </form>
+        <ProjectSettingsForm
+          action={updateProjectSettings.bind(null, projectId)}
+          initial={{
+            title: project.title ?? '',
+            description: project.description ?? '',
+            totalEur,
+            totalIsPerPerson: !!project.total_is_per_person,
+            minParticipants: project.min_participants ?? null,
+            maxParticipants: project.max_participants ?? null,
+            eventStartDate: toLocalDateInput(project.event_start_at),
+            eventStartTime: startTimeValue,
+            eventEndDate: toLocalDateInput(project.event_end_at),
+            eventEndTime: endTimeValue,
+          }}
+        />
       </section>
     </div>
   )
