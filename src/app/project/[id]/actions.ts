@@ -290,6 +290,59 @@ export async function promoteToOrganizer(participantId: string) {
   redirect(`/project/${targetParticipant.project_id}`)
 }
 
+export async function demoteToMember(participantId: string) {
+  'use server'
+  const organizerId = await getCurrentUserId()
+  if (!organizerId) throw new Error('You must be signed in')
+
+  // Get the participant to demote
+  const { data: targetParticipant, error: targetErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, project_id, role, user_id, left_at')
+    .eq('id', participantId)
+    .single()
+  if (targetErr || !targetParticipant) throw new Error('Participant not found')
+  if (targetParticipant.left_at) throw new Error('Cannot demote inactive participant')
+
+  // Verify the current user is an organizer in the same project
+  const { data: organizerRow, error: orgErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('project_id', targetParticipant.project_id)
+    .eq('user_id', organizerId)
+    .eq('role', 'organizer')
+    .is('left_at', null)
+    .single()
+  if (orgErr || !organizerRow) throw new Error('Only organizers can demote organizers')
+
+  // Verify target is currently an organizer
+  if (targetParticipant.role !== 'organizer') {
+    throw new Error('This participant is not an organizer')
+  }
+
+  // Keep at least one organizer
+  const { data: organizers, error: organizersErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('project_id', targetParticipant.project_id)
+    .eq('role', 'organizer')
+    .is('left_at', null)
+  if (organizersErr) throw organizersErr
+  if ((organizers?.length ?? 0) <= 1) {
+    throw new Error('Cannot demote the only organizer')
+  }
+
+  const { error: updErr } = await supabaseAdmin
+    .from('participants')
+    .update({ role: 'member' })
+    .eq('id', participantId)
+  if (updErr) throw updErr
+
+  console.log('[demoteToMember] Demoted organizer to member', { participantId, projectId: targetParticipant.project_id })
+  revalidatePath(`/project/${targetParticipant.project_id}`)
+  redirect(`/project/${targetParticipant.project_id}`)
+}
+
 // FormData-based wrapper for leaveProject
 export async function leaveProjectFromForm(formData: FormData) {
   'use server'
@@ -324,6 +377,25 @@ export async function promoteToOrganizerFromForm(formData: FormData) {
     // Redirect is expected; surface it without logging as a failure.
     if (err?.message === 'NEXT_REDIRECT' || err?.digest === 'NEXT_REDIRECT') throw err
     console.error('[promoteToOrganizerFromForm] error', err?.message || err)
+    throw err
+  }
+}
+
+// FormData-based wrapper for demoteToMember
+export async function demoteToMemberFromForm(formData: FormData) {
+  'use server'
+  const participantId = String(formData.get('participantId') || '')
+  if (!participantId) {
+    console.error('[demoteToMemberFromForm] Missing participantId')
+    return
+  }
+  console.log('[demoteToMemberFromForm] Demoting participant', { participantId })
+  try {
+    await demoteToMember(participantId)
+  } catch (err: any) {
+    // Redirect is expected; surface it without logging as a failure.
+    if (err?.message === 'NEXT_REDIRECT' || err?.digest === 'NEXT_REDIRECT') throw err
+    console.error('[demoteToMemberFromForm] error', err?.message || err)
     throw err
   }
 }

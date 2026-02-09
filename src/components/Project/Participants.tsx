@@ -6,7 +6,6 @@ import {
   markReceived,
   approveJoinRequestFromForm,
   rejectJoinRequestFromForm,
-  promoteToOrganizerFromForm,
   setCollector,
   selfReportPaid,
   confirmLateJoinReceipt,
@@ -131,7 +130,6 @@ export function Participants(props: {
   const projectCanceled = props.projectCanceled === true
   const pendingSignalsSet = props.pendingSignalsSet ?? new Set<string>()
   const allOptionsMap = useMemo(() => mapFromEntries(props.allOptions ?? []), [props.allOptions])
-  const transfersList = props.transfers ?? []
   const transferAggregates = useMemo(() => {
     type Stats = {
       pendingCount: number
@@ -157,7 +155,7 @@ export function Participants(props: {
     const outgoingStats = new Map<string, Stats>()
     const pairMap = new Map<string, Transfer[]>()
 
-    for (const t of transfersList) {
+    for (const t of props.transfers ?? []) {
       if (!senderMap.has(t.from_participant_id)) senderMap.set(t.from_participant_id, [])
       senderMap.get(t.from_participant_id)!.push(t)
       if (!recipientMap.has(t.to_participant_id)) recipientMap.set(t.to_participant_id, [])
@@ -193,7 +191,7 @@ export function Participants(props: {
     }
 
     return { senderMap, recipientMap, incomingStats, outgoingStats, pairMap }
-  }, [transfersList])
+  }, [props.transfers])
   const lateTransfersBySenderMap = transferAggregates.senderMap
   const lateTransfersByRecipientMap = transferAggregates.recipientMap
   const incomingStatsMap = transferAggregates.incomingStats
@@ -311,7 +309,7 @@ export function Participants(props: {
           const name = displayName(p)
           const rowIsCollector = !!(props.collectorId && p.id === props.collectorId)
           const viewerIsCollector = !!(props.collectorId && props.myParticipantId === props.collectorId)
-          const isSelfRow = !!(props.myParticipantId && props.myParticipantId === p.id)
+          const isViewerRow = !!(props.myParticipantId && props.myParticipantId === p.id)
           const amountLabel = formatEuro(props.perPersonCents)
           const senderLateTransfers = lateTransfersBySenderMap.get(p.id) ?? []
           const recipientLateTransfers = lateTransfersByRecipientMap.get(p.id) ?? []
@@ -336,39 +334,40 @@ export function Participants(props: {
             : hasIncomingMarkedAwaiting
               ? 'Reported paid (late)'
               : `Receives ${euros(incomingStats.pendingCents)} from ${incomingStats.pendingCount}`
-          const viewerPairKey = viewerParticipantId ? `${viewerParticipantId}__${p.id}` : null
+          const shouldComputeViewerPair = !!viewerParticipantId && !isViewerRow && isFinalized
+          const viewerPairKey = shouldComputeViewerPair ? `${viewerParticipantId}__${p.id}` : null
           const viewerPairTransfers = viewerPairKey ? pairTransfersMap.get(viewerPairKey) ?? [] : []
           const viewerPairPending = viewerPairTransfers.filter(t => !t.received_at)
           const viewerPairPendingUnmarked = viewerPairPending.filter(t => !t.sender_marked_at)
           const viewerPairPendingMarked = viewerPairPending.filter(t => !!t.sender_marked_at)
           const viewerPairConfirmed = viewerPairTransfers.filter(t => !!t.received_at)
-          const pendingUnmarkedCents = viewerPairPendingUnmarked.reduce((sum, t) => sum + t.expected_cents, 0)
           const pendingMarkedCents = viewerPairPendingMarked.reduce((sum, t) => sum + t.expected_cents, 0)
-          const viewerHasLateLink = !!viewerParticipantId && !isSelfRow && isFinalized && viewerPairTransfers.length > 0
-          const viewerShowsLateOwesChip = viewerHasLateLink && viewerPairPendingUnmarked.length > 0
+          const viewerHasLateLink = shouldComputeViewerPair && viewerPairTransfers.length > 0
           const viewerShowsLateAwaitingChip =
             viewerHasLateLink && viewerPairPendingUnmarked.length === 0 && viewerPairPendingMarked.length > 0
           const viewerShowsLateSettledChip =
             viewerHasLateLink && viewerPairPending.length === 0 && viewerPairConfirmed.length > 0
           const latePayAvailable = viewerHasLateLink && viewerPairPendingUnmarked.length > 0
-          const showStandardPay =
+          const canShowStandardPay =
             !isFinalized &&
             !isLateParticipant &&
-            isSelfRow &&
+            isViewerRow &&
             !viewerIsCollector &&
             !rowIsCollector &&
             !paid &&
             !viewerSettled &&
             !viewerHasPendingSignal &&
             !sent
-          const showPay = showPayments && (isFinalized ? latePayAvailable : showStandardPay)
+          const showPay = showPayments && (isFinalized ? latePayAvailable : canShowStandardPay)
+          const canShowSelfSettledChip =
+            showPayments && !isFinalized && !showPay && viewerSettled && !rowIsCollector && isViewerRow
 
           let statusLabel: string
           let statusClass = 'text-[10px] px-1.5 py-0.5 rounded border font-medium'
           if (rowIsCollector) {
             statusLabel = 'Collector'
             statusClass += ' bg-emerald-600 text-white border-emerald-700'
-          } else if (paid && !isSelfRow && !(viewerIsCollector && !rowIsCollector)) {
+          } else if (paid && !isViewerRow && !(viewerIsCollector && !rowIsCollector)) {
             // Don't show "Settled" in status label for self row or when collector views paid member - it's shown on the right side instead
             statusLabel = 'Settled'
             statusClass += ' bg-emerald-50 text-emerald-700 border-emerald-200'
@@ -400,9 +399,6 @@ export function Participants(props: {
                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600 text-white">
                         Collector
                       </span>
-                    )}
-                    {isSelfRow && (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-black text-white">You</span>
                     )}
                     {isLateParticipant && (
                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-200 text-amber-900">
@@ -461,7 +457,7 @@ export function Participants(props: {
                     </button>
                   )}
 
-                  {showPayments && !isFinalized && !showPay && viewerSettled && !rowIsCollector && isSelfRow && (
+                  {canShowSelfSettledChip && (
                     <span className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 border border-green-300">
                       Settled
                     </span>
@@ -515,6 +511,7 @@ export function Participants(props: {
                       const senderName = sender ? displayName(sender) : 'Participant'
                       const settled = !!transfer.received_at
                       const senderMarked = !!transfer.sender_marked_at
+                      const canConfirmIncomingLatePayment = !settled && isViewerRow
                       return (
                         <div
                           key={transfer.id}
@@ -530,7 +527,7 @@ export function Participants(props: {
                                   : `Owes ${formatEuro(transfer.expected_cents)}`}
                             </div>
                           </div>
-                          {!settled && isSelfRow ? (
+                          {canConfirmIncomingLatePayment ? (
                             <button
                               type="button"
                               className="px-3 py-1.5 rounded border bg-white text-xs sm:text-sm disabled:opacity-50"

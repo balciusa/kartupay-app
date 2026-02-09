@@ -1,8 +1,8 @@
 'use client'
 
-import { ReactNode, useEffect, useMemo, useState } from 'react'
+import { ReactNode, useMemo, useState } from 'react'
 
-type TabKey = 'overview' | 'participants' | 'payments' | 'activity' | 'profile' | 'voting' | 'settings' | 'admin'
+type TabKey = 'overview' | 'people' | 'participants' | 'payments' | 'activity' | 'profile' | 'voting' | 'settings' | 'admin'
 
 type TabCounts = {
   participants?: number
@@ -29,18 +29,19 @@ export function ProjectTabs({
   defaultTab?: TabKey
 }) {
   const [active, setActive] = useState<TabKey>(defaultTab)
-  const [chatSeen, setChatSeen] = useState(false)
+  const [peopleSeen, setPeopleSeen] = useState(false)
 
-  const activityBadge = active === 'activity' || chatSeen ? undefined : counts?.activity
+  const peopleBadge = active === 'people' || peopleSeen ? counts?.participants : (counts?.activity ?? counts?.participants)
+  const peopleBadgeStyle = active === 'people' || peopleSeen || !counts?.activity ? 'neutral' : 'solid'
   const tabs = useMemo(() => {
     const baseTabs = [
       { key: 'overview' as const, label: 'Overview', enabled: !!sections.overview },
       {
-        key: 'participants' as const,
-        label: 'Participants',
-        badge: counts?.participants,
-        badgeStyle: 'neutral',
-        enabled: !!sections.participants,
+        key: 'people' as const,
+        label: 'Collab',
+        badge: peopleBadge,
+        badgeStyle: peopleBadgeStyle,
+        enabled: !!sections.people,
       },
       {
         key: 'payments' as const,
@@ -49,7 +50,6 @@ export function ProjectTabs({
         badgeStyle: 'warning',
         enabled: !!sections.payments,
       },
-      { key: 'activity' as const, label: 'Chat', badge: activityBadge, badgeStyle: 'solid', enabled: !!sections.activity },
       { key: 'profile' as const, label: 'Profile', enabled: !!sections.profile },
       { key: 'voting' as const, label: 'Voting', enabled: !!sections.voting },
     ]
@@ -69,15 +69,9 @@ export function ProjectTabs({
     }
 
     return baseTabs.filter(tab => tab.enabled)
-  }, [counts, activityBadge, sections])
+  }, [counts, peopleBadge, peopleBadgeStyle, sections])
 
   const resolvedActive = tabs.some(tab => tab.key === active) ? active : (tabs[0]?.key ?? defaultTab)
-
-  useEffect(() => {
-    if (active !== resolvedActive) {
-      setActive(resolvedActive)
-    }
-  }, [active, resolvedActive])
 
   return (
     <section className="border rounded-xl overflow-hidden">
@@ -92,8 +86,8 @@ export function ProjectTabs({
               aria-selected={isActive}
               onClick={() => {
                 setActive(tab.key)
-                if (tab.key === 'activity') {
-                  setChatSeen(true)
+                if (tab.key === 'people') {
+                  setPeopleSeen(true)
                 }
               }}
               className={[

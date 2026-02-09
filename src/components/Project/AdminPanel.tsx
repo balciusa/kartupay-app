@@ -6,6 +6,7 @@ import {
   finalizeProject,
   approveJoinRequestFromForm,
   rejectJoinRequestFromForm,
+  demoteToMemberFromForm,
   promoteToOrganizerFromForm,
   setCollector,
 } from '@/app/project/[id]/actions'
@@ -46,7 +47,6 @@ export function AdminPanel({
   projectId,
   participants,
   collectorId,
-  myParticipantId,
   pendingRequests,
   pendingCount,
   isOrganizer,
@@ -56,7 +56,6 @@ export function AdminPanel({
   projectId: string
   participants: Participant[]
   collectorId: string | null
-  myParticipantId: string | null
   pendingRequests: JoinRequest[]
   pendingCount: number
   isOrganizer: boolean
@@ -66,6 +65,7 @@ export function AdminPanel({
   const [requestsOpen, setRequestsOpen] = useState(false)
   const [participantsOpen, setParticipantsOpen] = useState(false)
   const canManage = isOrganizer
+  const organizerCount = participants.filter(p => p.role === 'organizer').length
   const modalRef = useRef<HTMLDivElement | null>(null)
   const participantsModalRef = useRef<HTMLDivElement | null>(null)
 
@@ -235,7 +235,8 @@ export function AdminPanel({
                 <div className="space-y-2">
                   {participants.map(p => {
                     const isCollector = !!(collectorId && p.id === collectorId)
-                    const isSelf = !!(myParticipantId && p.id === myParticipantId)
+                    const isOrganizerRow = p.role === 'organizer'
+                    const isOnlyOrganizer = isOrganizerRow && organizerCount <= 1
                     return (
                       <div key={p.id} className="flex items-center justify-between gap-3 text-sm">
                         <div className="space-y-0.5">
@@ -251,35 +252,81 @@ export function AdminPanel({
                                 Collector
                               </span>
                             )}
-                            {isSelf && (
-                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-black text-white">
-                                You
-                              </span>
-                            )}
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          {p.role === 'member' && (
-                            <form action={promoteToOrganizerFromForm}>
+                        <div className="flex items-center gap-3">
+                          {isOrganizerRow ? (
+                            <form
+                              action={demoteToMemberFromForm}
+                              className="inline-flex items-center"
+                            >
                               <input type="hidden" name="participantId" value={p.id} />
-                              <button
-                                type="submit"
-                                className="text-xs px-2 py-0.5 rounded bg-black text-white"
-                              >
+                              <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  name="organizer_selection"
+                                  className="h-4 w-4 accent-black"
+                                  defaultChecked
+                                  disabled={isOnlyOrganizer}
+                                  onChange={event => {
+                                    if (!event.currentTarget.checked) {
+                                      event.currentTarget.form?.requestSubmit()
+                                    }
+                                  }}
+                                />
+                                Organizer
+                              </label>
+                              <button type="submit" className="sr-only">
+                                Demote to member
+                              </button>
+                            </form>
+                          ) : (
+                            <form
+                              action={promoteToOrganizerFromForm}
+                              className="inline-flex items-center"
+                            >
+                              <input type="hidden" name="participantId" value={p.id} />
+                              <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  name="organizer_selection"
+                                  className="h-4 w-4 accent-black"
+                                  onChange={event => {
+                                    if (event.currentTarget.checked) {
+                                      event.currentTarget.form?.requestSubmit()
+                                    }
+                                  }}
+                                />
+                                Organizer
+                              </label>
+                              <button type="submit" className="sr-only">
                                 Promote to organizer
                               </button>
                             </form>
                           )}
-                          {!isCollector && (
-                            <form action={setCollector.bind(null, projectId, p.id)}>
-                              <button
-                                type="submit"
-                                className="text-xs px-2 py-0.5 rounded bg-black text-white"
-                              >
-                                Make collector
-                              </button>
-                            </form>
-                          )}
+                          <form
+                            action={setCollector.bind(null, projectId, p.id)}
+                            className="inline-flex items-center"
+                          >
+                            <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                              <input
+                                type="radio"
+                                name="collector_selection"
+                                className="h-4 w-4 accent-black"
+                                defaultChecked={isCollector}
+                                disabled={isCollector}
+                                onChange={event => {
+                                  if (event.currentTarget.checked) {
+                                    event.currentTarget.form?.requestSubmit()
+                                  }
+                                }}
+                              />
+                              Collector
+                            </label>
+                            <button type="submit" className="sr-only">
+                              Set collector
+                            </button>
+                          </form>
                         </div>
                       </div>
                     )

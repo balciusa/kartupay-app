@@ -697,28 +697,44 @@ export default async function ProjectPage({
             </div>
           ),
           profile: <ProfileTab projectId={projectId} />,
-          participants: (
-            <Participants
-              projectId={projectId}
-              participants={participantsClean}
-              preferred={preferredEntries}
-              allOptions={allOptionsEntries}
-              paidSet={paidSet}
-              organizerId={organizerId}
-              pendingRequests={viewerIsCollector ? (pendingForOrganizer ?? []) : []}
-              showPendingRequests={false}
-              showPayments={false}
-              myParticipantId={myParticipantId}
-              currentUserId={uid}
-              projectCanceled={isAborted}
-              perPersonCents={perPersonCents}
-              collectorId={collectorId}
-              collectorOptions={collectorOptions}
-              pendingSignalsSet={pendingSignalsSet}
-              transfers={lateTransferRows}
-              closedAt={closedAt}
-              projectStatus={project.status}
-            />
+          people: (
+            <div className="grid gap-4 lg:grid-cols-[minmax(320px,1fr)_minmax(0,1.35fr)]">
+              <div className="min-w-0">
+                <Participants
+                  projectId={projectId}
+                  participants={participantsClean}
+                  preferred={preferredEntries}
+                  allOptions={allOptionsEntries}
+                  paidSet={paidSet}
+                  organizerId={organizerId}
+                  pendingRequests={viewerIsCollector ? (pendingForOrganizer ?? []) : []}
+                  showPendingRequests={false}
+                  showPayments={false}
+                  myParticipantId={myParticipantId}
+                  currentUserId={uid}
+                  projectCanceled={isAborted}
+                  perPersonCents={perPersonCents}
+                  collectorId={collectorId}
+                  collectorOptions={collectorOptions}
+                  pendingSignalsSet={pendingSignalsSet}
+                  transfers={lateTransferRows}
+                  closedAt={closedAt}
+                  projectStatus={project.status}
+                />
+              </div>
+              <section className="border rounded-2xl bg-white p-4 space-y-4 min-w-0">
+                <div className="space-y-0.5">
+                  <h2 className="text-base font-semibold text-slate-900">Chat</h2>
+                  <p className="text-sm text-muted-foreground">Coordinate updates with the group</p>
+                </div>
+                <Chat
+                  projectId={projectId}
+                  messages={messages ?? []}
+                  userDisplayMap={userDisplayMap}
+                  canRead={isMeParticipant}
+                />
+              </section>
+            </div>
           ),
           payments: showPaymentsTab ? (
             <div className="space-y-4">
@@ -867,20 +883,11 @@ export default async function ProjectPage({
             />
           ),
           settings: viewerIsCollector ? <ProjectSettingsTab projectId={projectId} /> : null,
-          activity: (
-            <Chat
-              projectId={projectId}
-              messages={messages ?? []}
-              userDisplayMap={userDisplayMap}
-              canRead={isMeParticipant}
-            />
-          ),
           admin: viewerIsCollector ? (
             <AdminPanel
               projectId={projectId}
               participants={participantsClean}
               collectorId={collectorId}
-              myParticipantId={myParticipantId}
               pendingRequests={pendingForOrganizer ?? []}
               pendingCount={viewerIsOrganizer ? (pendingForOrganizer ?? []).length : 0}
               isOrganizer={viewerIsOrganizer}
