@@ -2,15 +2,33 @@
 
 import { ReactNode, useMemo, useState } from 'react'
 
-type TabKey = 'overview' | 'participants' | 'payments' | 'activity' | 'admin'
+type TabKey =
+  | 'overview'
+  | 'people'
+  | 'participants'
+  | 'payments'
+  | 'activity'
+  | 'profile'
+  | 'voting'
+  | 'extras'
+  | 'settings'
+  | 'admin'
 
 type TabCounts = {
   participants?: number
   activity?: number
   adminPending?: number
+  paymentsPending?: number
 }
 
-type TabSectionMap = Record<TabKey, ReactNode>
+type TabSectionMap = Partial<Record<TabKey, ReactNode>>
+type TabDefinition = {
+  key: TabKey
+  label: string
+  badge?: ReactNode
+  badgeStyle?: 'neutral' | 'solid' | 'warning'
+  enabled: boolean
+}
 
 const badgeClasses = {
   neutral: 'bg-slate-100 text-slate-700 border border-slate-200',
@@ -28,34 +46,68 @@ export function ProjectTabs({
   defaultTab?: TabKey
 }) {
   const [active, setActive] = useState<TabKey>(defaultTab)
-  const tabs = useMemo(
-    () => [
-      { key: 'overview' as const, label: 'Overview' },
-      { key: 'participants' as const, label: 'Participants', badge: counts?.participants, badgeStyle: 'neutral' },
-      { key: 'payments' as const, label: 'Payments' },
-      { key: 'activity' as const, label: 'Activity', badge: counts?.activity, badgeStyle: 'solid' },
+  const [peopleSeen, setPeopleSeen] = useState(false)
+
+  const peopleBadge = active === 'people' || peopleSeen ? counts?.participants : (counts?.activity ?? counts?.participants)
+  const peopleBadgeStyle = active === 'people' || peopleSeen || !counts?.activity ? 'neutral' : 'solid'
+  const tabs = useMemo(() => {
+    const baseTabs: TabDefinition[] = [
+      { key: 'overview' as const, label: 'Overview', enabled: !!sections.overview },
       {
+        key: 'people' as const,
+        label: 'Collab',
+        badge: peopleBadge,
+        badgeStyle: peopleBadgeStyle,
+        enabled: !!sections.people,
+      },
+      {
+        key: 'payments' as const,
+        label: 'Payments',
+        badge: counts?.paymentsPending,
+        badgeStyle: 'warning',
+        enabled: !!sections.payments,
+      },
+      { key: 'profile' as const, label: 'Profile', enabled: !!sections.profile },
+      { key: 'voting' as const, label: 'Voting', enabled: !!sections.voting },
+      { key: 'extras' as const, label: 'Extras', enabled: !!sections.extras },
+    ]
+
+    if (sections.settings) {
+      baseTabs.push({ key: 'settings' as const, label: 'Settings', enabled: true })
+    }
+
+    if (sections.admin) {
+      baseTabs.push({
         key: 'admin' as const,
         label: 'Admin',
         badge: counts?.adminPending ? `${counts.adminPending} pending` : null,
         badgeStyle: 'warning',
-      },
-    ],
-    [counts]
-  )
+        enabled: true,
+      })
+    }
+
+    return baseTabs.filter(tab => tab.enabled)
+  }, [counts, peopleBadge, peopleBadgeStyle, sections])
+
+  const resolvedActive = tabs.some(tab => tab.key === active) ? active : (tabs[0]?.key ?? defaultTab)
 
   return (
     <section className="border rounded-xl overflow-hidden">
       <div className="flex flex-wrap items-center gap-1 border-b bg-white px-2" role="tablist">
         {tabs.map(tab => {
-          const isActive = active === tab.key
+          const isActive = resolvedActive === tab.key
           return (
             <button
               key={tab.key}
               type="button"
               role="tab"
               aria-selected={isActive}
-              onClick={() => setActive(tab.key)}
+              onClick={() => {
+                setActive(tab.key)
+                if (tab.key === 'people') {
+                  setPeopleSeen(true)
+                }
+              }}
               className={[
                 'flex items-center gap-2 px-3 py-2 text-sm',
                 'border-b-2 -mb-px transition-colors',
@@ -78,7 +130,7 @@ export function ProjectTabs({
         })}
       </div>
 
-      <div className="p-4">{sections[active]}</div>
+      <div className="p-4">{sections[resolvedActive]}</div>
     </section>
   )
 }
