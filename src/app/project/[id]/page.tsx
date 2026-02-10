@@ -4,15 +4,19 @@ import Chat from '@/components/Project/Chat'
 import Voting from '@/components/Project/Voting'
 import { ProjectTabs } from '@/components/Project/ProjectTabs'
 import { AdminPanel } from '@/components/Project/AdminPanel'
+import { type ActivityLogItem } from '@/components/Project/ActivityLogTab'
 import { OutgoingTransfer } from '@/components/Project/OutgoingTransfer'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { JoinButton } from '@/components/Project/JoinButton'
 import { ProfileTab } from '@/components/Project/ProfileTab'
 import { ProjectSettingsTab } from '@/components/Project/ProjectSettingsTab'
 import { LateOutgoingTransfers } from '@/components/Project/LateOutgoingTransfers'
+import { ExtrasTab } from '@/components/Project/ExtrasTab'
+import { getActivityCategory } from '@/lib/activityLog'
+import { buildExtraDueRows, extraDueKey } from '@/lib/extraPayments'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
-import { confirmLateJoinReceipt, markReceived } from './actions'
+import { confirmLateJoinReceipt, markExtraReceived, markReceived, selfReportExtraPaid } from './actions'
 
 type LateTransferRow = {
   id: string
@@ -22,6 +26,53 @@ type LateTransferRow = {
   expected_cents: number
   received_at: string | null
   sender_marked_at: string | null
+}
+
+type ExtraRow = {
+  id: string
+  project_id: string
+  title: string
+  description: string | null
+  amount_cents: number
+  amount_is_per_person: boolean
+  collection_mode: string
+  dedicated_collector_participant_id: string | null
+  created_by: string
+  created_at: string
+}
+
+type ExtraMembershipRow = {
+  id: string
+  extra_id: string
+  participant_id: string
+  left_at: string | null
+}
+
+type ExtraPaymentRow = {
+  id: string
+  extra_id: string
+  payer_participant_id: string
+  collector_participant_id: string
+  amount_cents: number
+  reported_at: string | null
+  confirmed_at: string | null
+}
+
+type ActivityLogRow = {
+  id: string
+  project_id: string
+  occurred_at: string
+  entry_type: string
+  actor_user_id: string | null
+  actor_participant_id: string | null
+  target_user_id: string | null
+  target_participant_id: string | null
+  payment_id: string | null
+  poll_id: string | null
+  extra_id: string | null
+  join_request_id: string | null
+  late_transfer_id: string | null
+  metadata: Record<string, unknown> | null
 }
 
 export const dynamic = 'force-dynamic'
@@ -40,6 +91,22 @@ const missingColumn = (
     haystack.includes('schema cache') ||
     haystack.includes('unknown column') ||
     error?.code === 'PGRST204'
+  )
+}
+
+const missingTable = (
+  error: { message?: string; details?: string | null; hint?: string | null; code?: string } | null,
+  table: string
+) => {
+  const haystack = `${error?.message ?? ''} ${error?.details ?? ''} ${error?.hint ?? ''}`.toLowerCase()
+  const tableName = table.toLowerCase()
+  if (!haystack.includes(tableName) && error?.code !== '42P01') return false
+  return (
+    error?.code === '42P01' ||
+    haystack.includes('does not exist') ||
+    haystack.includes('could not find') ||
+    haystack.includes('schema cache') ||
+    haystack.includes('unknown table')
   )
 }
 
@@ -207,6 +274,26 @@ export default async function ProjectPage({
     }
   })()
 
+  const extrasPromise = (async (): Promise<ExtraRow[]> => {
+    const { data, error } = await supabase
+      .from('extras')
+      .select(
+        'id, project_id, title, description, amount_cents, amount_is_per_person, collection_mode, dedicated_collector_participant_id, created_by, created_at'
+      )
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      if (missingTable(error, 'extras')) {
+        console.warn('[ProjectPage] extras table missing, skipping extras section')
+        return []
+      }
+      console.error('[ProjectPage] extras fetch error', error)
+      return []
+    }
+    return (data ?? []) as ExtraRow[]
+  })()
+
   const [
     { data: participants },
     { data: messages },
@@ -247,6 +334,41 @@ export default async function ProjectPage({
         .select('poll_id, option_id, user_id')
         .in('poll_id', pollIds)
     : { data: [] as Array<{ poll_id: string; option_id: string; user_id: string }> }
+  const extrasRaw = await extrasPromise
+  const extraIds = extrasRaw.map(extra => extra.id)
+  const { data: extraMembershipRows, error: extraMembershipsErr } = extraIds.length
+    ? await supabase
+        .from('extra_memberships')
+        .select('id, extra_id, participant_id, left_at')
+        .in('extra_id', extraIds)
+    : { data: [] as ExtraMembershipRow[], error: null as { message?: string; code?: string } | null }
+  if (extraMembershipsErr) {
+    if (missingTable(extraMembershipsErr, 'extra_memberships')) {
+      console.warn('[ProjectPage] extra_memberships table missing, skipping extras memberships')
+    } else {
+      console.error('[ProjectPage] extra memberships fetch error', extraMembershipsErr)
+    }
+  }
+  let extraPaymentsAvailable = true
+  let extraPaymentRows: ExtraPaymentRow[] = []
+  if (extraIds.length) {
+    const { data: rawExtraPayments, error: extraPaymentsErr } = await supabaseAdmin
+      .from('extra_payments')
+      .select(
+        'id, extra_id, payer_participant_id, collector_participant_id, amount_cents, reported_at, confirmed_at'
+      )
+      .in('extra_id', extraIds)
+    if (extraPaymentsErr) {
+      if (missingTable(extraPaymentsErr, 'extra_payments')) {
+        extraPaymentsAvailable = false
+        console.warn('[ProjectPage] extra_payments table missing, skipping extra payment statuses')
+      } else {
+        console.error('[ProjectPage] extra payments fetch error', extraPaymentsErr)
+      }
+    } else {
+      extraPaymentRows = (rawExtraPayments ?? []) as ExtraPaymentRow[]
+    }
+  }
   const messageAuthorIds = Array.from(
     new Set((messages ?? []).map(m => m.user_id ?? m.author_user_id).filter(Boolean))
   )
@@ -358,10 +480,17 @@ export default async function ProjectPage({
     const head = name.slice(0, 2)
     return `${head}***@${domain}`
   }
-  const participantName = (p: { users?: { email?: string | null; display_name?: string | null } | null; short_code?: string | null }) => {
-    const displayName = p.users?.display_name ?? null
+  const resolveUserProfile = (
+    users?: { email?: string | null; display_name?: string | null } | Array<{ email?: string | null; display_name?: string | null }> | null
+  ) => {
+    if (!users) return null
+    return Array.isArray(users) ? users[0] ?? null : users
+  }
+  const participantName = (p: { users?: { email?: string | null; display_name?: string | null } | Array<{ email?: string | null; display_name?: string | null }> | null; short_code?: string | null }) => {
+    const profile = resolveUserProfile(p.users)
+    const displayName = profile?.display_name ?? null
     if (displayName) return displayName
-    const masked = maskEmail(p.users?.email ?? null)
+    const masked = maskEmail(profile?.email ?? null)
     if (masked) return masked
     if (p.short_code) return `#${p.short_code}`
     return 'Member'
@@ -391,7 +520,7 @@ export default async function ProjectPage({
   
   // Build preferred payment methods map (as Map for component)
   const preferred = new Map<string, { label: string | null, value: string, type: string }>()
-  const allOptions = new Map<string, Array<{ label: string | null, value: string, type: string, priority: number }>>()
+  const allOptions = new Map<string, Array<{ label: string | null, value: string, type: string, priority: number, is_active?: boolean }>>()
   
   for (const p of participantsClean) {
     const methods = paymentMethodsList.filter(pm => pm.participant_id === p.id)
@@ -575,16 +704,152 @@ export default async function ProjectPage({
     options: poll.options,
     can_edit: !!uid && (poll.created_by === uid || viewerIsCollector),
   }))
+  const extraCollectorOptions = participantsClean.map(p => ({
+    participant_id: p.id,
+    label: participantName(p),
+  }))
+  const participantsById = new Map(participantsClean.map(p => [p.id, p]))
+  const participantsByUserId = new Map(participantsClean.map(p => [p.user_id, p]))
+  const activeExtraMemberships = ((extraMembershipRows as ExtraMembershipRow[] | null) ?? []).filter(row => !row.left_at)
+  const activeMembershipIdsByExtra = new Map<string, string[]>()
+  for (const membership of activeExtraMemberships) {
+    const list = activeMembershipIdsByExtra.get(membership.extra_id) ?? []
+    list.push(membership.participant_id)
+    activeMembershipIdsByExtra.set(membership.extra_id, list)
+  }
+  const extrasForTab = extrasRaw.map(extra => {
+    const memberIds = activeMembershipIdsByExtra.get(extra.id) ?? []
+    const membersCount = memberIds.length
+    const viewerJoined = !!(myParticipantId && memberIds.includes(myParticipantId))
+    const memberLabels = memberIds
+      .flatMap(memberId => {
+        const member = participantsById.get(memberId)
+        return member ? [participantName(member)] : []
+      })
+      .sort((a, b) => a.localeCompare(b))
+    const perMemberShare = extra.amount_is_per_person
+      ? Number(extra.amount_cents ?? 0)
+      : Math.floor(Number(extra.amount_cents ?? 0) / Math.max(1, membersCount))
+
+    const requestedDedicatedCollector =
+      extra.collection_mode === 'dedicated_collector' && extra.dedicated_collector_participant_id
+        ? participantsById.get(extra.dedicated_collector_participant_id)
+        : null
+    const hasDedicatedCollector = !!requestedDedicatedCollector
+    const resolvedCollectionMode = hasDedicatedCollector ? 'dedicated_collector' : 'project_collector'
+    const resolvedDedicatedCollectorId = hasDedicatedCollector ? requestedDedicatedCollector?.id ?? null : null
+    const resolvedCollectorLabel = hasDedicatedCollector
+      ? participantName(requestedDedicatedCollector!)
+      : collectorLabel
+
+    const creatorParticipant = participantsByUserId.get(extra.created_by)
+    const createdByLabel = creatorParticipant ? participantName(creatorParticipant) : `#${extra.created_by.slice(0, 6)}`
+
+    return {
+      id: extra.id,
+      title: extra.title,
+      description: extra.description ?? null,
+      amount_cents: Number(extra.amount_cents ?? 0),
+      amount_is_per_person: !!extra.amount_is_per_person,
+      collection_mode: resolvedCollectionMode as 'project_collector' | 'dedicated_collector',
+      dedicated_collector_participant_id: resolvedDedicatedCollectorId,
+      collector_label: resolvedCollectorLabel,
+      member_count: membersCount,
+      member_labels: memberLabels,
+      viewer_joined: viewerJoined,
+      viewer_share_cents: viewerJoined ? perMemberShare : null,
+      created_by_label: createdByLabel,
+      can_manage: !!uid && (extra.created_by === uid || viewerIsCollector),
+    }
+  })
+  const activeParticipantIds = new Set(participantsClean.map(p => p.id))
+  const extraDueRows = buildExtraDueRows({
+    extras: extrasRaw.map(extra => ({
+      id: extra.id,
+      title: extra.title,
+      amount_cents: Number(extra.amount_cents ?? 0),
+      amount_is_per_person: !!extra.amount_is_per_person,
+      collection_mode: extra.collection_mode,
+      dedicated_collector_participant_id: extra.dedicated_collector_participant_id,
+    })),
+    memberships: activeExtraMemberships.map(row => ({
+      extra_id: row.extra_id,
+      participant_id: row.participant_id,
+      left_at: row.left_at,
+    })),
+    activeParticipantIds,
+    projectCollectorParticipantId: collectorId,
+  })
+  const extraPaymentsByKey = new Map<string, ExtraPaymentRow>()
+  for (const payment of extraPaymentRows) {
+    extraPaymentsByKey.set(extraDueKey(payment.extra_id, payment.payer_participant_id), payment)
+  }
+  const extraDueWithStatus = extraDueRows.map(row => {
+    const payment = extraPaymentsByKey.get(extraDueKey(row.extra_id, row.payer_participant_id))
+    const amountMatches = !!payment && Number(payment.amount_cents ?? 0) === row.amount_cents
+    const collectorMatches = !!payment && payment.collector_participant_id === row.collector_participant_id
+    const rowMatchesCurrentDue = amountMatches && collectorMatches
+    return {
+      ...row,
+      reported: rowMatchesCurrentDue && !!payment?.reported_at && !payment?.confirmed_at,
+      confirmed: rowMatchesCurrentDue && !!payment?.confirmed_at,
+    }
+  })
+  const extraTargetCents = extraDueWithStatus.reduce((sum, row) => sum + row.amount_cents, 0)
+  const extraCollectedCents = extraDueWithStatus.reduce((sum, row) => {
+    const autoCollected = row.payer_participant_id === row.collector_participant_id
+    return sum + (autoCollected || row.confirmed ? row.amount_cents : 0)
+  }, 0)
+  const extraGrandTotalTargetCents = extraDueWithStatus
+    .filter(row => !row.amount_is_per_person)
+    .reduce((sum, row) => sum + row.amount_cents, 0)
+  const extraGrandTotalCollectedCents = extraDueWithStatus
+    .filter(row => !row.amount_is_per_person)
+    .reduce((sum, row) => {
+      const autoCollected = row.payer_participant_id === row.collector_participant_id
+      return sum + (autoCollected || row.confirmed ? row.amount_cents : 0)
+    }, 0)
+  const extraPerPersonTargetCents = extraDueWithStatus
+    .filter(row => row.amount_is_per_person)
+    .reduce((sum, row) => sum + row.amount_cents, 0)
+  const extraPerPersonCollectedCents = extraDueWithStatus
+    .filter(row => row.amount_is_per_person)
+    .reduce((sum, row) => {
+      const autoCollected = row.payer_participant_id === row.collector_participant_id
+      return sum + (autoCollected || row.confirmed ? row.amount_cents : 0)
+    }, 0)
+  const extraIncomingForViewer = viewerIsCollector && myParticipantId
+    ? extraDueWithStatus.filter(
+        row =>
+          row.collector_participant_id === myParticipantId &&
+          row.payer_participant_id !== myParticipantId &&
+          !row.confirmed
+      )
+    : []
+  const extraOutgoingForViewer = !viewerIsCollector && myParticipantId
+    ? extraDueWithStatus.filter(
+        row =>
+          row.payer_participant_id === myParticipantId &&
+          row.collector_participant_id !== myParticipantId &&
+          !row.confirmed
+      )
+    : []
+  const pendingExtraCollectorCount = viewerIsCollector ? extraIncomingForViewer.length : 0
+  const pendingExtraOutgoingCount = !viewerIsCollector ? extraOutgoingForViewer.length : 0
+  const pendingPaymentsCountWithExtras =
+    pendingPaymentsCount + pendingExtraCollectorCount + pendingExtraOutgoingCount
+  const totalCentsWithExtras = totalCents + extraTargetCents
+  const collectedCentsWithExtras = collectedCentsDisplay + extraCollectedCents
   
   // Get collector options from payment_options (project-specific)
-  let collectorOptions =
+  let collectorPaymentOptions =
     collectorId
       ? (paymentOptions ?? []).filter(po => po.participant_id === collectorId && po.is_active !== false)
       : []
   
   // Fallback to user_payment_options if no project-specific options found
   // This handles cases where collector updated their payment options in Settings after joining
-  if (collectorOptions.length === 0 && collectorParticipant?.user_id) {
+  if (collectorPaymentOptions.length === 0 && collectorParticipant?.user_id) {
     const { data: userPaymentOptions, error: userOptsError } = await supabaseAdmin
       .from('user_payment_options')
       .select('type, label, value, priority, is_active')
@@ -596,7 +861,7 @@ export default async function ProjectPage({
       console.error('[ProjectPage] Error fetching collector user_payment_options:', userOptsError)
     }
     
-    collectorOptions = (userPaymentOptions ?? []).map(opt => ({
+    collectorPaymentOptions = (userPaymentOptions ?? []).map(opt => ({
       label: opt.label,
       value: opt.value,
       type: opt.type,
@@ -642,6 +907,206 @@ export default async function ProjectPage({
     unreadCount = lastReadAt
       ? (messages ?? []).filter(m => new Date(m.created_at) > lastReadAt).length
       : (messages ?? []).length
+  }
+
+  let activityItems: ActivityLogItem[] = []
+  if (viewerIsCollector) {
+    const { data: rawActivityRows, error: activityErr } = await supabaseAdmin
+      .from('activity_logs')
+      .select(
+        'id, project_id, occurred_at, entry_type, actor_user_id, actor_participant_id, target_user_id, target_participant_id, payment_id, poll_id, extra_id, join_request_id, late_transfer_id, metadata'
+      )
+      .eq('project_id', projectId)
+      .order('occurred_at', { ascending: false })
+      .limit(400)
+
+    if (activityErr) {
+      if (missingTable(activityErr, 'activity_logs')) {
+        console.warn('[ProjectPage] activity_logs table missing, skipping activity tab')
+      } else {
+        console.error('[ProjectPage] activity logs fetch error', activityErr)
+      }
+    } else {
+      const activityRows = (rawActivityRows ?? []) as ActivityLogRow[]
+      const participantIdsInLogs = new Set<string>()
+      const userIdsInLogs = new Set<string>()
+      for (const row of activityRows) {
+        if (row.actor_participant_id) participantIdsInLogs.add(row.actor_participant_id)
+        if (row.target_participant_id) participantIdsInLogs.add(row.target_participant_id)
+        if (row.actor_user_id) userIdsInLogs.add(row.actor_user_id)
+        if (row.target_user_id) userIdsInLogs.add(row.target_user_id)
+      }
+
+      const activityParticipantsById = new Map(participantsClean.map(p => [p.id, p]))
+      const missingParticipantIds = Array.from(participantIdsInLogs).filter(id => !activityParticipantsById.has(id))
+      if (missingParticipantIds.length) {
+        const { data: missingParticipants, error: missingParticipantsErr } = await supabaseAdmin
+          .from('participants')
+          .select('id, user_id, role, short_code, joined_at, users(email, display_name)')
+          .in('id', missingParticipantIds)
+        if (missingParticipantsErr) {
+          console.error('[ProjectPage] activity participants lookup error', missingParticipantsErr)
+        } else {
+          for (const participant of missingParticipants ?? []) {
+            activityParticipantsById.set(participant.id, participant)
+          }
+        }
+      }
+
+      const userProfilesById = new Map<string, { display_name: string | null; email: string | null }>()
+      if (userIdsInLogs.size) {
+        const { data: activityUsers, error: activityUsersErr } = await supabaseAdmin
+          .from('users')
+          .select('id, display_name, email')
+          .in('id', Array.from(userIdsInLogs))
+        if (activityUsersErr) {
+          console.error('[ProjectPage] activity users lookup error', activityUsersErr)
+        } else {
+          for (const user of activityUsers ?? []) {
+            userProfilesById.set(user.id, {
+              display_name: user.display_name ?? null,
+              email: user.email ?? null,
+            })
+          }
+        }
+      }
+
+      const userLabel = (userId: string | null | undefined) => {
+        if (!userId) return null
+        const profile = userProfilesById.get(userId)
+        if (profile?.display_name?.trim()) return profile.display_name.trim()
+        const masked = maskEmail(profile?.email ?? null)
+        if (masked) return masked
+        return `#${userId.slice(0, 6)}`
+      }
+
+      const participantLabel = (participantId: string | null | undefined) => {
+        if (!participantId) return null
+        const participant = activityParticipantsById.get(participantId)
+        if (!participant) return null
+        return participantName(participant)
+      }
+
+      const resolveLabel = (participantId: string | null | undefined, userId: string | null | undefined) =>
+        participantLabel(participantId) ?? userLabel(userId) ?? 'Member'
+
+      const readMetaString = (meta: Record<string, unknown> | null | undefined, key: string) => {
+        const value = meta?.[key]
+        return typeof value === 'string' && value.trim() ? value : null
+      }
+      const readMetaNumber = (meta: Record<string, unknown> | null | undefined, key: string) => {
+        const value = meta?.[key]
+        return typeof value === 'number' && Number.isFinite(value) ? value : null
+      }
+
+      activityItems = activityRows.map(row => {
+        const meta = row.metadata ?? {}
+        const actorLabel = resolveLabel(row.actor_participant_id, row.actor_user_id)
+        const targetLabel = resolveLabel(row.target_participant_id, row.target_user_id)
+        const toStatus = readMetaString(meta, 'to_status')
+        const fromStatus = readMetaString(meta, 'from_status')
+        const extraTitle = readMetaString(meta, 'title')
+        const pollTitle = readMetaString(meta, 'title')
+        const recipientsCount = readMetaNumber(meta, 'recipients_count')
+        const optionId = readMetaString(meta, 'option_id')
+
+        let message = `${actorLabel} did ${row.entry_type.replaceAll('_', ' ')}`
+        switch (row.entry_type) {
+          case 'project_created':
+            message = `${actorLabel} created the project`
+            break
+          case 'project_updated':
+            message = `${actorLabel} updated project settings`
+            break
+          case 'project_status_changed':
+            message = fromStatus && toStatus
+              ? `${actorLabel} changed project status from ${fromStatus} to ${toStatus}`
+              : `${actorLabel} changed project status${toStatus ? ` to ${toStatus}` : ''}`
+            break
+          case 'collector_changed':
+            message = `${actorLabel} changed collector to ${targetLabel}`
+            break
+          case 'participant_joined':
+            message = `${targetLabel} joined the project`
+            break
+          case 'participant_left':
+            message = `${targetLabel} left the project`
+            break
+          case 'join_request_submitted':
+            message = `${actorLabel} submitted a join request`
+            break
+          case 'join_request_approved':
+            message = `${actorLabel} approved join request for ${targetLabel}`
+            break
+          case 'join_request_rejected':
+            message = `${actorLabel} rejected join request${row.target_user_id ? ` for ${targetLabel}` : ''}`
+            break
+          case 'join_request_canceled':
+            message = `${actorLabel} canceled a join request`
+            break
+          case 'payment_reported':
+            message = `${actorLabel} reported a payment`
+            break
+          case 'payment_confirmed':
+            message = `${actorLabel} confirmed payment${row.target_participant_id ? ` from ${targetLabel}` : ''}`
+            break
+          case 'payment_unconfirmed':
+            message = `${actorLabel} unconfirmed a payment`
+            break
+          case 'late_transfer_created':
+            message = `${actorLabel} created ${recipientsCount ?? 0} late transfer${recipientsCount === 1 ? '' : 's'}${row.target_participant_id ? ` for ${targetLabel}` : ''}`
+            break
+          case 'late_transfer_sender_marked':
+            message = `${actorLabel} marked a late transfer as paid`
+            break
+          case 'late_transfer_collector_confirmed':
+            message = `${actorLabel} confirmed a late transfer receipt`
+            break
+          case 'poll_created':
+            message = `${actorLabel} created poll${pollTitle ? ` \"${pollTitle}\"` : ''}`
+            break
+          case 'poll_updated':
+            message = `${actorLabel} updated poll${pollTitle ? ` \"${pollTitle}\"` : ''}`
+            break
+          case 'poll_deleted':
+            message = `${actorLabel} deleted poll${pollTitle ? ` \"${pollTitle}\"` : ''}`
+            break
+          case 'poll_vote_cast':
+            message = `${actorLabel} cast a vote${optionId ? ` (${optionId.slice(0, 6)})` : ''}`
+            break
+          case 'poll_vote_changed':
+            message = `${actorLabel} changed a vote${optionId ? ` (${optionId.slice(0, 6)})` : ''}`
+            break
+          case 'extra_created':
+            message = `${actorLabel} created extra${extraTitle ? ` \"${extraTitle}\"` : ''}`
+            break
+          case 'extra_updated':
+            message = `${actorLabel} updated extra${extraTitle ? ` \"${extraTitle}\"` : ''}`
+            break
+          case 'extra_joined':
+            message = `${actorLabel} joined extra${extraTitle ? ` \"${extraTitle}\"` : ''}`
+            break
+          case 'extra_left':
+            message = `${actorLabel} left extra${extraTitle ? ` \"${extraTitle}\"` : ''}`
+            break
+          case 'extra_collector_changed':
+            message = `${actorLabel} changed extra collector${extraTitle ? ` for \"${extraTitle}\"` : ''}`
+            break
+          case 'extra_deleted':
+            message = `${actorLabel} deleted extra${extraTitle ? ` \"${extraTitle}\"` : ''}`
+            break
+          default:
+            break
+        }
+
+        return {
+          id: row.id,
+          occurred_at: row.occurred_at,
+          category: getActivityCategory(row.entry_type),
+          message,
+        }
+      })
+    }
   }
 
   return (
@@ -703,7 +1168,7 @@ export default async function ProjectPage({
           participants: participantsCount,
           activity: unreadCount,
           adminPending: viewerIsCollector ? (pendingForOrganizer ?? []).length : 0,
-          paymentsPending: pendingPaymentsCount || undefined,
+          paymentsPending: pendingPaymentsCountWithExtras || undefined,
         }}
         sections={{
           overview: (
@@ -716,6 +1181,18 @@ export default async function ProjectPage({
                 maxParticipants={project.max_participants as number | null}
                 participantsNow={participantsNow}
                 scenarios={scenarios}
+                extrasSummary={
+                  extraTargetCents > 0
+                    ? {
+                        targetCents: extraTargetCents,
+                        collectedCents: extraCollectedCents,
+                        grandTotalTargetCents: extraGrandTotalTargetCents,
+                        grandTotalCollectedCents: extraGrandTotalCollectedCents,
+                        perPersonTargetCents: extraPerPersonTargetCents,
+                        perPersonCollectedCents: extraPerPersonCollectedCents,
+                      }
+                    : null
+                }
                 lateSummary={{
                   joinersCount: lateJoinersCount,
                   pendingCount: lateTransfersPendingCount,
@@ -743,7 +1220,7 @@ export default async function ProjectPage({
                   projectCanceled={isAborted}
                   perPersonCents={perPersonCents}
                   collectorId={collectorId}
-                  collectorOptions={collectorOptions}
+                  collectorOptions={collectorPaymentOptions}
                   pendingSignalsSet={pendingSignalsSet}
                   transfers={lateTransferRows}
                   closedAt={closedAt}
@@ -778,8 +1255,13 @@ export default async function ProjectPage({
                   <div className="border rounded-lg p-3 text-sm space-y-1">
                     <div className="text-xs uppercase opacity-60">Funds</div>
                     <div className="font-medium">
-                      {`Collected ${formatEuro(collectedCentsDisplay)} out of ${formatEuro(totalCents)}`}
+                      {`Collected ${formatEuro(collectedCentsWithExtras)} out of ${formatEuro(totalCentsWithExtras)}`}
                     </div>
+                    {extraTargetCents > 0 && (
+                      <div className="text-xs text-slate-500">
+                        {`Base ${formatEuro(collectedCentsDisplay)}/${formatEuro(totalCents)} • Extras ${formatEuro(extraCollectedCents)}/${formatEuro(extraTargetCents)}`}
+                      </div>
+                    )}
                   </div>
                   <div className="border rounded-lg p-3 text-sm space-y-1">
                     <div className="text-xs uppercase opacity-60">SETTLED</div>
@@ -815,7 +1297,8 @@ export default async function ProjectPage({
                           baseParticipantIds.has(p.id)
                       )
                     : []
-                  const hasAny = incomingStandard.length > 0 || incomingLate.length > 0
+                  const incomingExtra = viewerIsCollector ? extraIncomingForViewer : []
+                  const hasAny = incomingStandard.length > 0 || incomingExtra.length > 0 || incomingLate.length > 0
                   if (!hasAny) {
                     return <div className="text-sm opacity-70">No incoming transfers.</div>
                   }
@@ -833,13 +1316,55 @@ export default async function ProjectPage({
                               </span>
                             )}
                           </div>
-                          <form action={markReceived.bind(null, p.id)}>
-                            <button className="px-3 py-1.5 rounded border text-xs" type="submit">
-                              {pendingSignalsSet.has(p.id) ? 'Confirm received' : 'Mark received'}
-                            </button>
-                          </form>
+                          {!minParticipantsReached ? (
+                            <span className="text-xs opacity-70">Waiting for minimum participants</span>
+                          ) : (
+                            <form action={markReceived.bind(null, p.id)}>
+                              <button className="px-3 py-1.5 rounded border text-xs" type="submit">
+                                {pendingSignalsSet.has(p.id) ? 'Confirm received' : 'Mark received'}
+                              </button>
+                            </form>
+                          )}
                         </div>
                       ))}
+                      {incomingExtra.map(row => {
+                        const payer = participantsById.get(row.payer_participant_id)
+                        const payerName = payer ? participantName(payer) : 'Participant'
+                        const awaiting = row.reported
+                        return (
+                          <div key={`${row.extra_id}:${row.payer_participant_id}`} className="flex items-center justify-between py-2 text-sm">
+                            <div className="flex items-center gap-2">
+                              <span>
+                                {payerName} {formatEuro(row.amount_cents)}
+                              </span>
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
+                                {row.extra_title ? `Extra: ${row.extra_title}` : 'Extra'}
+                              </span>
+                              {awaiting && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-300 text-amber-900">
+                                  Reported paid
+                                </span>
+                              )}
+                              {!extraPaymentsAvailable && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700">
+                                  Tracking unavailable
+                                </span>
+                              )}
+                            </div>
+                            {!minParticipantsReached ? (
+                              <span className="text-xs opacity-70">Waiting for minimum participants</span>
+                            ) : extraPaymentsAvailable ? (
+                              <form action={markExtraReceived.bind(null, row.extra_id, row.payer_participant_id)}>
+                                <button className="px-3 py-1.5 rounded border text-xs" type="submit">
+                                  {awaiting ? 'Confirm received' : 'Mark received'}
+                                </button>
+                              </form>
+                            ) : (
+                              <span className="text-xs opacity-70">Apply latest migration</span>
+                            )}
+                          </div>
+                        )
+                      })}
                       {incomingLate.map(transfer => {
                         const sender = participantsClean.find(p => p.id === transfer.from_participant_id)
                         const senderName = sender ? participantName(sender) : 'Participant'
@@ -871,30 +1396,81 @@ export default async function ProjectPage({
               <section className="border rounded-xl p-4 space-y-3">
                 <div className="font-medium">Outgoing transfers</div>
                 {!viewerIsCollector && myParticipantId && collectorId ? (
-                  isFinalized && lateOutgoingTransfers.length > 0 ? (
-                    <LateOutgoingTransfers
-                      transfers={lateOutgoingTransfers}
-                      participants={participantsClean}
-                      allOptions={allOptionsEntries}
-                      viewerParticipantId={myParticipantId}
-                      projectCanceled={isAborted}
-                    />
-                  ) : !viewerPaid ? (
-                    <div className="divide-y">
-                      <OutgoingTransfer
-                        collectorName={collectorName}
-                        amountLabel={formatEuro(perPersonCents)}
-                        collectorOptions={collectorOptions}
-                        participantId={myParticipantId}
-                        viewerPaid={viewerPaid}
-                        viewerHasPendingSignal={viewerHasPendingSignal}
-                        projectCanceled={isAborted}
-                        canPay={minParticipantsReached}
-                      />
-                    </div>
-                  ) : (
-                    <div className="text-sm opacity-70">No outgoing transfers.</div>
-                  )
+                  (() => {
+                    const showLateOutgoing = isFinalized && lateOutgoingTransfers.length > 0
+                    const showBaseOutgoing = !isFinalized && !viewerPaid
+                    const showExtraOutgoing = extraOutgoingForViewer.length > 0
+                    if (!showLateOutgoing && !showBaseOutgoing && !showExtraOutgoing) {
+                      return <div className="text-sm opacity-70">No outgoing transfers.</div>
+                    }
+                    return (
+                      <div className="space-y-3">
+                        {showLateOutgoing && (
+                          <LateOutgoingTransfers
+                            transfers={lateOutgoingTransfers}
+                            participants={participantsClean}
+                            allOptions={allOptionsEntries}
+                            viewerParticipantId={myParticipantId}
+                            projectCanceled={isAborted}
+                          />
+                        )}
+                        {showBaseOutgoing && (
+                          <div className="divide-y">
+                            <OutgoingTransfer
+                              collectorName={collectorName}
+                              amountLabel={formatEuro(perPersonCents)}
+                              collectorOptions={collectorPaymentOptions}
+                              participantId={myParticipantId}
+                              viewerPaid={viewerPaid}
+                              viewerHasPendingSignal={viewerHasPendingSignal}
+                              projectCanceled={isAborted}
+                              canPay={minParticipantsReached}
+                            />
+                          </div>
+                        )}
+                        {showExtraOutgoing && (
+                          <div className="divide-y">
+                            {extraOutgoingForViewer.map(row => {
+                              const collectorParticipant = participantsById.get(row.collector_participant_id)
+                              const collectorNameForRow = collectorParticipant ? participantName(collectorParticipant) : 'Collector'
+                              const collectorOptionsForRow =
+                                (allOptions.get(row.collector_participant_id) ?? []).filter(
+                                  option => option.is_active !== false
+                                )
+                              if (!extraPaymentsAvailable) {
+                                return (
+                                  <div key={`${row.extra_id}:${row.payer_participant_id}`} className="py-2 text-sm flex items-center justify-between gap-3">
+                                    <div className="space-y-0.5">
+                                      <div>{collectorNameForRow} - {formatEuro(row.amount_cents)}</div>
+                                      <div className="text-xs text-slate-500">
+                                        {row.extra_title ? `Extra: ${row.extra_title}` : 'Extra payment'}
+                                      </div>
+                                    </div>
+                                    <span className="text-xs opacity-70">Apply latest migration</span>
+                                  </div>
+                                )
+                              }
+                              return (
+                                <OutgoingTransfer
+                                  key={`${row.extra_id}:${row.payer_participant_id}`}
+                                  collectorName={collectorNameForRow}
+                                  amountLabel={formatEuro(row.amount_cents)}
+                                  collectorOptions={collectorOptionsForRow}
+                                  participantId={myParticipantId}
+                                  viewerPaid={false}
+                                  viewerHasPendingSignal={row.reported}
+                                  projectCanceled={isAborted}
+                                  canPay={minParticipantsReached}
+                                  contextLabel={row.extra_title ? `Extra: ${row.extra_title}` : 'Extra payment'}
+                                  reportPaidAction={selfReportExtraPaid.bind(null, row.extra_id, row.payer_participant_id)}
+                                />
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()
                 ) : (
                   <div className="text-sm opacity-70">No outgoing transfers.</div>
                 )}
@@ -910,6 +1486,16 @@ export default async function ProjectPage({
               userVotes={userVotes}
             />
           ),
+          extras: (
+            <ExtrasTab
+              projectId={projectId}
+              extras={extrasForTab}
+              canInteract={isMemberActive}
+              projectCanceled={isAborted}
+              projectCollectorLabel={collectorLabel}
+              collectorOptions={extraCollectorOptions}
+            />
+          ),
           settings: viewerIsCollector ? <ProjectSettingsTab projectId={projectId} /> : null,
           admin: viewerIsCollector ? (
             <AdminPanel
@@ -922,6 +1508,7 @@ export default async function ProjectPage({
               canManage={viewerIsCollector}
               canFinalize={isCollectingStatus && !isAborted}
               canCancel={!isAborted && !isFinalized}
+              activityItems={activityItems}
             />
           ) : null,
         }}

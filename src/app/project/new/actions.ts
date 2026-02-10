@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
+import { recordProjectActivity } from '@/lib/activityLog'
 import { getCurrentUserId } from '@/lib/supabaseServer'
 
 const schema = z.object({
@@ -148,6 +149,33 @@ export async function createProject(formData: FormData) {
   if (collectorErr) {
     throw new Error('Failed to set collector: ' + collectorErr.message)
   }
+
+  await recordProjectActivity({
+    projectId: proj.id,
+    entryType: 'project_created',
+    actorUserId: uid,
+    actorParticipantId: part.id,
+    targetUserId: uid,
+    targetParticipantId: part.id,
+    metadata: {
+      title,
+      total_cents,
+      total_is_per_person: totalIsPerPerson,
+    },
+  })
+
+  await recordProjectActivity({
+    projectId: proj.id,
+    entryType: 'participant_joined',
+    actorUserId: uid,
+    actorParticipantId: part.id,
+    targetUserId: uid,
+    targetParticipantId: part.id,
+    metadata: {
+      role: 'organizer',
+      via_project_creation: true,
+    },
+  })
 
   const [{ data: upos, error: uErr }, { data: existingPOs, error: eErr }] = await Promise.all([
     supabaseAdmin.from('user_payment_options')

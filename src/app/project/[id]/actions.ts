@@ -4,18 +4,26 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { randomUUID } from 'crypto'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
+import { recordProjectActivity } from '@/lib/activityLog'
 import { getCurrentUserId } from '@/lib/supabaseServer'
+import { buildExtraDueRows } from '@/lib/extraPayments'
 
 export async function setCollector(projectId: string, participantId: string) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('Not signed in')
   await requireActiveManager(projectId, uid)
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
+  const { data: projectBefore } = await supabaseAdmin
+    .from('projects')
+    .select('collector_participant_id')
+    .eq('id', projectId)
+    .maybeSingle()
 
   // Ensure target participant belongs to this project and is active
   const { data: part, error: partErr } = await supabaseAdmin
     .from('participants')
-    .select('id, project_id, left_at')
+    .select('id, user_id, project_id, left_at')
     .eq('id', participantId)
     .single()
   if (partErr) throw partErr
@@ -27,6 +35,19 @@ export async function setCollector(projectId: string, participantId: string) {
     .eq('id', projectId)
   if (updErr) throw updErr
 
+  await recordProjectActivity({
+    projectId,
+    entryType: 'collector_changed',
+    actorUserId,
+    actorParticipantId,
+    targetUserId: part.user_id ?? null,
+    targetParticipantId: participantId,
+    metadata: {
+      previous_collector_participant_id: projectBefore?.collector_participant_id ?? null,
+      new_collector_participant_id: participantId,
+    },
+  })
+
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -36,6 +57,12 @@ export async function cancelProject(projectId: string) {
   if (!uid) throw new Error('You must be signed in')
   const nowIso = new Date().toISOString()
   await requireActiveManager(projectId, uid)
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
+  const { data: projectBefore } = await supabaseAdmin
+    .from('projects')
+    .select('status, canceled_at')
+    .eq('id', projectId)
+    .maybeSingle()
 
   const { error: uErr } = await supabaseAdmin
     .from('projects')
@@ -55,6 +82,19 @@ export async function cancelProject(projectId: string) {
     }
   }
 
+  await recordProjectActivity({
+    projectId,
+    entryType: 'project_status_changed',
+    actorUserId,
+    actorParticipantId,
+    metadata: {
+      from_status: projectBefore?.status ?? null,
+      to_status: 'canceled',
+      previous_canceled_at: projectBefore?.canceled_at ?? null,
+      canceled_at: nowIso,
+    },
+  })
+
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -63,6 +103,7 @@ export async function finalizeProject(projectId: string) {
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('Not signed in')
   await requireActiveManager(projectId, uid)
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
 
   const values = { status: 'closed' as const, finalized_at: new Date().toISOString() }
 
@@ -100,6 +141,18 @@ export async function finalizeProject(projectId: string) {
     }
   }
 
+  await recordProjectActivity({
+    projectId,
+    entryType: 'project_status_changed',
+    actorUserId,
+    actorParticipantId,
+    metadata: {
+      from_status: 'collecting',
+      to_status: 'closed',
+      finalized_at: values.finalized_at,
+    },
+  })
+
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -108,6 +161,7 @@ export async function reopenProject(projectId: string) {
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('Not signed in')
   await requireActiveManager(projectId, uid)
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
 
   const values = { status: 'collecting' as const, finalized_at: null }
   const { error } = await supabaseAdmin
@@ -134,6 +188,18 @@ export async function reopenProject(projectId: string) {
     }
   }
 
+  await recordProjectActivity({
+    projectId,
+    entryType: 'project_status_changed',
+    actorUserId,
+    actorParticipantId,
+    metadata: {
+      from_status: 'closed',
+      to_status: 'collecting',
+      finalized_at: values.finalized_at,
+    },
+  })
+
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -142,6 +208,12 @@ export async function abortProject(projectId: string) {
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('Not signed in')
   await requireActiveManager(projectId, uid)
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
+  const { data: projectBefore } = await supabaseAdmin
+    .from('projects')
+    .select('status')
+    .eq('id', projectId)
+    .maybeSingle()
 
   const { data: participants, error: participantsErr } = await supabaseAdmin
     .from('participants')
@@ -187,6 +259,18 @@ export async function abortProject(projectId: string) {
     }
   }
 
+  await recordProjectActivity({
+    projectId,
+    entryType: 'project_status_changed',
+    actorUserId,
+    actorParticipantId,
+    metadata: {
+      from_status: projectBefore?.status ?? null,
+      to_status: 'cancelled',
+      aborted_at: values.aborted_at,
+    },
+  })
+
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -194,6 +278,7 @@ export async function leaveProject(projectId: string) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('You must be signed in')
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
 
   const { data: me, error: meErr } = await supabaseAdmin
     .from('participants')
@@ -211,6 +296,15 @@ export async function leaveProject(projectId: string) {
     .update({ left_at: new Date().toISOString() })
     .eq('id', me.id)
   if (updErr) throw updErr
+
+  await recordProjectActivity({
+    projectId,
+    entryType: 'participant_left',
+    actorUserId,
+    actorParticipantId,
+    targetUserId: uid,
+    targetParticipantId: me.id,
+  })
 
   revalidatePath(`/project/${projectId}`)
   redirect(`/project/${projectId}`)
@@ -306,6 +400,42 @@ async function requireActiveManager(projectId: string, userId: string) {
   return me[0]
 }
 
+async function requireActiveProjectParticipant(projectId: string, userId: string) {
+  const { data: me, error: meErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, project_id, left_at')
+    .eq('project_id', projectId)
+    .eq('user_id', userId)
+    .is('left_at', null)
+    .maybeSingle()
+  if (meErr) throw meErr
+  if (!me) throw new Error('Only active participants can do this')
+  return me
+}
+
+async function getActiveParticipantContext(projectId: string, userId: string | null | undefined) {
+  if (!userId) return { actorUserId: null, actorParticipantId: null as string | null }
+  const { data, error } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('user_id', userId)
+    .is('left_at', null)
+    .maybeSingle()
+  if (error) {
+    console.error('[activity_logs] failed to resolve actor participant context', {
+      projectId,
+      userId,
+      error,
+    })
+    return { actorUserId: userId, actorParticipantId: null as string | null }
+  }
+  return {
+    actorUserId: userId,
+    actorParticipantId: data?.id ?? null,
+  }
+}
+
 const missingColumn = (
   error: { message?: string; details?: string | null; hint?: string | null; code?: string } | null,
   column: string
@@ -319,6 +449,22 @@ const missingColumn = (
     haystack.includes('schema cache') ||
     haystack.includes('unknown column') ||
     error?.code === 'PGRST204'
+  )
+}
+
+const missingTable = (
+  error: { message?: string; details?: string | null; hint?: string | null; code?: string } | null,
+  table: string
+) => {
+  const haystack = `${error?.message ?? ''} ${error?.details ?? ''} ${error?.hint ?? ''}`.toLowerCase()
+  const tableName = table.toLowerCase()
+  if (!haystack.includes(tableName) && error?.code !== '42P01') return false
+  return (
+    error?.code === '42P01' ||
+    haystack.includes('does not exist') ||
+    haystack.includes('could not find') ||
+    haystack.includes('schema cache') ||
+    haystack.includes('unknown table')
   )
 }
 
@@ -481,6 +627,7 @@ export async function requestJoin(projectId: string) {
     .eq('project_id', projectId)
     .eq('requester_user_id', uid)
     .maybeSingle()
+  let resultingRequestId: string | null = null
   
   if (checkErr) {
     console.error('[requestJoin] check existing request error', checkErr)
@@ -502,6 +649,7 @@ export async function requestJoin(projectId: string) {
       revalidatePath(`/project/${projectId}`)
       return { ok: false, reason: 'update_failed' as const }
     }
+    resultingRequestId = existingReq.id
     console.log('[requestJoin] updated existing request to pending', { requestId: existingReq.id, oldStatus: existingReq.status })
   } else {
     // Create new request (or upsert if check failed)
@@ -550,6 +698,7 @@ export async function requestJoin(projectId: string) {
           revalidatePath(`/project/${projectId}`)
           return { ok: false, reason: 'upsert_failed' as const, error: upErr.message }
         }
+        resultingRequestId = existingForUpdate.id
         
         console.log('[requestJoin] Updated existing request after conflict')
       } else {
@@ -558,9 +707,23 @@ export async function requestJoin(projectId: string) {
         return { ok: false, reason: 'upsert_failed' as const, error: insErr.message }
       }
     } else {
+      resultingRequestId = inserted?.id ?? null
       console.log('[requestJoin] created new pending request', inserted?.id)
     }
   }
+
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
+  await recordProjectActivity({
+    projectId,
+    entryType: 'join_request_submitted',
+    actorUserId,
+    actorParticipantId,
+    targetUserId: uid,
+    joinRequestId: resultingRequestId,
+    metadata: {
+      request_id: resultingRequestId,
+    },
+  })
 
   console.log('[requestJoin] pending request created/updated successfully')
   revalidatePath(`/project/${projectId}`)
@@ -573,13 +736,33 @@ export async function createLateJoinTransfers(
   opts?: { skipAuth?: boolean; skipRevalidate?: boolean }
 ) {
   'use server'
+  let actorUserId: string | null = null
+  let actorParticipantId: string | null = null
   if (!opts?.skipAuth) {
     const uid = await getCurrentUserId()
     if (!uid) throw new Error('You must be signed in')
     await requireActiveManager(projectId, uid)
+    const actor = await getActiveParticipantContext(projectId, uid)
+    actorUserId = actor.actorUserId
+    actorParticipantId = actor.actorParticipantId
   }
 
   const result = await runLateJoinTransferUpsert(projectId, newcomerParticipantId)
+
+  if (!opts?.skipAuth && result.processed && result.upsertedCount > 0) {
+    await recordProjectActivity({
+      projectId,
+      entryType: 'late_transfer_created',
+      actorUserId,
+      actorParticipantId,
+      targetParticipantId: newcomerParticipantId,
+      metadata: {
+        recipients_count: result.recipientsCount,
+        per_person_cents: result.perPersonCents,
+        created_transfers_count: result.upsertedCount,
+      },
+    })
+  }
 
   if (!opts?.skipRevalidate) {
     revalidatePath(`/project/${projectId}`)
@@ -601,6 +784,7 @@ export async function approveJoinRequest(requestId: string) {
   if (reqErr || !req) throw new Error('Join request not found')
 
   await requireActiveManager(req.project_id, managerId)
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(req.project_id, managerId)
 
   if (req.status !== 'pending') {
     revalidatePath(`/project/${req.project_id}`)
@@ -705,6 +889,46 @@ export async function approveJoinRequest(requestId: string) {
     throw updErr
   }
 
+  await recordProjectActivity({
+    projectId: req.project_id,
+    entryType: 'join_request_approved',
+    actorUserId,
+    actorParticipantId,
+    targetUserId: req.requester_user_id,
+    targetParticipantId: participantId,
+    joinRequestId: req.id,
+  })
+
+  await recordProjectActivity({
+    projectId: req.project_id,
+    entryType: 'participant_joined',
+    actorUserId,
+    actorParticipantId,
+    targetUserId: req.requester_user_id,
+    targetParticipantId: participantId,
+    joinRequestId: req.id,
+    metadata: {
+      via_join_request: true,
+    },
+  })
+
+  if (lateJoinResult.processed && lateJoinResult.upsertedCount > 0) {
+    await recordProjectActivity({
+      projectId: req.project_id,
+      entryType: 'late_transfer_created',
+      actorUserId,
+      actorParticipantId,
+      targetUserId: req.requester_user_id,
+      targetParticipantId: participantId,
+      joinRequestId: req.id,
+      metadata: {
+        recipients_count: lateJoinResult.recipientsCount,
+        per_person_cents: lateJoinResult.perPersonCents,
+        created_transfers_count: lateJoinResult.upsertedCount,
+      },
+    })
+  }
+
   // Verify participant is active
   const { data: verifyParticipant } = await supabaseAdmin
     .from('participants')
@@ -732,12 +956,13 @@ export async function rejectJoinRequest(requestId: string) {
 
   const { data: req, error: reqErr } = await supabaseAdmin
     .from('join_requests')
-    .select('id, project_id, status')
+    .select('id, project_id, requester_user_id, status')
     .eq('id', requestId)
     .single()
   if (reqErr || !req) throw new Error('Join request not found')
 
   await requireActiveManager(req.project_id, managerId)
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(req.project_id, managerId)
 
   if (req.status !== 'pending') {
     revalidatePath(`/project/${req.project_id}`)
@@ -751,6 +976,15 @@ export async function rejectJoinRequest(requestId: string) {
     })
     .eq('id', requestId)
   if (updErr) throw updErr
+
+  await recordProjectActivity({
+    projectId: req.project_id,
+    entryType: 'join_request_rejected',
+    actorUserId,
+    actorParticipantId,
+    targetUserId: req.requester_user_id ?? null,
+    joinRequestId: req.id,
+  })
 
   console.log('[rejectJoinRequest] Request rejected', { requestId })
   revalidatePath(`/project/${req.project_id}`)
@@ -875,6 +1109,18 @@ export async function selfReportPaid(participantId: string) {
       .from('payment_signals')
       .insert({ participant_id: participantId })
     if (insertErr) throw insertErr
+
+    await recordProjectActivity({
+      projectId: participant.project_id,
+      entryType: 'payment_reported',
+      actorUserId: uid,
+      actorParticipantId: participant.id,
+      targetUserId: uid,
+      targetParticipantId: participant.id,
+      metadata: {
+        source: 'payment_signal',
+      },
+    })
   }
 
   revalidatePath(`/project/${participant.project_id}`)
@@ -929,6 +1175,15 @@ export async function markLateJoinPaid(transferId: string) {
     } else {
       throw updateErr
     }
+  } else {
+    await recordProjectActivity({
+      projectId: transfer.project_id,
+      entryType: 'late_transfer_sender_marked',
+      actorUserId: uid,
+      actorParticipantId: transfer.from_participant_id,
+      targetParticipantId: transfer.to_participant_id,
+      lateTransferId: transfer.id,
+    })
   }
 
   revalidatePath(`/project/${transfer.project_id}`)
@@ -941,7 +1196,7 @@ export async function confirmLateJoinReceipt(transferId: string) {
 
   const { data: transfer, error: transferErr } = await supabaseAdmin
     .from('late_join_transfers')
-    .select('id, project_id, to_participant_id, received_at')
+    .select('id, project_id, from_participant_id, to_participant_id, received_at')
     .eq('id', transferId)
     .single()
   if (transferErr || !transfer) throw new Error('Late transfer not found')
@@ -964,6 +1219,15 @@ export async function confirmLateJoinReceipt(transferId: string) {
     .eq('id', transferId)
   if (updateErr) throw updateErr
 
+  await recordProjectActivity({
+    projectId: transfer.project_id,
+    entryType: 'late_transfer_collector_confirmed',
+    actorUserId: uid,
+    actorParticipantId: recipient.id,
+    targetParticipantId: transfer.from_participant_id,
+    lateTransferId: transfer.id,
+  })
+
   revalidatePath(`/project/${transfer.project_id}`)
 }
 
@@ -971,17 +1235,36 @@ export async function confirmLateJoinReceipt(transferId: string) {
  * Mark a participant's payment as received.
  */
 export async function markReceived(participantId: string) {
+  const uid = await getCurrentUserId()
   const { data: participant, error: e1 } = await supabaseAdmin
     .from('participants')
-    .select('id, project_id')
+    .select('id, user_id, project_id')
     .eq('id', participantId)
     .single()
   if (e1 || !participant) throw new Error('Participant not found')
+  const actor = uid
+    ? await getActiveParticipantContext(participant.project_id, uid)
+    : { actorUserId: null, actorParticipantId: null as string | null }
 
-  const { error: e3 } = await supabaseAdmin
+  const { data: paymentRow, error: e3 } = await supabaseAdmin
     .from('payments')
     .insert({ participant_id: participantId, is_counted: true })
+    .select('id')
+    .single()
   if (e3) throw e3
+
+  await recordProjectActivity({
+    projectId: participant.project_id,
+    entryType: 'payment_confirmed',
+    actorUserId: actor.actorUserId,
+    actorParticipantId: actor.actorParticipantId,
+    targetUserId: participant.user_id ?? null,
+    targetParticipantId: participant.id,
+    paymentId: paymentRow?.id ?? null,
+    metadata: {
+      is_counted: true,
+    },
+  })
 
   // Clear payment signals if they exist (ignore if table doesn't exist)
   const { error: clrErr } = await supabaseAdmin
@@ -1001,6 +1284,170 @@ export async function markReceived(participantId: string) {
   }
 
   revalidatePath(`/project/${participant.project_id}`)
+}
+
+export async function selfReportExtraPaid(extraId: string, payerParticipantId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!extraId || !payerParticipantId) throw new Error('Missing ids')
+
+  const due = await resolveExtraDueForParticipant(extraId, payerParticipantId)
+  if (due.payerUserId !== uid) throw new Error('Not your participant entry')
+  if (due.collectorParticipantId === due.payerParticipantId) {
+    throw new Error('No transfer is needed for this extra')
+  }
+  if (!due.minParticipantsReached) {
+    throw new Error('Waiting for minimum participants')
+  }
+
+  const nowIso = new Date().toISOString()
+  const { data: existing, error: existingErr } = await supabaseAdmin
+    .from('extra_payments')
+    .select('id, reported_at, confirmed_at')
+    .eq('extra_id', extraId)
+    .eq('payer_participant_id', payerParticipantId)
+    .maybeSingle()
+  if (existingErr) {
+    if (missingTable(existingErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
+    throw new Error(existingErr.message ?? 'Failed to load extra payment')
+  }
+  if (existing?.confirmed_at) {
+    revalidatePath(`/project/${due.projectId}`)
+    return
+  }
+
+  if (existing?.id) {
+    const { error: updateErr } = await supabaseAdmin
+      .from('extra_payments')
+      .update({
+        collector_participant_id: due.collectorParticipantId,
+        amount_cents: due.amountCents,
+        reported_at: nowIso,
+      })
+      .eq('id', existing.id)
+    if (updateErr) {
+      if (missingTable(updateErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
+      throw new Error(updateErr.message ?? 'Failed to report extra payment')
+    }
+  } else {
+    const { error: insertErr } = await supabaseAdmin
+      .from('extra_payments')
+      .insert({
+        extra_id: extraId,
+        payer_participant_id: payerParticipantId,
+        collector_participant_id: due.collectorParticipantId,
+        amount_cents: due.amountCents,
+        reported_at: nowIso,
+      })
+    if (insertErr) {
+      if (missingTable(insertErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
+      throw new Error(insertErr.message ?? 'Failed to report extra payment')
+    }
+  }
+
+  await recordProjectActivity({
+    projectId: due.projectId,
+    entryType: 'payment_reported',
+    actorUserId: uid,
+    actorParticipantId: due.payerParticipantId,
+    targetUserId: uid,
+    targetParticipantId: due.payerParticipantId,
+    extraId,
+    metadata: {
+      scope: 'extra',
+      amount_cents: due.amountCents,
+      collector_participant_id: due.collectorParticipantId,
+      title: due.extraTitle,
+    },
+  })
+
+  revalidatePath(`/project/${due.projectId}`)
+}
+
+export async function markExtraReceived(extraId: string, payerParticipantId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!extraId || !payerParticipantId) throw new Error('Missing ids')
+
+  const due = await resolveExtraDueForParticipant(extraId, payerParticipantId)
+  if (due.collectorParticipantId === due.payerParticipantId) {
+    revalidatePath(`/project/${due.projectId}`)
+    return
+  }
+  if (!due.minParticipantsReached) {
+    throw new Error('Waiting for minimum participants')
+  }
+
+  const me = await requireActiveProjectParticipant(due.projectId, uid)
+  if (me.id !== due.collectorParticipantId) throw new Error('Only this extra collector can confirm payment')
+
+  const nowIso = new Date().toISOString()
+  const { data: existing, error: existingErr } = await supabaseAdmin
+    .from('extra_payments')
+    .select('id, reported_at, confirmed_at')
+    .eq('extra_id', extraId)
+    .eq('payer_participant_id', payerParticipantId)
+    .maybeSingle()
+  if (existingErr) {
+    if (missingTable(existingErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
+    throw new Error(existingErr.message ?? 'Failed to load extra payment')
+  }
+  if (existing?.confirmed_at) {
+    revalidatePath(`/project/${due.projectId}`)
+    return
+  }
+
+  if (existing?.id) {
+    const { error: updateErr } = await supabaseAdmin
+      .from('extra_payments')
+      .update({
+        collector_participant_id: due.collectorParticipantId,
+        amount_cents: due.amountCents,
+        reported_at: existing.reported_at ?? null,
+        confirmed_at: nowIso,
+        confirmed_by_participant_id: me.id,
+      })
+      .eq('id', existing.id)
+    if (updateErr) {
+      if (missingTable(updateErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
+      throw new Error(updateErr.message ?? 'Failed to confirm extra payment')
+    }
+  } else {
+    const { error: insertErr } = await supabaseAdmin
+      .from('extra_payments')
+      .insert({
+        extra_id: extraId,
+        payer_participant_id: payerParticipantId,
+        collector_participant_id: due.collectorParticipantId,
+        amount_cents: due.amountCents,
+        confirmed_at: nowIso,
+        confirmed_by_participant_id: me.id,
+      })
+    if (insertErr) {
+      if (missingTable(insertErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
+      throw new Error(insertErr.message ?? 'Failed to confirm extra payment')
+    }
+  }
+
+  await recordProjectActivity({
+    projectId: due.projectId,
+    entryType: 'payment_confirmed',
+    actorUserId: uid,
+    actorParticipantId: me.id,
+    targetUserId: due.payerUserId,
+    targetParticipantId: due.payerParticipantId,
+    extraId,
+    metadata: {
+      scope: 'extra',
+      amount_cents: due.amountCents,
+      collector_participant_id: due.collectorParticipantId,
+      title: due.extraTitle,
+    },
+  })
+
+  revalidatePath(`/project/${due.projectId}`)
 }
 
 export async function postMessage(projectId: string, body: string, parentId?: string | null) {
@@ -1132,6 +1579,21 @@ export async function createPoll(projectId: string, formData: FormData) {
     .insert(options.map(label => ({ poll_id: poll.id, label })))
   if (optionsErr) throw new Error(optionsErr.message ?? 'Failed to create poll options')
 
+  await recordProjectActivity({
+    projectId,
+    entryType: 'poll_created',
+    actorUserId: uid,
+    actorParticipantId: participant[0].id,
+    pollId: poll.id,
+    metadata: {
+      title,
+      options_count: options.length,
+      extra_cents: extraCents,
+      extra_is_per_person: extraIsPerPerson,
+      required_votes: requiredVotes,
+    },
+  })
+
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -1168,6 +1630,14 @@ export async function castPollVote(projectId: string, pollId: string, optionId: 
   if (participantErr) throw participantErr
   if (!participant?.length) throw new Error('Only participants can vote')
 
+  const { data: existingVote, error: existingVoteErr } = await supabaseAdmin
+    .from('poll_votes')
+    .select('option_id')
+    .eq('user_id', uid)
+    .eq('poll_id', pollId)
+    .maybeSingle()
+  if (existingVoteErr) throw existingVoteErr
+
   const { error: deleteErr } = await supabaseAdmin
     .from('poll_votes')
     .delete()
@@ -1180,13 +1650,26 @@ export async function castPollVote(projectId: string, pollId: string, optionId: 
     .insert({ poll_id: pollId, option_id: optionId, user_id: uid })
   if (error) throw error
 
+  const changedVote = !!existingVote && existingVote.option_id !== optionId
+  await recordProjectActivity({
+    projectId,
+    entryType: changedVote ? 'poll_vote_changed' : 'poll_vote_cast',
+    actorUserId: uid,
+    actorParticipantId: participant[0].id,
+    pollId,
+    metadata: {
+      previous_option_id: existingVote?.option_id ?? null,
+      option_id: optionId,
+    },
+  })
+
   revalidatePath(`/project/${projectId}`)
 }
 
 async function requirePollManager(projectId: string, pollId: string, uid: string) {
   const { data: poll, error: pollErr } = await supabaseAdmin
     .from('polls')
-    .select('id, project_id, created_by')
+    .select('id, project_id, created_by, title')
     .eq('id', pollId)
     .single()
   if (pollErr || !poll) throw pollErr || new Error('Poll not found')
@@ -1221,13 +1704,14 @@ export async function updatePoll(projectId: string, pollId: string, formData: Fo
   if (!uid) throw new Error('You must be signed in')
   if (!projectId) throw new Error('Missing project id')
 
-  await requirePollManager(projectId, pollId, uid)
+  const managedPoll = await requirePollManager(projectId, pollId, uid)
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
 
   const title = ((formData.get('project_title') as string) || (formData.get('title') as string) || '').trim()
   const description =
     ((formData.get('project_description') as string) || (formData.get('description') as string) || '').trim() || null
   const extraCostRaw = (formData.get('extra_cost') as string)?.trim() || ''
-  const extraIsPerPerson = (formData.get('extra_is_per_person') as string) !== 'false'
+  const extraIsPerPerson = (formData.get('extra_is_per_person') as string) === 'true'
   const requiredVotesRaw = (formData.get('required_votes') as string)?.trim() || ''
   const optionsRaw = (formData.get('options') as string)?.trim() || ''
   if (!title) throw new Error('Title is required')
@@ -1285,6 +1769,22 @@ export async function updatePoll(projectId: string, pollId: string, formData: Fo
     .insert(options.map(label => ({ poll_id: pollId, label })))
   if (optionsErr) throw optionsErr
 
+  await recordProjectActivity({
+    projectId,
+    entryType: 'poll_updated',
+    actorUserId,
+    actorParticipantId,
+    pollId,
+    metadata: {
+      previous_title: managedPoll.title ?? null,
+      title,
+      options_count: options.length,
+      extra_cents: extraCents,
+      extra_is_per_person: extraIsPerPerson,
+      required_votes: requiredVotes,
+    },
+  })
+
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -1294,7 +1794,8 @@ export async function deletePoll(projectId: string, pollId: string) {
   if (!uid) throw new Error('You must be signed in')
   if (!projectId) throw new Error('Missing project id')
 
-  await requirePollManager(projectId, pollId, uid)
+  const managedPoll = await requirePollManager(projectId, pollId, uid)
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
 
   const { error } = await supabaseAdmin
     .from('polls')
@@ -1302,6 +1803,474 @@ export async function deletePoll(projectId: string, pollId: string) {
     .eq('id', pollId)
     .eq('project_id', projectId)
   if (error) throw error
+
+  await recordProjectActivity({
+    projectId,
+    entryType: 'poll_deleted',
+    actorUserId,
+    actorParticipantId,
+    pollId,
+    metadata: {
+      title: managedPoll.title ?? null,
+    },
+  })
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+type ExtraCollectionMode = 'project_collector' | 'dedicated_collector'
+
+const parseExtraCollectionMode = (value: string | null | undefined): ExtraCollectionMode =>
+  value === 'dedicated_collector' ? 'dedicated_collector' : 'project_collector'
+
+const normalizeEuroAmountToCents = (value: string | null | undefined) => {
+  const raw = (value ?? '').trim()
+  const parsed = raw ? Number(raw.replace(',', '.')) : 0
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error('Invalid amount')
+  }
+  return Math.round(parsed * 100)
+}
+
+const friendlyExtrasUnavailableError = () =>
+  new Error('Extras are unavailable until the latest database migration is applied')
+
+const friendlyExtraPaymentsUnavailableError = () =>
+  new Error('Extra payments are unavailable until the latest database migration is applied')
+
+type ResolvedExtraDue = {
+  projectId: string
+  extraTitle: string | null
+  payerParticipantId: string
+  payerUserId: string | null
+  collectorParticipantId: string
+  amountCents: number
+  minParticipantsReached: boolean
+}
+
+const resolveExtraDueForParticipant = async (
+  extraId: string,
+  payerParticipantId: string
+): Promise<ResolvedExtraDue> => {
+  const { data: extra, error: extraErr } = await supabaseAdmin
+    .from('extras')
+    .select(
+      'id, project_id, title, amount_cents, amount_is_per_person, collection_mode, dedicated_collector_participant_id'
+    )
+    .eq('id', extraId)
+    .maybeSingle()
+  if (extraErr) {
+    if (missingTable(extraErr, 'extras')) throw friendlyExtrasUnavailableError()
+    throw new Error(extraErr.message ?? 'Failed to load extra')
+  }
+  if (!extra) throw new Error('Extra not found')
+
+  const { data: payerParticipant, error: payerErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, user_id, project_id, left_at')
+    .eq('id', payerParticipantId)
+    .maybeSingle()
+  if (payerErr) throw new Error(payerErr.message ?? 'Failed to load participant')
+  if (!payerParticipant || payerParticipant.project_id !== extra.project_id || !!payerParticipant.left_at) {
+    throw new Error('Participant is not active in this project')
+  }
+
+  const [
+    { data: project, error: projectErr },
+    { data: activeParticipants, error: activeParticipantsErr },
+    { data: memberships, error: membershipsErr },
+  ] = await Promise.all([
+    supabaseAdmin
+      .from('projects')
+      .select('id, collector_participant_id, min_participants')
+      .eq('id', extra.project_id)
+      .maybeSingle(),
+    supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('project_id', extra.project_id)
+      .is('left_at', null),
+    supabaseAdmin
+      .from('extra_memberships')
+      .select('extra_id, participant_id, left_at')
+      .eq('extra_id', extraId)
+      .is('left_at', null),
+  ])
+
+  if (projectErr) throw new Error(projectErr.message ?? 'Failed to load project')
+  if (!project) throw new Error('Project not found')
+  if (activeParticipantsErr) throw new Error(activeParticipantsErr.message ?? 'Failed to load participants')
+  if (membershipsErr) {
+    if (missingTable(membershipsErr, 'extra_memberships')) throw friendlyExtrasUnavailableError()
+    throw new Error(membershipsErr.message ?? 'Failed to load extra members')
+  }
+
+  const activeParticipantIds = new Set((activeParticipants ?? []).map(participant => participant.id))
+  const dueRows = buildExtraDueRows({
+    extras: [
+      {
+        id: extra.id,
+        title: extra.title ?? null,
+        amount_cents: Number(extra.amount_cents ?? 0),
+        amount_is_per_person: !!extra.amount_is_per_person,
+        collection_mode: extra.collection_mode ?? null,
+        dedicated_collector_participant_id: extra.dedicated_collector_participant_id ?? null,
+      },
+    ],
+    memberships: (memberships ?? []).map(membership => ({
+      extra_id: membership.extra_id,
+      participant_id: membership.participant_id,
+      left_at: membership.left_at,
+    })),
+    activeParticipantIds,
+    projectCollectorParticipantId: project.collector_participant_id ?? null,
+  })
+
+  const due = dueRows.find(row => row.payer_participant_id === payerParticipant.id)
+  if (!due || due.amount_cents <= 0) throw new Error('No payable share for this extra')
+  const minParticipants =
+    typeof project.min_participants === 'number' && Number.isFinite(project.min_participants)
+      ? project.min_participants
+      : null
+  const minParticipantsReached = minParticipants === null || activeParticipantIds.size >= minParticipants
+
+  return {
+    projectId: extra.project_id,
+    extraTitle: extra.title ?? null,
+    payerParticipantId: payerParticipant.id,
+    payerUserId: payerParticipant.user_id ?? null,
+    collectorParticipantId: due.collector_participant_id,
+    amountCents: due.amount_cents,
+    minParticipantsReached,
+  }
+}
+
+export async function createExtra(projectId: string, formData: FormData) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+
+  const me = await requireActiveProjectParticipant(projectId, uid)
+
+  const title = String(formData.get('title') ?? '').trim()
+  const description = String(formData.get('description') ?? '').trim() || null
+  const amountRaw = String(formData.get('amount') ?? '').trim()
+  if (!amountRaw) throw new Error('Amount is required')
+  const amountCents = normalizeEuroAmountToCents(amountRaw)
+  const amountIsPerPerson = String(formData.get('amount_is_per_person') ?? '') === 'true'
+  const collectionMode = parseExtraCollectionMode(String(formData.get('collection_mode') ?? ''))
+  const dedicatedCollectorRaw = String(formData.get('dedicated_collector_participant_id') ?? '').trim()
+  if (!title) throw new Error('Title is required')
+
+  const { data: project, error: projectErr } = await supabaseAdmin
+    .from('projects')
+    .select('id, collector_participant_id')
+    .eq('id', projectId)
+    .maybeSingle()
+  if (projectErr) throw new Error(projectErr.message ?? 'Failed to read project')
+  if (!project) throw new Error('Project not found')
+
+  let dedicatedCollectorId: string | null = null
+  if (collectionMode === 'dedicated_collector') {
+    if (!dedicatedCollectorRaw) throw new Error('Select an extra collector')
+    const { data: target, error: targetErr } = await supabaseAdmin
+      .from('participants')
+      .select('id, project_id, left_at')
+      .eq('id', dedicatedCollectorRaw)
+      .maybeSingle()
+    if (targetErr) throw new Error(targetErr.message ?? 'Failed to verify dedicated collector')
+    if (!target || target.project_id !== projectId || !!target.left_at) {
+      throw new Error('Extra collector must be an active participant')
+    }
+    dedicatedCollectorId = target.id
+  }
+
+  const { data: created, error: createErr } = await supabaseAdmin
+    .from('extras')
+    .insert({
+      project_id: projectId,
+      title,
+      description,
+      amount_cents: amountCents,
+      amount_is_per_person: amountIsPerPerson,
+      collection_mode: collectionMode,
+      dedicated_collector_participant_id: dedicatedCollectorId,
+      created_by: uid,
+    })
+    .select('id')
+    .single()
+  if (createErr) {
+    if (missingTable(createErr, 'extras')) throw friendlyExtrasUnavailableError()
+    throw new Error(createErr.message ?? 'Failed to create extra')
+  }
+  if (!created?.id) throw new Error('Failed to create extra')
+
+  const { error: membershipErr } = await supabaseAdmin
+    .from('extra_memberships')
+    .upsert(
+      {
+        extra_id: created.id,
+        participant_id: me.id,
+        joined_at: new Date().toISOString(),
+        left_at: null,
+      },
+      { onConflict: 'extra_id,participant_id' }
+    )
+  if (membershipErr) {
+    if (missingTable(membershipErr, 'extra_memberships')) throw friendlyExtrasUnavailableError()
+    throw new Error(membershipErr.message ?? 'Failed to join created extra')
+  }
+
+  if (dedicatedCollectorId && dedicatedCollectorId !== me.id) {
+    const { error: dedicatedMembershipErr } = await supabaseAdmin
+      .from('extra_memberships')
+      .upsert(
+        {
+          extra_id: created.id,
+          participant_id: dedicatedCollectorId,
+          joined_at: new Date().toISOString(),
+          left_at: null,
+        },
+        { onConflict: 'extra_id,participant_id' }
+      )
+    if (dedicatedMembershipErr) {
+      if (missingTable(dedicatedMembershipErr, 'extra_memberships')) throw friendlyExtrasUnavailableError()
+      throw new Error(dedicatedMembershipErr.message ?? 'Failed to add extra collector')
+    }
+  }
+
+  await recordProjectActivity({
+    projectId,
+    entryType: 'extra_created',
+    actorUserId: uid,
+    actorParticipantId: me.id,
+    targetParticipantId: dedicatedCollectorId,
+    extraId: created.id,
+    metadata: {
+      title,
+      amount_cents: amountCents,
+      amount_is_per_person: amountIsPerPerson,
+      collection_mode: collectionMode,
+      dedicated_collector_participant_id: dedicatedCollectorId,
+    },
+  })
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function joinExtra(projectId: string, extraId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId || !extraId) throw new Error('Missing ids')
+
+  const me = await requireActiveProjectParticipant(projectId, uid)
+  const { data: extra, error: extraErr } = await supabaseAdmin
+    .from('extras')
+    .select('id, project_id, title')
+    .eq('id', extraId)
+    .maybeSingle()
+  if (extraErr) {
+    if (missingTable(extraErr, 'extras')) throw friendlyExtrasUnavailableError()
+    throw new Error(extraErr.message ?? 'Failed to load extra')
+  }
+  if (!extra || extra.project_id !== projectId) throw new Error('Extra not found')
+
+  const { error: membershipErr } = await supabaseAdmin
+    .from('extra_memberships')
+    .upsert(
+      {
+        extra_id: extraId,
+        participant_id: me.id,
+        joined_at: new Date().toISOString(),
+        left_at: null,
+      },
+      { onConflict: 'extra_id,participant_id' }
+    )
+  if (membershipErr) {
+    if (missingTable(membershipErr, 'extra_memberships')) throw friendlyExtrasUnavailableError()
+    throw new Error(membershipErr.message ?? 'Failed to join extra')
+  }
+
+  await recordProjectActivity({
+    projectId,
+    entryType: 'extra_joined',
+    actorUserId: uid,
+    actorParticipantId: me.id,
+    targetUserId: uid,
+    targetParticipantId: me.id,
+    extraId,
+    metadata: {
+      title: extra.title ?? null,
+    },
+  })
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function leaveExtra(projectId: string, extraId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId || !extraId) throw new Error('Missing ids')
+
+  const me = await requireActiveProjectParticipant(projectId, uid)
+  const { data: extra, error: extraErr } = await supabaseAdmin
+    .from('extras')
+    .select('id, project_id, title, collection_mode, dedicated_collector_participant_id')
+    .eq('id', extraId)
+    .maybeSingle()
+  if (extraErr) {
+    if (missingTable(extraErr, 'extras')) throw friendlyExtrasUnavailableError()
+    throw new Error(extraErr.message ?? 'Failed to load extra')
+  }
+  if (!extra || extra.project_id !== projectId) throw new Error('Extra not found')
+
+  const { error: leaveErr } = await supabaseAdmin
+    .from('extra_memberships')
+    .update({ left_at: new Date().toISOString() })
+    .eq('extra_id', extraId)
+    .eq('participant_id', me.id)
+    .is('left_at', null)
+  if (leaveErr) {
+    if (missingTable(leaveErr, 'extra_memberships')) throw friendlyExtrasUnavailableError()
+    throw new Error(leaveErr.message ?? 'Failed to leave extra')
+  }
+
+  await recordProjectActivity({
+    projectId,
+    entryType: 'extra_left',
+    actorUserId: uid,
+    actorParticipantId: me.id,
+    targetUserId: uid,
+    targetParticipantId: me.id,
+    extraId,
+    metadata: {
+      title: extra.title ?? null,
+    },
+  })
+
+  if (
+    extra.collection_mode === 'dedicated_collector' &&
+    extra.dedicated_collector_participant_id &&
+    extra.dedicated_collector_participant_id === me.id
+  ) {
+    const { error: fallbackCollectorErr } = await supabaseAdmin
+      .from('extras')
+      .update({
+        collection_mode: 'project_collector',
+        dedicated_collector_participant_id: null,
+      })
+      .eq('id', extraId)
+    if (fallbackCollectorErr) {
+      throw new Error(fallbackCollectorErr.message ?? 'Failed to reset extra collector')
+    }
+
+    await recordProjectActivity({
+      projectId,
+      entryType: 'extra_collector_changed',
+      actorUserId: uid,
+      actorParticipantId: me.id,
+      extraId,
+      metadata: {
+        title: extra.title ?? null,
+        from_collection_mode: 'dedicated_collector',
+        to_collection_mode: 'project_collector',
+        from_dedicated_collector_participant_id: me.id,
+        to_dedicated_collector_participant_id: null,
+      },
+    })
+  }
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function updateExtraCollector(projectId: string, extraId: string, formData: FormData) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId || !extraId) throw new Error('Missing ids')
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
+
+  const { data: extra, error: extraErr } = await supabaseAdmin
+    .from('extras')
+    .select('id, project_id, created_by, title, collection_mode, dedicated_collector_participant_id')
+    .eq('id', extraId)
+    .maybeSingle()
+  if (extraErr) {
+    if (missingTable(extraErr, 'extras')) throw friendlyExtrasUnavailableError()
+    throw new Error(extraErr.message ?? 'Failed to load extra')
+  }
+  if (!extra || extra.project_id !== projectId) throw new Error('Extra not found')
+
+  if (extra.created_by !== uid) {
+    await requireActiveManager(projectId, uid)
+  }
+
+  const collectionMode = parseExtraCollectionMode(String(formData.get('collection_mode') ?? ''))
+  const dedicatedCollectorRaw = String(formData.get('dedicated_collector_participant_id') ?? '').trim()
+
+  let dedicatedCollectorId: string | null = null
+  if (collectionMode === 'dedicated_collector') {
+    if (!dedicatedCollectorRaw) throw new Error('Select an extra collector')
+    const { data: target, error: targetErr } = await supabaseAdmin
+      .from('participants')
+      .select('id, project_id, left_at')
+      .eq('id', dedicatedCollectorRaw)
+      .maybeSingle()
+    if (targetErr) throw new Error(targetErr.message ?? 'Failed to verify dedicated collector')
+    if (!target || target.project_id !== projectId || !!target.left_at) {
+      throw new Error('Extra collector must be an active participant')
+    }
+    dedicatedCollectorId = target.id
+  }
+
+  const { error: updateErr } = await supabaseAdmin
+    .from('extras')
+    .update({
+      collection_mode: collectionMode,
+      dedicated_collector_participant_id: dedicatedCollectorId,
+    })
+    .eq('id', extraId)
+  if (updateErr) {
+    if (missingTable(updateErr, 'extras')) throw friendlyExtrasUnavailableError()
+    throw new Error(updateErr.message ?? 'Failed to update collector')
+  }
+
+  if (dedicatedCollectorId) {
+    const { error: dedicatedMembershipErr } = await supabaseAdmin
+      .from('extra_memberships')
+      .upsert(
+        {
+          extra_id: extraId,
+          participant_id: dedicatedCollectorId,
+          joined_at: new Date().toISOString(),
+          left_at: null,
+        },
+        { onConflict: 'extra_id,participant_id' }
+      )
+  if (dedicatedMembershipErr) {
+      if (missingTable(dedicatedMembershipErr, 'extra_memberships')) throw friendlyExtrasUnavailableError()
+      throw new Error(dedicatedMembershipErr.message ?? 'Failed to add extra collector')
+    }
+  }
+
+  await recordProjectActivity({
+    projectId,
+    entryType: 'extra_collector_changed',
+    actorUserId,
+    actorParticipantId,
+    targetParticipantId: dedicatedCollectorId,
+    extraId,
+    metadata: {
+      title: extra.title ?? null,
+      from_collection_mode: extra.collection_mode,
+      to_collection_mode: collectionMode,
+      from_dedicated_collector_participant_id: extra.dedicated_collector_participant_id ?? null,
+      to_dedicated_collector_participant_id: dedicatedCollectorId,
+    },
+  })
 
   revalidatePath(`/project/${projectId}`)
 }
@@ -1311,10 +2280,13 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('You must be signed in')
   if (!projectId) throw new Error('Missing project id')
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
 
   const { data: project, error: projectErr } = await supabaseAdmin
     .from('projects')
-    .select('id, collector_participant_id, event_start_at, event_end_at')
+    .select(
+      'id, collector_participant_id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at'
+    )
     .eq('id', projectId)
     .single()
   if (projectErr || !project) throw projectErr || new Error('Project not found')
@@ -1444,6 +2416,26 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     .eq('id', projectId)
   if (error) throw error
 
+  const changedFields: string[] = []
+  if ((project.title ?? null) !== title) changedFields.push('title')
+  if ((project.description ?? null) !== description) changedFields.push('description')
+  if (Number(project.total_cents ?? 0) !== total_cents) changedFields.push('total_cents')
+  if (!!project.total_is_per_person !== totalIsPerPerson) changedFields.push('total_is_per_person')
+  if ((project.min_participants ?? null) !== minParticipants) changedFields.push('min_participants')
+  if ((project.max_participants ?? null) !== maxParticipants) changedFields.push('max_participants')
+  if ((project.event_start_at ?? null) !== eventStartAt) changedFields.push('event_start_at')
+  if ((project.event_end_at ?? null) !== eventEndAt) changedFields.push('event_end_at')
+
+  await recordProjectActivity({
+    projectId,
+    entryType: 'project_updated',
+    actorUserId,
+    actorParticipantId,
+    metadata: {
+      changed_fields: changedFields,
+    },
+  })
+
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -1566,6 +2558,17 @@ export async function cancelJoinRequest(projectId: string) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('You must be signed in')
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
+
+  const { data: requestsToCancel, error: requestsErr } = await supabaseAdmin
+    .from('join_requests')
+    .select('id, status')
+    .eq('project_id', projectId)
+    .eq('requester_user_id', uid)
+    .neq('status', 'canceled')
+  if (requestsErr) {
+    console.error('[cancelJoinRequest] read existing requests error', requestsErr)
+  }
 
   const { error: updErr } = await supabaseAdmin
     .from('join_requests')
@@ -1577,6 +2580,20 @@ export async function cancelJoinRequest(projectId: string) {
     console.error('[cancelJoinRequest] update error', updErr)
     revalidatePath(`/project/${projectId}`)
     return { ok: false, error: updErr.message }
+  }
+
+  for (const request of requestsToCancel ?? []) {
+    await recordProjectActivity({
+      projectId,
+      entryType: 'join_request_canceled',
+      actorUserId,
+      actorParticipantId,
+      targetUserId: uid,
+      joinRequestId: request.id,
+      metadata: {
+        previous_status: request.status ?? null,
+      },
+    })
   }
 
   revalidatePath(`/project/${projectId}`)

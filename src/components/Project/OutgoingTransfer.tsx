@@ -34,6 +34,8 @@ export function OutgoingTransfer({
   viewerHasPendingSignal,
   projectCanceled,
   canPay,
+  contextLabel,
+  reportPaidAction,
 }: {
   collectorName: string
   amountLabel: string
@@ -43,12 +45,18 @@ export function OutgoingTransfer({
   viewerHasPendingSignal: boolean
   projectCanceled: boolean
   canPay: boolean
+  contextLabel?: string
+  reportPaidAction?: (() => Promise<void>) | undefined
 }) {
   const [open, setOpen] = useState(false)
   const modalRef = useRef<HTMLDivElement | null>(null)
-  const canSelfReport = !!participantId && !viewerPaid && !viewerHasPendingSignal && !projectCanceled
+  const resolvedReportPaidAction = reportPaidAction ?? (participantId ? selfReportPaid.bind(null, participantId) : null)
+  const canSelfReport = !!resolvedReportPaidAction && !viewerPaid && !viewerHasPendingSignal && !projectCanceled
   const options = useMemo(
-    () => (collectorOptions ?? []).filter(opt => opt && opt.is_active !== false).sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999)),
+    () =>
+      (collectorOptions ?? [])
+        .filter(opt => opt && opt.is_active !== false)
+        .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999)),
     [collectorOptions]
   )
 
@@ -105,7 +113,10 @@ export function OutgoingTransfer({
   return (
     <>
       <div className="flex items-center justify-between py-2 text-sm">
-        <div>{collectorName} — {amountLabel}</div>
+        <div className="space-y-0.5">
+          <div>{collectorName} - {amountLabel}</div>
+          {contextLabel ? <div className="text-xs text-slate-500">{contextLabel}</div> : null}
+        </div>
         {viewerPaid ? (
           <span className="text-xs opacity-70">Settled</span>
         ) : viewerHasPendingSignal ? (
@@ -170,9 +181,9 @@ export function OutgoingTransfer({
               )}
             </div>
             <div className="px-4 py-3 border-t flex flex-col gap-2 sm:flex-row sm:items-center">
-              {participantId ? (
+              {resolvedReportPaidAction ? (
                 <form
-                  action={selfReportPaid.bind(null, participantId)}
+                  action={resolvedReportPaidAction}
                   className="flex flex-col gap-2 sm:flex-row sm:items-center flex-1"
                   onSubmit={() => setOpen(false)}
                 >
@@ -198,3 +209,4 @@ export function OutgoingTransfer({
     </>
   )
 }
+

@@ -12,17 +12,38 @@ export function SummaryCards(props: {
   maxParticipants?: number | null
   participantsNow: number
   scenarios: { now: number; plus1: number; plus2: number }
+  extrasSummary?: {
+    targetCents: number
+    collectedCents: number
+    grandTotalTargetCents: number
+    grandTotalCollectedCents: number
+    perPersonTargetCents: number
+    perPersonCollectedCents: number
+  } | null
   lateSummary?: { joinersCount: number; pendingCount: number; pendingCents: number } | null
 }) {
-  const totalCents = Math.max(0, Number(props.totalCents ?? 0))
-  const collectedCents = Math.max(0, Number(props.collectedCents ?? 0))
+  const baseTotalCents = Math.max(0, Number(props.totalCents ?? 0))
+  const baseCollectedCents = Math.max(0, Number(props.collectedCents ?? 0))
+  const extrasSummary = props.extrasSummary
+    ? {
+        targetCents: Math.max(0, Number(props.extrasSummary.targetCents ?? 0)),
+        collectedCents: Math.max(0, Number(props.extrasSummary.collectedCents ?? 0)),
+        grandTotalTargetCents: Math.max(0, Number(props.extrasSummary.grandTotalTargetCents ?? 0)),
+        grandTotalCollectedCents: Math.max(0, Number(props.extrasSummary.grandTotalCollectedCents ?? 0)),
+        perPersonTargetCents: Math.max(0, Number(props.extrasSummary.perPersonTargetCents ?? 0)),
+        perPersonCollectedCents: Math.max(0, Number(props.extrasSummary.perPersonCollectedCents ?? 0)),
+      }
+    : null
+  const totalCents = baseTotalCents + (extrasSummary?.targetCents ?? 0)
+  const collectedCents = baseCollectedCents + (extrasSummary?.collectedCents ?? 0)
   const collectedClamped = totalCents > 0 ? Math.min(collectedCents, totalCents) : collectedCents
   const progressPercent = totalCents > 0 ? Math.min(100, Math.round((collectedClamped / totalCents) * 100)) : 0
   const lateSummary = props.lateSummary ?? { joinersCount: 0, pendingCount: 0, pendingCents: 0 }
   const showLateJoiners =
     lateSummary.joinersCount > 0 || lateSummary.pendingCount > 0 || lateSummary.pendingCents > 0
+  const showExtras = !!extrasSummary && extrasSummary.targetCents > 0
   const showScenarios = !props.totalIsPerPerson
-  const cardsCount = 1 + (showLateJoiners ? 1 : 0) + (showScenarios ? 1 : 0)
+  const cardsCount = 1 + (showLateJoiners ? 1 : 0) + (showExtras ? 1 : 0) + (showScenarios ? 1 : 0)
   const gridColsClass = cardsCount === 1 ? 'md:grid-cols-1' : cardsCount === 2 ? 'md:grid-cols-2' : 'md:grid-cols-3'
   const hasMaxParticipants = typeof props.maxParticipants === 'number' && props.maxParticipants > 0
   const maxParticipants = hasMaxParticipants ? Number(props.maxParticipants) : null
@@ -52,6 +73,11 @@ export function SummaryCards(props: {
               <span className="text-slate-600">of EUR {formatEur(totalCents)}</span>
             </div>
           </div>
+          {showExtras && extrasSummary ? (
+            <div className="text-xs text-slate-500">
+              {`Base EUR ${formatEur(baseCollectedCents)} / ${formatEur(baseTotalCents)} • Extras EUR ${formatEur(extrasSummary.collectedCents)} / ${formatEur(extrasSummary.targetCents)}`}
+            </div>
+          ) : null}
           <div className="h-3 w-full overflow-hidden rounded-full bg-slate-200">
             <div className="h-full bg-slate-900 transition-all" style={{ width: `${progressPercent}%` }} />
           </div>
@@ -89,6 +115,24 @@ export function SummaryCards(props: {
               <div className="mt-1 text-3xl font-semibold leading-none text-slate-900">{lateSummary.joinersCount}</div>
               <div className="mt-2 text-sm text-slate-600">
                 {lateSummary.pendingCount} payments pending (EUR {formatEur(lateSummary.pendingCents)})
+              </div>
+            </div>
+          )}
+
+          {showExtras && extrasSummary && (
+            <div className="rounded-xl border border-slate-200 bg-white p-4">
+              <div className="text-sm text-slate-600">Extras</div>
+              <div className="mt-1 text-3xl font-semibold leading-none text-slate-900">
+                EUR {formatEur(extrasSummary.collectedCents)}
+              </div>
+              <div className="mt-2 text-sm text-slate-600">of EUR {formatEur(extrasSummary.targetCents)}</div>
+              <div className="mt-3 space-y-1.5 text-xs text-slate-600">
+                <div>
+                  {`Grand total extras: EUR ${formatEur(extrasSummary.grandTotalCollectedCents)} / ${formatEur(extrasSummary.grandTotalTargetCents)}`}
+                </div>
+                <div>
+                  {`Per-person extras: EUR ${formatEur(extrasSummary.perPersonCollectedCents)} / ${formatEur(extrasSummary.perPersonTargetCents)}`}
+                </div>
               </div>
             </div>
           )}

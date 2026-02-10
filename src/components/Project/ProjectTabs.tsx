@@ -2,7 +2,17 @@
 
 import { ReactNode, useMemo, useState } from 'react'
 
-type TabKey = 'overview' | 'people' | 'participants' | 'payments' | 'activity' | 'profile' | 'voting' | 'settings' | 'admin'
+type TabKey =
+  | 'overview'
+  | 'people'
+  | 'participants'
+  | 'payments'
+  | 'activity'
+  | 'profile'
+  | 'voting'
+  | 'extras'
+  | 'settings'
+  | 'admin'
 
 type TabCounts = {
   participants?: number
@@ -12,6 +22,13 @@ type TabCounts = {
 }
 
 type TabSectionMap = Partial<Record<TabKey, ReactNode>>
+type TabDefinition = {
+  key: TabKey
+  label: string
+  badge?: ReactNode
+  badgeStyle?: 'neutral' | 'solid' | 'warning'
+  enabled: boolean
+}
 
 const badgeClasses = {
   neutral: 'bg-slate-100 text-slate-700 border border-slate-200',
@@ -34,7 +51,7 @@ export function ProjectTabs({
   const peopleBadge = active === 'people' || peopleSeen ? counts?.participants : (counts?.activity ?? counts?.participants)
   const peopleBadgeStyle = active === 'people' || peopleSeen || !counts?.activity ? 'neutral' : 'solid'
   const tabs = useMemo(() => {
-    const baseTabs = [
+    const baseTabs: TabDefinition[] = [
       { key: 'overview' as const, label: 'Overview', enabled: !!sections.overview },
       {
         key: 'people' as const,
@@ -52,6 +69,7 @@ export function ProjectTabs({
       },
       { key: 'profile' as const, label: 'Profile', enabled: !!sections.profile },
       { key: 'voting' as const, label: 'Voting', enabled: !!sections.voting },
+      { key: 'extras' as const, label: 'Extras', enabled: !!sections.extras },
     ]
 
     if (sections.settings) {

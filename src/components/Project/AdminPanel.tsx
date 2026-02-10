@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { ActivityLogTab, type ActivityLogItem } from '@/components/Project/ActivityLogTab'
 import {
   abortProject,
   finalizeProject,
@@ -52,6 +53,7 @@ export function AdminPanel({
   canManage,
   canFinalize,
   canCancel,
+  activityItems,
 }: {
   projectId: string
   participants: Participant[]
@@ -62,6 +64,7 @@ export function AdminPanel({
   canManage: boolean
   canFinalize: boolean
   canCancel: boolean
+  activityItems: ActivityLogItem[]
 }) {
   const [requestsOpen, setRequestsOpen] = useState(false)
   const [participantsOpen, setParticipantsOpen] = useState(false)
@@ -206,6 +209,9 @@ export function AdminPanel({
           </form>
         </div>
       </div>
+      <section className="border rounded-xl p-5 md:p-6">
+        <ActivityLogTab items={activityItems} />
+      </section>
       {participantsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <button
