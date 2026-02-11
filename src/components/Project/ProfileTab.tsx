@@ -2,6 +2,7 @@ import { revalidatePath } from 'next/cache'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import SetPasswordForm from '@/app/settings/SetPasswordForm'
+import { Button } from '@/components/ui/button'
 
 async function updateDisplayName(projectId: string, formData: FormData) {
   'use server'
@@ -98,7 +99,7 @@ async function setDefaultLink(projectId: string, id: string) {
 export async function ProfileTab({ projectId }: { projectId: string }) {
   const uid = await getCurrentUserId()
   if (!uid) {
-    return <div className="text-sm opacity-70">Please sign in to manage your profile.</div>
+    return <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">Please sign in to manage your profile.</div>
   }
 
   const supabase = await getSupabaseServer()
@@ -116,73 +117,75 @@ export async function ProfileTab({ projectId }: { projectId: string }) {
 
   return (
     <div className="space-y-6">
-      <section className="border rounded-xl p-4 space-y-3">
+      <section className="surface-card p-4 space-y-3">
         <h2 className="text-lg font-medium">Profile</h2>
-        <form action={updateDisplayName.bind(null, projectId)} className="flex items-center gap-2">
+        <form action={updateDisplayName.bind(null, projectId)} className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input
             name="display_name"
             defaultValue={me?.display_name ?? ''}
             placeholder="Your display name"
-            className="border rounded px-2 py-1"
+            className="control-input sm:max-w-sm"
           />
-          <button className="px-3 py-1.5 rounded bg-black text-white">Save</button>
+          <Button className="rounded-full" size="sm">Save</Button>
         </form>
-        <p className="text-xs opacity-70">
+        <p className="text-xs text-muted-foreground">
           This name is shown to other project participants. If empty, others see a masked email prefix or your short
           code.
         </p>
       </section>
 
-      <section className="border rounded-xl p-4 space-y-3">
+      <section className="surface-card p-4 space-y-3">
         <h2 className="text-lg font-medium">Payment links</h2>
-        <form action={addLink.bind(null, projectId)} className="grid md:grid-cols-4 gap-2 items-center">
-          <select name="ptype" className="border rounded px-2 py-1">
+        <form action={addLink.bind(null, projectId)} className="grid items-center gap-2 md:grid-cols-4">
+          <select name="ptype" className="control-select md:col-span-1">
             <option value="revolut">Revolut</option>
             <option value="swedbank">Swedbank</option>
             <option value="iban">IBAN</option>
           </select>
-          <select name="plabel" className="border rounded px-2 py-1">
+          <select name="plabel" className="control-select md:col-span-1">
             <option value="Payment Link">Payment Link</option>
             <option value="IBAN">IBAN</option>
           </select>
-          <input name="pvalue" placeholder="URL or IBAN" className="border rounded px-2 py-1 md:col-span-2" />
-          <button className="px-3 py-1.5 rounded bg-black text-white md:col-span-4">Add</button>
+          <input name="pvalue" placeholder="URL or IBAN" className="control-input md:col-span-2" />
+          <Button className="rounded-full md:col-span-4" size="sm">Add payment link</Button>
         </form>
 
         <div className="space-y-2">
-          {(links ?? []).length === 0 && <div className="text-sm opacity-60">No links yet.</div>}
-          {(links ?? []).map(link => (
-            <div key={link.id} className="flex items-center justify-between border rounded p-2">
-              <div className="text-sm">
-                {(() => {
-                  const bank = link.type === 'revolut' ? 'Revolut' : link.type === 'swedbank' ? 'Swedbank' : 'IBAN'
-                  const paymentType = link.label ?? (link.type === 'iban' ? 'IBAN' : 'Payment Link')
-                  return (
-                    <span>
-                      <b>{bank}</b> - {paymentType} - {link.value}
-                    </span>
-                  )
-                })()}
-                {links?.[0]?.id === link.id && (
-                  <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-700">Default</span>
-                )}
+          {(links ?? []).length === 0 && <div className="empty-state p-4">No links yet.</div>}
+          {(links ?? []).map(link => {
+            const bank = link.type === 'revolut' ? 'Revolut' : link.type === 'swedbank' ? 'Swedbank' : 'IBAN'
+            const paymentType = link.label ?? (link.type === 'iban' ? 'IBAN' : 'Payment Link')
+            const isDefault = links?.[0]?.id === link.id
+
+            return (
+              <div key={link.id} className="rounded-lg border bg-background px-3 py-2.5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="text-sm text-slate-800">
+                    <span className="font-semibold">{bank}</span> - {paymentType} - {link.value}
+                    {isDefault && (
+                      <span className="ml-2 inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                        Default
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {!isDefault && (
+                      <form action={setDefaultLink.bind(null, projectId, link.id)}>
+                        <Button size="sm" variant="outline">Set default</Button>
+                      </form>
+                    )}
+                    <form action={removeLink.bind(null, projectId, link.id)}>
+                      <Button size="sm" variant="outline">Delete</Button>
+                    </form>
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                {links?.[0]?.id !== link.id && (
-                  <form action={setDefaultLink.bind(null, projectId, link.id)}>
-                    <button className="px-2 py-1 rounded border">Set default</button>
-                  </form>
-                )}
-                <form action={removeLink.bind(null, projectId, link.id)}>
-                  <button className="px-2 py-1 rounded border">Delete</button>
-                </form>
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </section>
 
-      <section className="border rounded-xl p-4">
+      <section className="surface-card p-4">
         <SetPasswordForm />
       </section>
     </div>

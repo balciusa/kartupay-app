@@ -21,7 +21,7 @@ const toLocalTimeInput = (iso?: string | null) => {
 export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
   const uid = await getCurrentUserId()
   if (!uid) {
-    return <div className="text-sm opacity-70">Please sign in to manage project settings.</div>
+    return <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">Please sign in to manage project settings.</div>
   }
 
   const supabase = await getSupabaseServer()
@@ -34,7 +34,7 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
     .single()
 
   if (!project) {
-    return <div className="text-sm opacity-70">Project not found.</div>
+    return <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">Project not found.</div>
   }
 
   const totalEur = (Number(project.total_cents ?? 0) / 100).toFixed(2)
@@ -43,7 +43,7 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
 
   return (
     <div className="space-y-6">
-      <section className="border rounded-xl p-5 md:p-6 space-y-4">
+      <section className="surface-card p-5 md:p-6 space-y-4">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">Project settings</h2>
           <p className="text-sm text-muted-foreground">

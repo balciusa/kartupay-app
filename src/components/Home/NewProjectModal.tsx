@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { NewProjectForm } from '@/components/Project/NewProjectForm'
+import { Button } from '@/components/ui/button'
 
 export function NewProjectModal() {
   const [open, setOpen] = useState(false)
@@ -47,40 +48,32 @@ export function NewProjectModal() {
 
   return (
     <>
-      <button
-        type="button"
-        className="px-3 py-1.5 rounded bg-black text-white hover:opacity-90"
-        onClick={() => setOpen(true)}
-      >
+      <Button type="button" onClick={() => setOpen(true)} className="rounded-full px-5">
         New project
-      </button>
+      </Button>
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <button
             type="button"
             aria-label="Close new project modal"
-            className="absolute inset-0 bg-black/40"
+            className="modal-backdrop"
             onClick={() => setOpen(false)}
           />
           <div
             ref={modalRef}
             role="dialog"
             aria-modal="true"
-            aria-label="New project"
-            className="relative w-full max-w-2xl rounded-xl bg-white shadow-xl border flex flex-col max-h-[90vh]"
+            aria-labelledby="new-project-title"
+            className="modal-panel max-w-2xl flex max-h-[90vh] flex-col"
           >
-            <div className="px-5 py-4 border-b flex items-center justify-between">
+            <div className="flex items-center justify-between border-b px-5 py-4">
               <div className="space-y-0.5">
-                <h2 className="text-lg font-semibold">New project</h2>
+                <h2 id="new-project-title" className="text-lg font-semibold">New project</h2>
                 <p className="text-sm text-muted-foreground">Set up a project and invite members to join</p>
               </div>
-              <button
-                type="button"
-                className="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50 transition-colors"
-                onClick={() => setOpen(false)}
-              >
+              <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)}>
                 Cancel
-              </button>
+              </Button>
             </div>
             <div className="p-5 space-y-3 overflow-y-auto">
               <NewProjectForm showCancel onCancel={() => setOpen(false)} submitLabel="Create project" />

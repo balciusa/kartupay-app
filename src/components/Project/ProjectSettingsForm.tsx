@@ -1,6 +1,7 @@
 'use client'
 
 import { FormEvent, useMemo, useState } from 'react'
+import { Button } from '@/components/ui/button'
 
 type ProjectSettingsFormProps = {
   action: (formData: FormData) => void | Promise<void>
@@ -76,41 +77,44 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
     <form action={action} className="space-y-5" onSubmit={onSubmit}>
       <div className="space-y-3">
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Project title</label>
+          <label htmlFor="settings-project-title" className="mb-1 block text-sm font-medium text-slate-700">Project title</label>
           <input
+            id="settings-project-title"
             name="project_title"
             defaultValue={initial.title}
             placeholder="Project title"
-            className="w-full rounded-md border bg-white px-3 py-2 focus-visible:border-black/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10"
+            className="control-input"
             required
           />
         </div>
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Description</label>
+          <label htmlFor="settings-project-description" className="mb-1 block text-sm font-medium text-slate-700">Description</label>
           <textarea
+            id="settings-project-description"
             name="project_description"
             defaultValue={initial.description}
             placeholder="Description (optional)"
-            className="min-h-[120px] w-full rounded-md border bg-white px-3 py-2 focus-visible:border-black/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10"
+            className="control-textarea min-h-[120px]"
           />
         </div>
       </div>
 
       <div className="grid gap-3 md:grid-cols-[minmax(220px,1fr)_minmax(0,1.4fr)]">
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Total (EUR)</label>
+          <label htmlFor="settings-project-total" className="mb-1 block text-sm font-medium text-slate-700">Total (EUR)</label>
           <input
+            id="settings-project-total"
             name="totalEur"
             type="text"
             inputMode="decimal"
             defaultValue={initial.totalEur}
-            className="w-full rounded-md border bg-white px-3 py-2 focus-visible:border-black/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10"
+            className="control-input"
             required
           />
         </div>
         <div>
           <label className="mb-1 block text-sm font-medium text-slate-700">Total type</label>
-          <div className="rounded-md border bg-white px-3 py-2 space-y-2">
+          <div className="control-radio-group space-y-2">
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="radio"
@@ -135,23 +139,25 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
 
       <div className="grid gap-3 md:grid-cols-2">
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Min participants</label>
+          <label htmlFor="settings-min-participants" className="mb-1 block text-sm font-medium text-slate-700">Min participants</label>
           <input
+            id="settings-min-participants"
             name="min_participants"
             type="number"
             min={1}
-            className="w-full rounded-md border bg-white px-3 py-2 focus-visible:border-black/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10"
+            className="control-input"
             defaultValue={initial.minParticipants ?? ''}
             placeholder="No minimum"
           />
         </div>
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Max participants</label>
+          <label htmlFor="settings-max-participants" className="mb-1 block text-sm font-medium text-slate-700">Max participants</label>
           <input
+            id="settings-max-participants"
             name="max_participants"
             type="number"
             min={1}
-            className="w-full rounded-md border bg-white px-3 py-2 focus-visible:border-black/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10"
+            className="control-input"
             defaultValue={initial.maxParticipants ?? ''}
             placeholder="No maximum"
           />
@@ -165,7 +171,7 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
             <input
               name="event_start_date"
               type="date"
-              className="w-full rounded-md border bg-white px-3 py-2 focus-visible:border-black/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10"
+              className="control-input"
               defaultValue={initial.eventStartDate}
               onChange={event => {
                 setStartDate(event.target.value)
@@ -174,7 +180,7 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
             />
             <select
               name="event_start_time"
-              className="w-full rounded-md border bg-white px-3 py-2 focus-visible:border-black/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10"
+              className="control-select"
               defaultValue={initial.eventStartTime}
               onChange={event => {
                 setStartTime(event.target.value)
@@ -196,7 +202,7 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
               name="event_end_date"
               type="date"
               min={startDate || undefined}
-              className="w-full rounded-md border bg-white px-3 py-2 focus-visible:border-black/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10"
+              className="control-input"
               defaultValue={initial.eventEndDate}
               onChange={event => {
                 setEndDate(event.target.value)
@@ -205,7 +211,7 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
             />
             <select
               name="event_end_time"
-              className="w-full rounded-md border bg-white px-3 py-2 focus-visible:border-black/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10"
+              className="control-select"
               defaultValue={initial.eventEndTime}
               onChange={event => {
                 setEndTime(event.target.value)
@@ -229,9 +235,8 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
       )}
 
       <div className="flex justify-end">
-        <button className="rounded-full bg-black px-5 py-2 text-white">Save settings</button>
+        <Button className="rounded-full px-5">Save settings</Button>
       </div>
     </form>
   )
 }
-

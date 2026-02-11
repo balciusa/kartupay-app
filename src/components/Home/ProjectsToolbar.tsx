@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
+import { Input } from '@/components/ui/input'
+import { cn } from '@/lib/utils'
 
 type FilterOption = {
   key: string
@@ -116,20 +118,23 @@ export function ProjectsToolbar({
   const activeFilter = statusFilter || 'all'
 
   return (
-    <div className="rounded-2xl border bg-card p-4 shadow-sm">
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+    <div className="surface-card p-4 md:p-5">
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="flex-1">
-          <label className="text-xs uppercase tracking-wide text-muted-foreground">Search</label>
-          <input
+          <label htmlFor="projects-search" className="text-xs uppercase tracking-wide text-muted-foreground">
+            Search
+          </label>
+          <Input
+            id="projects-search"
             type="search"
             name="q"
             value={query}
             onChange={event => setQuery(event.target.value)}
             placeholder="Search by title"
-            className="mt-2 w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="mt-2"
           />
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2" aria-label="Project status filters" role="group">
           <span className="text-xs uppercase tracking-wide text-muted-foreground">Filter</span>
           {filterOptions.map(option => {
             const isActive = activeFilter === option.key
@@ -139,7 +144,12 @@ export function ProjectsToolbar({
                 type="button"
                 onClick={() => handleFilter(option.value)}
                 aria-current={isActive ? 'page' : undefined}
-                className={`${filterBadgeBase} ${option.className} ${isActive ? '' : 'opacity-60 hover:opacity-100'}`}
+                className={cn(
+                  filterBadgeBase,
+                  option.className,
+                  'transition-[opacity,box-shadow,transform] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30',
+                  isActive ? 'shadow-sm' : 'opacity-70 hover:opacity-100'
+                )}
               >
                 {option.label}
               </button>
@@ -147,8 +157,14 @@ export function ProjectsToolbar({
           })}
         </div>
         <div className="flex items-center gap-2">
-          <label className="text-xs uppercase tracking-wide text-muted-foreground">Sort</label>
-          <select name="sort" value={sort} onChange={handleSortChange} className="rounded-lg border bg-background px-3 py-2 text-sm">
+          <label htmlFor="projects-sort" className="text-xs uppercase tracking-wide text-muted-foreground">Sort</label>
+          <select
+            id="projects-sort"
+            name="sort"
+            value={sort}
+            onChange={handleSortChange}
+            className="control-select min-w-44"
+          >
             {Object.entries(sortLabels).map(([value, label]) => (
               <option key={value} value={value}>
                 {label}

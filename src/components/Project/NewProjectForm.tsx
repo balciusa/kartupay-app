@@ -1,12 +1,15 @@
 'use client'
 
 import { createProject } from '@/app/project/new/actions'
+import { Button } from '@/components/ui/button'
 
 type NewProjectFormProps = {
   showCancel?: boolean
   onCancel?: () => void
   submitLabel?: string
 }
+
+const EURO = '\u20AC'
 
 export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Create' }: NewProjectFormProps) {
   const timeOptions = [
@@ -17,6 +20,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
       return `${String(hours).padStart(2, '0')}:${minutes}`
     }),
   ]
+
   const sanitizeAmount = (event: React.FormEvent<HTMLInputElement>) => {
     const input = event.currentTarget
     const raw = input.value
@@ -33,7 +37,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   }
 
   return (
-    <form action={createProject} className="space-y-4">
+    <form action={createProject} className="space-y-5">
       <div className="space-y-2">
         <label htmlFor="project_title" className="text-sm font-medium">
           Project title <span className="text-red-500">*</span>
@@ -42,44 +46,44 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
           id="project_title"
           name="title"
           placeholder="Weekend trip, team event..."
-          className="w-full border rounded-lg px-3 py-2.5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+          className="control-input"
           required
         />
       </div>
 
       <div className="space-y-2">
         <label htmlFor="project_description" className="text-sm font-medium">
-          Description <span className="text-muted-foreground font-normal">(optional)</span>
+          Description <span className="font-normal text-muted-foreground">(optional)</span>
         </label>
         <textarea
           id="project_description"
           name="description"
           placeholder="Add context and details for participants"
-          className="w-full border rounded-lg px-3 py-2.5 min-h-[96px] bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40 resize-none"
+          className="control-textarea min-h-[96px] resize-none"
         />
       </div>
 
-      <div className="grid md:grid-cols-2 gap-4">
+      <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
           <label htmlFor="project_total" className="text-sm font-medium">
             Total <span className="text-red-500">*</span>
           </label>
           <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">€</span>
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">{EURO}</span>
             <input
-            id="project_total"
-            name="totalEur"
-            type="text"
-            inputMode="decimal"
-            className="w-full border rounded-lg pl-7 pr-3 py-2.5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
-            onInput={sanitizeAmount}
-            required
-          />
+              id="project_total"
+              name="totalEur"
+              type="text"
+              inputMode="decimal"
+              className="control-input pl-7"
+              onInput={sanitizeAmount}
+              required
+            />
           </div>
         </div>
         <div className="space-y-2">
           <label className="text-sm font-medium">Total type</label>
-          <div className="rounded-lg border px-3 py-2.5 space-y-2">
+          <div className="control-radio-group space-y-2">
             <label className="flex items-center gap-2 text-sm">
               <input type="radio" name="total_is_per_person" value="false" defaultChecked />
               Grand total
@@ -92,7 +96,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
         </div>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-4">
+      <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
           <label htmlFor="project_min_participants" className="text-sm font-medium">
             Min participants
@@ -102,7 +106,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
             name="min_participants"
             type="number"
             min={1}
-            className="w-full border rounded-lg px-3 py-2.5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+            className="control-input"
           />
         </div>
         <div className="space-y-2">
@@ -114,25 +118,25 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
             name="max_participants"
             type="number"
             min={1}
-            className="w-full border rounded-lg px-3 py-2.5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+            className="control-input"
           />
         </div>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-4">
+      <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
           <label className="text-sm font-medium">
-            Event starts <span className="text-muted-foreground font-normal">(optional)</span>
+            Event starts <span className="font-normal text-muted-foreground">(optional)</span>
           </label>
           <div className="grid grid-cols-2 gap-2">
             <input
               name="event_start_date"
               type="date"
-              className="w-full border rounded-lg px-3 py-2.5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+              className="control-input"
             />
             <select
               name="event_start_time"
-              className="w-full border rounded-lg px-3 py-2.5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+              className="control-select"
             >
               {timeOptions.map(value => (
                 <option key={value || 'blank'} value={value}>
@@ -144,17 +148,17 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
         </div>
         <div className="space-y-2">
           <label className="text-sm font-medium">
-            Event ends <span className="text-muted-foreground font-normal">(optional)</span>
+            Event ends <span className="font-normal text-muted-foreground">(optional)</span>
           </label>
           <div className="grid grid-cols-2 gap-2">
             <input
               name="event_end_date"
               type="date"
-              className="w-full border rounded-lg px-3 py-2.5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+              className="control-input"
             />
             <select
               name="event_end_time"
-              className="w-full border rounded-lg px-3 py-2.5 bg-white text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10 focus-visible:border-black/40"
+              className="control-select"
             >
               {timeOptions.map(value => (
                 <option key={value || 'blank'} value={value}>
@@ -166,21 +170,21 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
         </div>
       </div>
 
-      <div className="pt-2 flex items-center justify-end gap-3">
+      <div className="flex items-center justify-end gap-3 pt-2">
         {showCancel && (
-          <button
-            className="rounded-full px-5 py-2 border text-sm"
+          <Button
+            className="rounded-full px-5"
+            variant="outline"
             type="button"
             onClick={() => onCancel?.()}
           >
             Cancel
-          </button>
+          </Button>
         )}
-        <button className="rounded-full px-5 py-2 bg-black text-white text-sm hover:opacity-90" type="submit">
+        <Button className="rounded-full px-5" type="submit">
           {submitLabel}
-        </button>
+        </Button>
       </div>
     </form>
   )
 }
-
