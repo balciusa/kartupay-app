@@ -67,9 +67,9 @@ export function ProjectTabs({
         badgeStyle: 'warning',
         enabled: !!sections.payments,
       },
+      { key: 'extras' as const, label: 'Extras', enabled: !!sections.extras },
       { key: 'profile' as const, label: 'Profile', enabled: !!sections.profile },
       { key: 'voting' as const, label: 'Voting', enabled: !!sections.voting },
-      { key: 'extras' as const, label: 'Extras', enabled: !!sections.extras },
     ]
 
     if (sections.settings) {
