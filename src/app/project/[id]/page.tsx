@@ -12,11 +12,19 @@ import { ProfileTab } from '@/components/Project/ProfileTab'
 import { ProjectSettingsTab } from '@/components/Project/ProjectSettingsTab'
 import { LateOutgoingTransfers } from '@/components/Project/LateOutgoingTransfers'
 import { ExtrasTab } from '@/components/Project/ExtrasTab'
+import { LocationLinkMenu } from '@/components/Project/LocationLinkMenu'
 import { getActivityCategory } from '@/lib/activityLog'
 import { buildExtraDueRows, extraDueKey } from '@/lib/extraPayments'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
-import { confirmLateJoinReceipt, markExtraReceived, markReceived, selfReportExtraPaid } from './actions'
+import {
+  confirmLateJoinReceipt,
+  markCollectorSelfPaid,
+  markExtraCollectorSelfPaid,
+  markExtraReceived,
+  markReceived,
+  selfReportExtraPaid,
+} from './actions'
 
 type LateTransferRow = {
   id: string
@@ -142,7 +150,16 @@ export default async function ProjectPage({
 
   const baseProjectFields =
     'id, title, description, total_cents, total_is_per_person, min_participants, max_participants, status, canceled_at, collector_participant_id, event_start_at, event_end_at'
-  const optionalProjectFields = ['closed_at', 'aborted_at', 'finalized_at'] as const
+  const optionalProjectFields = [
+    'closed_at',
+    'aborted_at',
+    'finalized_at',
+    'event_location_label',
+    'event_location_address',
+    'event_location_lat',
+    'event_location_lng',
+    'event_location_place_id',
+  ] as const
   let optionalFields = [...optionalProjectFields]
   const missingFields = new Set<string>()
   let project: any = null
@@ -249,6 +266,35 @@ export default async function ProjectPage({
       : null
   const eventStartLocale = formatLocal24(project.event_start_at as string | null)
   const eventEndLocale = formatLocal24(project.event_end_at as string | null)
+  const eventLocationLabel = (project.event_location_label as string | null) ?? null
+  const eventLocationAddress = (project.event_location_address as string | null) ?? null
+  const eventLocationPlaceId = (project.event_location_place_id as string | null) ?? null
+  const parsedLocationLat = Number(project.event_location_lat ?? NaN)
+  const parsedLocationLng = Number(project.event_location_lng ?? NaN)
+  const hasLocationCoordinates = Number.isFinite(parsedLocationLat) && Number.isFinite(parsedLocationLng)
+  const eventLocationTitle = eventLocationLabel || 'Event location'
+  const hasEventLocation = !!(eventLocationLabel || eventLocationAddress || hasLocationCoordinates)
+  const eventLocationQuery = hasLocationCoordinates
+    ? `${parsedLocationLat},${parsedLocationLng}`
+    : (eventLocationAddress || eventLocationLabel || '')
+  const encodedEventLocationQuery = encodeURIComponent(eventLocationQuery)
+  const googleMapsUrl = eventLocationQuery
+    ? `https://www.google.com/maps/search/?api=1&query=${encodedEventLocationQuery}${
+        eventLocationPlaceId ? `&query_place_id=${encodeURIComponent(eventLocationPlaceId)}` : ''
+      }`
+    : null
+  const wazeUrl = hasLocationCoordinates
+    ? `https://waze.com/ul?ll=${encodeURIComponent(`${parsedLocationLat},${parsedLocationLng}`)}&navigate=yes`
+    : eventLocationQuery
+      ? `https://waze.com/ul?q=${encodedEventLocationQuery}&navigate=yes`
+      : null
+  const appleMapsUrl = hasLocationCoordinates
+    ? `https://maps.apple.com/?ll=${encodeURIComponent(`${parsedLocationLat},${parsedLocationLng}`)}${
+        eventLocationTitle ? `&q=${encodeURIComponent(eventLocationTitle)}` : ''
+      }`
+    : eventLocationQuery
+      ? `https://maps.apple.com/?q=${encodedEventLocationQuery}`
+      : null
 
   const uid = await getCurrentUserId()
 
@@ -619,6 +665,7 @@ export default async function ProjectPage({
   const collectorLabel = collectorParticipant ? participantName(collectorParticipant) : 'Member'
   const collectorName = collectorLabel
   const viewerIsCollector = !!(myParticipantId && collectorId && myParticipantId === collectorId)
+  const collectorIsCountedPaid = !!(collectorId && paidIds.includes(collectorId))
   const shouldLoadPendingRequests = viewerIsCollector
   const { data: pendingForOrganizer, error: pendingErr } = shouldLoadPendingRequests
     ? await supabaseAdmin
@@ -632,13 +679,10 @@ export default async function ProjectPage({
     console.error('[ProjectPage] Error fetching pending requests:', pendingErr)
   }
   console.log('[ProjectPage] Pending requests for collector:', { count: pendingForOrganizer?.length ?? 0, requests: pendingForOrganizer })
-  const effectivePaidIds = new Set(paidIds)
-  if (collectorId) effectivePaidIds.add(collectorId)
   const basePaidIds = countedPayments
     .filter(p => baseParticipantIds.has(p.participant_id))
     .map(p => p.participant_id)
   const basePaidSet = new Set(basePaidIds)
-  if (collectorId && baseParticipantIds.has(collectorId)) basePaidSet.add(collectorId)
   const collectedCentsDisplay = Math.min(perPersonCentsAtFinalize * basePaidSet.size, totalCents)
   const lateJoinerIds = new Set(
     finalizedAtDate
@@ -797,8 +841,7 @@ export default async function ProjectPage({
   })
   const extraTargetCents = extraDueWithStatus.reduce((sum, row) => sum + row.amount_cents, 0)
   const extraCollectedCents = extraDueWithStatus.reduce((sum, row) => {
-    const autoCollected = row.payer_participant_id === row.collector_participant_id
-    return sum + (autoCollected || row.confirmed ? row.amount_cents : 0)
+    return sum + (row.confirmed ? row.amount_cents : 0)
   }, 0)
   const extraGrandTotalTargetCents = extraDueWithStatus
     .filter(row => !row.amount_is_per_person)
@@ -806,8 +849,7 @@ export default async function ProjectPage({
   const extraGrandTotalCollectedCents = extraDueWithStatus
     .filter(row => !row.amount_is_per_person)
     .reduce((sum, row) => {
-      const autoCollected = row.payer_participant_id === row.collector_participant_id
-      return sum + (autoCollected || row.confirmed ? row.amount_cents : 0)
+      return sum + (row.confirmed ? row.amount_cents : 0)
     }, 0)
   const extraPerPersonTargetCents = extraDueWithStatus
     .filter(row => row.amount_is_per_person)
@@ -815,10 +857,9 @@ export default async function ProjectPage({
   const extraPerPersonCollectedCents = extraDueWithStatus
     .filter(row => row.amount_is_per_person)
     .reduce((sum, row) => {
-      const autoCollected = row.payer_participant_id === row.collector_participant_id
-      return sum + (autoCollected || row.confirmed ? row.amount_cents : 0)
+      return sum + (row.confirmed ? row.amount_cents : 0)
     }, 0)
-  const extraIncomingForViewer = viewerIsCollector && myParticipantId
+  const extraIncomingForViewer = myParticipantId
     ? extraDueWithStatus.filter(
         row =>
           row.collector_participant_id === myParticipantId &&
@@ -826,7 +867,7 @@ export default async function ProjectPage({
           !row.confirmed
       )
     : []
-  const extraOutgoingForViewer = !viewerIsCollector && myParticipantId
+  const extraOutgoingForViewer = myParticipantId
     ? extraDueWithStatus.filter(
         row =>
           row.payer_participant_id === myParticipantId &&
@@ -834,12 +875,32 @@ export default async function ProjectPage({
           !row.confirmed
       )
     : []
-  const pendingExtraCollectorCount = viewerIsCollector ? extraIncomingForViewer.length : 0
-  const pendingExtraOutgoingCount = !viewerIsCollector ? extraOutgoingForViewer.length : 0
+  const extraSelfMarkRowsForViewer = myParticipantId
+    ? extraDueWithStatus.filter(
+        row =>
+          row.payer_participant_id === myParticipantId &&
+          row.collector_participant_id === myParticipantId &&
+          !row.confirmed
+      )
+    : []
+  const pendingExtraCollectorCount = extraIncomingForViewer.length
+  const pendingExtraOutgoingCount = extraOutgoingForViewer.length
+  const pendingExtraSelfMarkCount = extraSelfMarkRowsForViewer.length
   const pendingPaymentsCountWithExtras =
-    pendingPaymentsCount + pendingExtraCollectorCount + pendingExtraOutgoingCount
+    pendingPaymentsCount + pendingExtraCollectorCount + pendingExtraOutgoingCount + pendingExtraSelfMarkCount
   const totalCentsWithExtras = totalCents + extraTargetCents
   const collectedCentsWithExtras = collectedCentsDisplay + extraCollectedCents
+  const collectedCentsWithExtrasClamped =
+    totalCentsWithExtras > 0 ? Math.min(collectedCentsWithExtras, totalCentsWithExtras) : collectedCentsWithExtras
+  const paymentsProgressPercent =
+    totalCentsWithExtras > 0
+      ? Math.min(100, Math.round((collectedCentsWithExtrasClamped / totalCentsWithExtras) * 100))
+      : 0
+  const settledPercent =
+    participantsCount > 0 ? Math.min(100, Math.round((effectivePaidCount / participantsCount) * 100)) : 0
+  const hasLatePaymentSummaries = lateIncomingPendingCents > 0 || lateOutgoingPendingCents > 0
+  const lateSummariesGridCols =
+    lateIncomingPendingCents > 0 && lateOutgoingPendingCents > 0 ? 'md:grid-cols-2' : 'md:grid-cols-1'
   
   // Get collector options from payment_options (project-specific)
   let collectorPaymentOptions =
@@ -1111,7 +1172,7 @@ export default async function ProjectPage({
 
   return (
     <main className="p-6 max-w-4xl mx-auto space-y-6">
-      <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.14),transparent_45%),linear-gradient(to_bottom,#ffffff,#f8fafc)] p-5 md:p-7">
+      <section className="relative rounded-3xl border border-slate-200 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.14),transparent_45%),linear-gradient(to_bottom,#ffffff,#f8fafc)] p-5 md:p-7">
         <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0 space-y-3">
             <div>
@@ -1123,13 +1184,27 @@ export default async function ProjectPage({
             {project.description && (
               <div className="max-w-2xl text-sm text-slate-600 md:text-base">{project.description}</div>
             )}
-            {(eventStartLocale || eventEndLocale) && (
-              <div className="inline-flex max-w-full items-center rounded-full border border-slate-200 bg-white/85 px-3 py-1 text-sm text-slate-700">
-                {eventStartLocale && eventEndLocale
-                  ? `Event window: ${eventStartLocale} - ${eventEndLocale}`
-                  : eventStartLocale
-                    ? `Event starts: ${eventStartLocale}`
-                    : `Event ends: ${eventEndLocale}`}
+            {(eventStartLocale || eventEndLocale || hasEventLocation) && (
+              <div className="flex flex-wrap items-center gap-2">
+                {(eventStartLocale || eventEndLocale) && (
+                  <div className="inline-flex max-w-full items-center rounded-full border border-slate-200 bg-white/85 px-3 py-1 text-sm text-slate-700">
+                    {eventStartLocale && eventEndLocale
+                      ? `Event window: ${eventStartLocale} - ${eventEndLocale}`
+                      : eventStartLocale
+                        ? `Event starts: ${eventStartLocale}`
+                        : `Event ends: ${eventEndLocale}`}
+                  </div>
+                )}
+
+                {hasEventLocation && (
+                  <LocationLinkMenu
+                    label={eventLocationTitle}
+                    address={eventLocationAddress}
+                    googleMapsUrl={googleMapsUrl}
+                    wazeUrl={wazeUrl}
+                    appleMapsUrl={appleMapsUrl}
+                  />
+                )}
               </div>
             )}
           </div>
@@ -1242,49 +1317,97 @@ export default async function ProjectPage({
             </div>
           ),
           payments: showPaymentsTab ? (
-            <div className="space-y-4">
-              <section className="border rounded-xl p-4 space-y-2">
-                <h2 className="text-lg font-semibold">Balances</h2>
-                <div
-                  className={`grid gap-3 ${
-                    lateIncomingPendingCents > 0 || lateOutgoingPendingCents > 0
-                      ? 'md:grid-cols-3'
-                      : 'md:grid-cols-2'
-                  }`}
-                >
-                  <div className="border rounded-lg p-3 text-sm space-y-1">
-                    <div className="text-xs uppercase opacity-60">Funds</div>
-                    <div className="font-medium">
-                      {`Collected ${formatEuro(collectedCentsWithExtras)} out of ${formatEuro(totalCentsWithExtras)}`}
+            <div className="space-y-6">
+              <section className="rounded-2xl border border-slate-200/80 bg-gradient-to-br from-white to-slate-100 p-5 shadow-sm md:p-6">
+                <div className="space-y-5">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-500/20 text-2xl font-semibold leading-none text-teal-700">
+                      $
                     </div>
-                    {extraTargetCents > 0 && (
-                      <div className="text-xs text-slate-500">
-                        {`Base ${formatEuro(collectedCentsDisplay)}/${formatEuro(totalCents)} • Extras ${formatEuro(extraCollectedCents)}/${formatEuro(extraTargetCents)}`}
+                    <div className="space-y-0.5">
+                      <h2 className="text-2xl font-semibold text-slate-900">Payment Progress</h2>
+                      <p className="text-sm text-slate-600">Track balances and settle transfers quickly.</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 md:p-5">
+                    <div className="flex flex-wrap items-end gap-2">
+                      <div className="text-3xl font-semibold leading-none text-slate-900">
+                        {formatEuro(collectedCentsWithExtrasClamped)} / {formatEuro(totalCentsWithExtras)}
                       </div>
-                    )}
-                  </div>
-                  <div className="border rounded-lg p-3 text-sm space-y-1">
-                    <div className="text-xs uppercase opacity-60">SETTLED</div>
-                    <div className="font-medium">
-                      {`Settled ${effectivePaidCount} out of ${participantsCount}`}
+                      <div className="pb-0.5 text-sm text-slate-600 md:text-base">collected</div>
+                    </div>
+                    <div className="mt-3 flex items-center gap-3">
+                      <div className="h-3 flex-1 overflow-hidden rounded-full bg-slate-200">
+                        <div
+                          className="h-full rounded-full bg-slate-600 transition-all"
+                          style={{ width: `${paymentsProgressPercent}%` }}
+                        />
+                      </div>
+                      <div className="w-12 text-right text-3xl font-medium leading-none text-slate-700">
+                        {paymentsProgressPercent}%
+                      </div>
+                    </div>
+                    <div className="mt-4 space-y-2.5">
+                      <div className="text-sm text-slate-700">
+                        Base: {formatEuro(collectedCentsDisplay)} / {formatEuro(totalCents)}
+                      </div>
+                      {extraTargetCents > 0 && (
+                        <div className="text-sm text-slate-700">
+                          Extras: {formatEuro(extraCollectedCents)} / {formatEuro(extraTargetCents)}
+                        </div>
+                      )}
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between text-sm text-slate-700">
+                          <span>Settled participants</span>
+                          <span className="font-medium text-slate-900">
+                            {effectivePaidCount} / {participantsCount}
+                          </span>
+                        </div>
+                        <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200">
+                          <div className="h-full rounded-full bg-teal-500/70" style={{ width: `${settledPercent}%` }} />
+                        </div>
+                      </div>
+
+                      {viewerIsCollector && collectorId && myParticipantId === collectorId && collectorIsCountedPaid && (
+                        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                          <div className="text-sm font-medium text-emerald-700">Your base share is marked as paid.</div>
+                        </div>
+                      )}
                     </div>
                   </div>
-                  {lateIncomingPendingCents > 0 && (
-                    <div className="border rounded-lg p-3 text-sm space-y-1">
-                      <div className="text-xs uppercase opacity-60">Late joiner due</div>
-                      <div className="font-medium">{formatEuro(lateIncomingPendingCents)}</div>
-                    </div>
-                  )}
-                  {lateOutgoingPendingCents > 0 && (
-                    <div className="border rounded-lg p-3 text-sm space-y-1">
-                      <div className="text-xs uppercase opacity-60">Late payments due</div>
-                      <div className="font-medium">{formatEuro(lateOutgoingPendingCents)}</div>
+
+                  {hasLatePaymentSummaries && (
+                    <div className={`grid grid-cols-1 gap-3 ${lateSummariesGridCols}`}>
+                      {lateIncomingPendingCents > 0 && (
+                        <div className="rounded-2xl border border-amber-200 bg-amber-50/90 p-4">
+                          <div className="text-[11px] uppercase tracking-wide text-amber-800">Late joiner due</div>
+                          <div className="mt-2 text-3xl font-semibold leading-none text-amber-950">
+                            {formatEuro(lateIncomingPendingCents)}
+                          </div>
+                          <div className="mt-1 text-sm text-amber-900/80">awaiting your confirmation</div>
+                        </div>
+                      )}
+                      {lateOutgoingPendingCents > 0 && (
+                        <div className="rounded-2xl border border-amber-200 bg-amber-50/90 p-4">
+                          <div className="text-[11px] uppercase tracking-wide text-amber-800">Late payments due</div>
+                          <div className="mt-2 text-3xl font-semibold leading-none text-amber-950">
+                            {formatEuro(lateOutgoingPendingCents)}
+                          </div>
+                          <div className="mt-1 text-sm text-amber-900/80">remaining from your side</div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
               </section>
-              <section className="border rounded-xl p-4 space-y-3">
-                <div className="font-medium">Incoming transfers</div>
+
+              <section className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm md:p-5">
+                <div className="space-y-0.5">
+                  <h3 className="text-base font-semibold text-slate-900">Incoming transfers</h3>
+                  <p className="text-sm text-slate-600">Confirm payments people have sent to you.</p>
+                </div>
+
                 {(() => {
                   const incomingLate = myParticipantId
                     ? lateTransfers.filter(t => t.to_participant_id === myParticipantId && !t.received_at)
@@ -1297,34 +1420,43 @@ export default async function ProjectPage({
                           baseParticipantIds.has(p.id)
                       )
                     : []
-                  const incomingExtra = viewerIsCollector ? extraIncomingForViewer : []
+                  const incomingExtra = myParticipantId ? extraIncomingForViewer : []
                   const hasAny = incomingStandard.length > 0 || incomingExtra.length > 0 || incomingLate.length > 0
                   if (!hasAny) {
-                    return <div className="text-sm opacity-70">No incoming transfers.</div>
+                    return (
+                      <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/80 p-4 text-sm text-slate-500">
+                        No incoming transfers.
+                      </div>
+                    )
                   }
                   return (
-                    <div className="divide-y">
+                    <div className="mt-3 space-y-2.5">
                       {incomingStandard.map(p => (
-                        <div key={p.id} className="flex items-center justify-between py-2 text-sm">
-                          <div className="flex items-center gap-2">
-                            <span>
-                              {participantName(p)} {formatEuro(perPersonCentsAtFinalize)}
-                            </span>
-                            {pendingSignalsSet.has(p.id) && (
-                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-300 text-amber-900">
-                                Reported paid
+                        <div key={p.id} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-medium text-slate-900">
+                                {participantName(p)} {formatEuro(perPersonCentsAtFinalize)}
                               </span>
+                              {pendingSignalsSet.has(p.id) && (
+                                <span className="rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+                                  Reported paid
+                                </span>
+                              )}
+                            </div>
+                            {!minParticipantsReached ? (
+                              <span className="text-xs text-slate-500">Waiting for minimum participants</span>
+                            ) : (
+                              <form action={markReceived.bind(null, p.id)}>
+                                <button
+                                  className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                                  type="submit"
+                                >
+                                  {pendingSignalsSet.has(p.id) ? 'Confirm received' : 'Mark received'}
+                                </button>
+                              </form>
                             )}
                           </div>
-                          {!minParticipantsReached ? (
-                            <span className="text-xs opacity-70">Waiting for minimum participants</span>
-                          ) : (
-                            <form action={markReceived.bind(null, p.id)}>
-                              <button className="px-3 py-1.5 rounded border text-xs" type="submit">
-                                {pendingSignalsSet.has(p.id) ? 'Confirm received' : 'Mark received'}
-                              </button>
-                            </form>
-                          )}
                         </div>
                       ))}
                       {incomingExtra.map(row => {
@@ -1332,36 +1464,44 @@ export default async function ProjectPage({
                         const payerName = payer ? participantName(payer) : 'Participant'
                         const awaiting = row.reported
                         return (
-                          <div key={`${row.extra_id}:${row.payer_participant_id}`} className="flex items-center justify-between py-2 text-sm">
-                            <div className="flex items-center gap-2">
-                              <span>
-                                {payerName} {formatEuro(row.amount_cents)}
-                              </span>
-                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
-                                {row.extra_title ? `Extra: ${row.extra_title}` : 'Extra'}
-                              </span>
-                              {awaiting && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-300 text-amber-900">
-                                  Reported paid
+                          <div
+                            key={`${row.extra_id}:${row.payer_participant_id}`}
+                            className="rounded-xl border border-slate-200 bg-slate-50/70 p-3"
+                          >
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium text-slate-900">
+                                  {payerName} {formatEuro(row.amount_cents)}
                                 </span>
-                              )}
-                              {!extraPaymentsAvailable && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700">
-                                  Tracking unavailable
+                                <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                                  {row.extra_title ? `Extra: ${row.extra_title}` : 'Extra'}
                                 </span>
+                                {awaiting && (
+                                  <span className="rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+                                    Reported paid
+                                  </span>
+                                )}
+                                {!extraPaymentsAvailable && (
+                                  <span className="rounded-full border border-red-300 bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-700">
+                                    Tracking unavailable
+                                  </span>
+                                )}
+                              </div>
+                              {!minParticipantsReached ? (
+                                <span className="text-xs text-slate-500">Waiting for minimum participants</span>
+                              ) : extraPaymentsAvailable ? (
+                                <form action={markExtraReceived.bind(null, row.extra_id, row.payer_participant_id)}>
+                                  <button
+                                    className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                                    type="submit"
+                                  >
+                                    {awaiting ? 'Confirm received' : 'Mark received'}
+                                  </button>
+                                </form>
+                              ) : (
+                                <span className="text-xs text-slate-500">Apply latest migration</span>
                               )}
                             </div>
-                            {!minParticipantsReached ? (
-                              <span className="text-xs opacity-70">Waiting for minimum participants</span>
-                            ) : extraPaymentsAvailable ? (
-                              <form action={markExtraReceived.bind(null, row.extra_id, row.payer_participant_id)}>
-                                <button className="px-3 py-1.5 rounded border text-xs" type="submit">
-                                  {awaiting ? 'Confirm received' : 'Mark received'}
-                                </button>
-                              </form>
-                            ) : (
-                              <span className="text-xs opacity-70">Apply latest migration</span>
-                            )}
                           </div>
                         )
                       })}
@@ -1370,22 +1510,27 @@ export default async function ProjectPage({
                         const senderName = sender ? participantName(sender) : 'Participant'
                         const awaiting = !!transfer.sender_marked_at && !transfer.received_at
                         return (
-                          <div key={transfer.id} className="flex items-center justify-between py-2 text-sm">
-                            <div className="flex items-center gap-2">
-                              <span>
-                                {senderName} {formatEuro(transfer.expected_cents)}
-                              </span>
-                              {awaiting && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-300 text-amber-900">
-                                  Reported paid
+                          <div key={transfer.id} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-medium text-slate-900">
+                                  {senderName} {formatEuro(transfer.expected_cents)}
                                 </span>
-                              )}
+                                {awaiting && (
+                                  <span className="rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+                                    Reported paid
+                                  </span>
+                                )}
+                              </div>
+                              <form action={confirmLateJoinReceipt.bind(null, transfer.id)}>
+                                <button
+                                  className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                                  type="submit"
+                                >
+                                  {awaiting ? 'Confirm received' : 'Mark received'}
+                                </button>
+                              </form>
                             </div>
-                            <form action={confirmLateJoinReceipt.bind(null, transfer.id)}>
-                              <button className="px-3 py-1.5 rounded border text-xs" type="submit">
-                                {awaiting ? 'Confirm received' : 'Mark received'}
-                              </button>
-                            </form>
                           </div>
                         )
                       })}
@@ -1393,29 +1538,43 @@ export default async function ProjectPage({
                   )
                 })()}
               </section>
-              <section className="border rounded-xl p-4 space-y-3">
-                <div className="font-medium">Outgoing transfers</div>
-                {!viewerIsCollector && myParticipantId && collectorId ? (
+
+              <section className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm md:p-5">
+                <div className="space-y-0.5">
+                  <h3 className="text-base font-semibold text-slate-900">Outgoing transfers</h3>
+                  <p className="text-sm text-slate-600">Complete and self-report transfers you still owe.</p>
+                </div>
+
+                {myParticipantId ? (
                   (() => {
                     const showLateOutgoing = isFinalized && lateOutgoingTransfers.length > 0
-                    const showBaseOutgoing = !isFinalized && !viewerPaid
+                    const showBaseOutgoing = !viewerIsCollector && !!collectorId && !isFinalized && !viewerPaid
+                    const showBaseSelfMark =
+                      viewerIsCollector && !!collectorId && myParticipantId === collectorId && !collectorIsCountedPaid
                     const showExtraOutgoing = extraOutgoingForViewer.length > 0
-                    if (!showLateOutgoing && !showBaseOutgoing && !showExtraOutgoing) {
-                      return <div className="text-sm opacity-70">No outgoing transfers.</div>
+                    const showExtraSelfMark = extraSelfMarkRowsForViewer.length > 0
+                    if (!showLateOutgoing && !showBaseOutgoing && !showBaseSelfMark && !showExtraOutgoing && !showExtraSelfMark) {
+                      return (
+                        <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/80 p-4 text-sm text-slate-500">
+                          No outgoing transfers.
+                        </div>
+                      )
                     }
                     return (
-                      <div className="space-y-3">
+                      <div className="mt-3 space-y-3">
                         {showLateOutgoing && (
-                          <LateOutgoingTransfers
-                            transfers={lateOutgoingTransfers}
-                            participants={participantsClean}
-                            allOptions={allOptionsEntries}
-                            viewerParticipantId={myParticipantId}
-                            projectCanceled={isAborted}
-                          />
+                          <div className="space-y-2">
+                            <LateOutgoingTransfers
+                              transfers={lateOutgoingTransfers}
+                              participants={participantsClean}
+                              allOptions={allOptionsEntries}
+                              viewerParticipantId={myParticipantId}
+                              projectCanceled={isAborted}
+                            />
+                          </div>
                         )}
-                        {showBaseOutgoing && (
-                          <div className="divide-y">
+                        {showBaseOutgoing && collectorId && (
+                          <div className="space-y-2">
                             <OutgoingTransfer
                               collectorName={collectorName}
                               amountLabel={formatEuro(perPersonCents)}
@@ -1428,8 +1587,47 @@ export default async function ProjectPage({
                             />
                           </div>
                         )}
+                        {showBaseSelfMark && (
+                          <div className="space-y-2">
+                            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-sm font-medium text-slate-900">
+                                    My base share {formatEuro(perPersonCents)}
+                                  </span>
+                                  <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                                    Base contribution
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <form action={markCollectorSelfPaid.bind(null, projectId)}>
+                                    <button
+                                      className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
+                                      type="submit"
+                                      disabled={!minParticipantsReached || isAborted || isFinalized}
+                                      title={
+                                        !minParticipantsReached
+                                          ? 'Waiting for minimum participants'
+                                          : isAborted
+                                            ? 'Payments are disabled for canceled projects'
+                                            : isFinalized
+                                              ? 'Payments are locked after finalization'
+                                              : undefined
+                                      }
+                                    >
+                                      Mark my share as paid
+                                    </button>
+                                  </form>
+                                  {!minParticipantsReached && (
+                                    <span className="text-xs text-slate-500">Waiting for minimum participants</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                         {showExtraOutgoing && (
-                          <div className="divide-y">
+                          <div className="space-y-2">
                             {extraOutgoingForViewer.map(row => {
                               const collectorParticipant = participantsById.get(row.collector_participant_id)
                               const collectorNameForRow = collectorParticipant ? participantName(collectorParticipant) : 'Collector'
@@ -1439,14 +1637,19 @@ export default async function ProjectPage({
                                 )
                               if (!extraPaymentsAvailable) {
                                 return (
-                                  <div key={`${row.extra_id}:${row.payer_participant_id}`} className="py-2 text-sm flex items-center justify-between gap-3">
+                                  <div
+                                    key={`${row.extra_id}:${row.payer_participant_id}`}
+                                    className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-sm"
+                                  >
                                     <div className="space-y-0.5">
-                                      <div>{collectorNameForRow} - {formatEuro(row.amount_cents)}</div>
-                                      <div className="text-xs text-slate-500">
+                                      <div className="font-medium text-slate-900">
+                                        {collectorNameForRow} - {formatEuro(row.amount_cents)}
+                                      </div>
+                                      <div className="text-xs text-slate-600">
                                         {row.extra_title ? `Extra: ${row.extra_title}` : 'Extra payment'}
                                       </div>
+                                      <div className="mt-2 text-xs text-slate-500">Apply latest migration</div>
                                     </div>
-                                    <span className="text-xs opacity-70">Apply latest migration</span>
                                   </div>
                                 )
                               }
@@ -1468,11 +1671,70 @@ export default async function ProjectPage({
                             })}
                           </div>
                         )}
+                        {showExtraSelfMark && (
+                          <div className="space-y-2">
+                            {extraSelfMarkRowsForViewer.map(row => {
+                              if (!extraPaymentsAvailable) {
+                                return (
+                                  <div
+                                    key={`${row.extra_id}:${row.payer_participant_id}`}
+                                    className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-sm"
+                                  >
+                                    <div className="space-y-0.5">
+                                      <div className="font-medium text-slate-900">My extra share - {formatEuro(row.amount_cents)}</div>
+                                      <div className="text-xs text-slate-600">
+                                        {row.extra_title ? `Extra: ${row.extra_title}` : 'Extra payment'}
+                                      </div>
+                                      <div className="mt-2 text-xs text-slate-500">Apply latest migration</div>
+                                    </div>
+                                  </div>
+                                )
+                              }
+                              return (
+                                <div
+                                  key={`${row.extra_id}:${row.payer_participant_id}`}
+                                  className="rounded-xl border border-slate-200 bg-slate-50/70 p-3"
+                                >
+                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="text-sm font-medium text-slate-900">
+                                        My extra share {formatEuro(row.amount_cents)}
+                                      </span>
+                                      <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                                        {row.extra_title ? `Extra: ${row.extra_title}` : 'Extra payment'}
+                                      </span>
+                                    </div>
+                                    {!minParticipantsReached ? (
+                                      <span className="text-xs text-slate-500">Waiting for minimum participants</span>
+                                    ) : (
+                                      <form
+                                        action={markExtraCollectorSelfPaid.bind(
+                                          null,
+                                          row.extra_id,
+                                          row.payer_participant_id
+                                        )}
+                                      >
+                                        <button
+                                          className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                                          type="submit"
+                                        >
+                                          Mark my share as paid
+                                        </button>
+                                      </form>
+                                    )}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
                       </div>
                     )
                   })()
                 ) : (
-                  <div className="text-sm opacity-70">No outgoing transfers.</div>
+                  <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/80 p-4 text-sm text-slate-500">
+                    No outgoing transfers.
+                  </div>
                 )}
               </section>
             </div>

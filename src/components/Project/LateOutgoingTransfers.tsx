@@ -57,7 +57,7 @@ const normalizeRevolutUrl = (raw: string) => {
   return null
 }
 
-const formatEuro = (cents: number) => `€${(cents / 100).toFixed(2)}`
+const formatEuro = (cents: number) => `\u20AC${(cents / 100).toFixed(2)}`
 
 export function LateOutgoingTransfers({
   transfers,
@@ -142,38 +142,44 @@ export function LateOutgoingTransfers({
   }
 
   if (!viewerParticipantId || outgoingTransfers.length === 0) {
-    return <div className="text-sm opacity-70">No outgoing transfers.</div>
+    return (
+      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/80 p-4 text-sm text-slate-500">
+        No outgoing transfers.
+      </div>
+    )
   }
 
   return (
     <>
-      <div className="divide-y">
+      <div className="space-y-2.5">
         {outgoingTransfers.map(transfer => {
           const recipient = participantsById.get(transfer.to_participant_id)
           const recipientName = recipient ? displayName(recipient) : 'Participant'
           const awaiting = !!transfer.sender_marked_at && !transfer.received_at
           return (
-            <div key={transfer.id} className="flex items-center justify-between py-2 text-sm">
-              <div className="flex items-center gap-2">
-                <span>
-                  {recipientName} {formatEuro(transfer.expected_cents)}
-                </span>
-                {awaiting && (
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-300 text-amber-900">
-                    Awaiting confirmation
+            <div key={transfer.id} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-slate-900">
+                    {recipientName} {formatEuro(transfer.expected_cents)}
                   </span>
-                )}
+                  {awaiting && (
+                    <span className="rounded-full border border-amber-300 bg-amber-100 px-2 py-1 text-[10px] font-medium text-amber-800">
+                      Awaiting confirmation
+                    </span>
+                  )}
+                </div>
+                {!awaiting ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 disabled:opacity-50"
+                    disabled={projectCanceled}
+                    onClick={() => setOpenTransferId(transfer.id)}
+                  >
+                    Pay
+                  </button>
+                ) : null}
               </div>
-              {!awaiting ? (
-                <button
-                  type="button"
-                  className="px-3 py-1.5 rounded border text-xs disabled:opacity-50"
-                  disabled={projectCanceled}
-                  onClick={() => setOpenTransferId(transfer.id)}
-                >
-                  Pay
-                </button>
-              ) : null}
             </div>
           )
         })}
@@ -192,11 +198,15 @@ export function LateOutgoingTransfers({
             role="dialog"
             aria-modal="true"
             aria-label={`Pay ${modalRecipient ? displayName(modalRecipient) : 'participant'}`}
-            className="relative w-full max-w-md rounded-lg bg-white shadow-lg border flex flex-col max-h-[90vh]"
+            className="relative flex max-h-[90vh] w-full max-w-md flex-col rounded-2xl border border-slate-200 bg-white shadow-lg"
           >
-            <div className="px-4 py-3 border-b font-medium flex items-center justify-between">
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 font-medium">
               <span>Pay {modalRecipient ? displayName(modalRecipient) : 'participant'}</span>
-              <button type="button" className="text-sm px-2 py-1 rounded border" onClick={() => setOpenTransferId(null)}>
+              <button
+                type="button"
+                className="rounded-md border border-slate-300 px-2 py-1 text-sm text-slate-700 transition-colors hover:bg-slate-100"
+                onClick={() => setOpenTransferId(null)}
+              >
                 Close
               </button>
             </div>
@@ -211,7 +221,7 @@ export function LateOutgoingTransfers({
                     <button
                       key={idx}
                       type="button"
-                      className="w-full text-left px-3 py-2 rounded border hover:bg-black/5"
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-left transition-colors hover:bg-slate-50"
                       title={opt.type === 'iban' ? 'Copy IBAN' : 'Open link'}
                       onClick={() => handlePaymentOption({ value: opt.value, type: opt.type })}
                     >
@@ -224,7 +234,7 @@ export function LateOutgoingTransfers({
             <div className="px-4 py-3 border-t flex flex-col gap-2 sm:flex-row sm:items-center">
               <button
                 type="button"
-                className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50 w-full sm:w-auto"
+                className="w-full rounded-md bg-slate-900 px-3 py-1.5 text-white transition-colors hover:bg-slate-700 disabled:opacity-50 sm:w-auto"
                 disabled={pending}
                 onClick={() => {
                   startTransition(async () => {
@@ -235,7 +245,11 @@ export function LateOutgoingTransfers({
               >
                 {pending ? 'Saving...' : `I've paid ${formatEuro(modalTransfer.expected_cents)}`}
               </button>
-              <button type="button" className="px-3 py-1.5 rounded border" onClick={() => setOpenTransferId(null)}>
+              <button
+                type="button"
+                className="rounded-md border border-slate-300 px-3 py-1.5 text-slate-700 transition-colors hover:bg-slate-100"
+                onClick={() => setOpenTransferId(null)}
+              >
                 Close
               </button>
             </div>

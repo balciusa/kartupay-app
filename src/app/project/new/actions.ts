@@ -18,6 +18,11 @@ const schema = z.object({
   event_start_time: z.string().optional().nullable(),
   event_end_date: z.string().optional().nullable(),
   event_end_time: z.string().optional().nullable(),
+  event_location_label: z.string().optional().nullable(),
+  event_location_address: z.string().optional().nullable(),
+  event_location_place_id: z.string().optional().nullable(),
+  event_location_lat: z.string().optional().nullable(),
+  event_location_lng: z.string().optional().nullable(),
 })
 
 const parseEventDateTime = (
@@ -46,17 +51,25 @@ export async function createProject(formData: FormData) {
     throw new Error('You must be signed in')
   }
 
+  const minParticipantsValue = formData.get('min_participants')
+  const maxParticipantsValue = formData.get('max_participants')
+
   const payload = {
     title: formData.get('title') as string,
     description: (formData.get('description') as string) || null,
     totalEur: (formData.get('totalEur') as string) ?? '',
     total_is_per_person: (formData.get('total_is_per_person') as string) ?? 'false',
-    min_participants: formData.get('min_participants') as any,
-    max_participants: formData.get('max_participants') as any,
+    min_participants: typeof minParticipantsValue === 'string' ? minParticipantsValue : null,
+    max_participants: typeof maxParticipantsValue === 'string' ? maxParticipantsValue : null,
     event_start_date: (formData.get('event_start_date') as string) ?? null,
     event_start_time: (formData.get('event_start_time') as string) ?? null,
     event_end_date: (formData.get('event_end_date') as string) ?? null,
     event_end_time: (formData.get('event_end_time') as string) ?? null,
+    event_location_label: (formData.get('event_location_label') as string) ?? null,
+    event_location_address: (formData.get('event_location_address') as string) ?? null,
+    event_location_place_id: (formData.get('event_location_place_id') as string) ?? null,
+    event_location_lat: (formData.get('event_location_lat') as string) ?? null,
+    event_location_lng: (formData.get('event_location_lng') as string) ?? null,
   }
 
   const parsed = schema.safeParse(payload)
@@ -75,6 +88,11 @@ export async function createProject(formData: FormData) {
     event_start_time,
     event_end_date,
     event_end_time,
+    event_location_label,
+    event_location_address,
+    event_location_place_id,
+    event_location_lat,
+    event_location_lng,
   } = parsed.data
 
   const minRaw = String(min_participants ?? '').trim()
@@ -105,6 +123,33 @@ export async function createProject(formData: FormData) {
     throw new Error('Event end must be after event start')
   }
 
+  const locationLabel = (event_location_label ?? '').trim() || null
+  const locationAddress = (event_location_address ?? '').trim() || null
+  const locationPlaceId = (event_location_place_id ?? '').trim() || null
+  const locationLatRaw = (event_location_lat ?? '').trim()
+  const locationLngRaw = (event_location_lng ?? '').trim()
+  const hasLocationLat = locationLatRaw.length > 0
+  const hasLocationLng = locationLngRaw.length > 0
+  if (hasLocationLat !== hasLocationLng) {
+    throw new Error('Location coordinates must include both latitude and longitude')
+  }
+  const parseCoordinate = (value: string, axis: 'latitude' | 'longitude') => {
+    if (!value) return null
+    const parsedNumber = Number(value)
+    if (!Number.isFinite(parsedNumber)) {
+      throw new Error(`Invalid location ${axis}`)
+    }
+    if (axis === 'latitude' && (parsedNumber < -90 || parsedNumber > 90)) {
+      throw new Error('Location latitude must be between -90 and 90')
+    }
+    if (axis === 'longitude' && (parsedNumber < -180 || parsedNumber > 180)) {
+      throw new Error('Location longitude must be between -180 and 180')
+    }
+    return parsedNumber
+  }
+  const locationLat = parseCoordinate(locationLatRaw, 'latitude')
+  const locationLng = parseCoordinate(locationLngRaw, 'longitude')
+
   const { data: proj, error: pErr } = await supabaseAdmin
     .from('projects')
     .insert({
@@ -116,6 +161,11 @@ export async function createProject(formData: FormData) {
       max_participants: maxParticipants,
       event_start_at: eventStartAt,
       event_end_at: eventEndAt,
+      event_location_label: locationLabel,
+      event_location_address: locationAddress,
+      event_location_place_id: locationPlaceId,
+      event_location_lat: locationLat,
+      event_location_lng: locationLng,
       status: 'collecting',
     })
     .select('id')

@@ -28,7 +28,7 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
   const { data: project } = await supabase
     .from('projects')
     .select(
-      'id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at'
+      'id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at, event_location_label, event_location_address, event_location_lat, event_location_lng, event_location_place_id'
     )
     .eq('id', projectId)
     .single()
@@ -63,6 +63,11 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
             eventStartTime: startTimeValue,
             eventEndDate: toLocalDateInput(project.event_end_at),
             eventEndTime: endTimeValue,
+            eventLocationLabel: (project.event_location_label as string | null) ?? '',
+            eventLocationAddress: (project.event_location_address as string | null) ?? '',
+            eventLocationLat: project.event_location_lat == null ? '' : String(project.event_location_lat),
+            eventLocationLng: project.event_location_lng == null ? '' : String(project.event_location_lng),
+            eventLocationPlaceId: (project.event_location_place_id as string | null) ?? '',
           }}
         />
       </section>

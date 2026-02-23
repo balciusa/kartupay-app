@@ -1286,6 +1286,98 @@ export async function markReceived(participantId: string) {
   revalidatePath(`/project/${participant.project_id}`)
 }
 
+/**
+ * Collector can explicitly mark their own payment as counted.
+ * Used to keep funding progress at 0% on new projects until collector confirms.
+ */
+export async function markCollectorSelfPaid(projectId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+
+  const manager = await requireActiveManager(projectId, uid)
+  const actor = await getActiveParticipantContext(projectId, uid)
+
+  const { data: project, error: projectErr } = await supabaseAdmin
+    .from('projects')
+    .select('id, collector_participant_id, min_participants, status, canceled_at, aborted_at')
+    .eq('id', projectId)
+    .single()
+  if (projectErr || !project) throw projectErr || new Error('Project not found')
+
+  if (!project.collector_participant_id || manager.id !== project.collector_participant_id) {
+    throw new Error('Only the collector can mark this payment')
+  }
+
+  const status = String(project.status ?? '').toLowerCase()
+  if (status !== 'collecting' || project.canceled_at || project.aborted_at) {
+    throw new Error('Payments are not editable for this project status')
+  }
+
+  const { count: activeParticipantsCount, error: countErr } = await supabaseAdmin
+    .from('participants')
+    .select('id', { count: 'exact', head: true })
+    .eq('project_id', projectId)
+    .is('left_at', null)
+  if (countErr) throw countErr
+
+  const minParticipants = Number(project.min_participants ?? 0)
+  if (minParticipants > 0 && (activeParticipantsCount ?? 0) < minParticipants) {
+    throw new Error('Waiting for minimum participants')
+  }
+
+  const { data: existingCounted, error: existingErr } = await supabaseAdmin
+    .from('payments')
+    .select('id')
+    .eq('participant_id', project.collector_participant_id)
+    .eq('is_counted', true)
+    .limit(1)
+  if (existingErr) throw existingErr
+  if ((existingCounted?.length ?? 0) > 0) {
+    revalidatePath(`/project/${projectId}`)
+    return
+  }
+
+  const { data: paymentRow, error: paymentErr } = await supabaseAdmin
+    .from('payments')
+    .insert({ participant_id: project.collector_participant_id, is_counted: true })
+    .select('id')
+    .single()
+  if (paymentErr) throw paymentErr
+
+  await recordProjectActivity({
+    projectId,
+    entryType: 'payment_confirmed',
+    actorUserId: actor.actorUserId,
+    actorParticipantId: actor.actorParticipantId,
+    targetUserId: uid,
+    targetParticipantId: project.collector_participant_id,
+    paymentId: paymentRow?.id ?? null,
+    metadata: {
+      is_counted: true,
+      source: 'collector_self_marked',
+    },
+  })
+
+  const { error: clrErr } = await supabaseAdmin
+    .from('payment_signals')
+    .update({ cleared_at: new Date().toISOString() })
+    .eq('participant_id', project.collector_participant_id)
+    .is('cleared_at', null)
+  if (clrErr) {
+    const code = typeof clrErr === 'object' && clrErr !== null && 'code' in clrErr
+      ? (clrErr as { code?: string }).code
+      : undefined
+    const isMissingTable = code === '42P01' || clrErr.message?.toLowerCase()?.includes('payment_signals')
+    if (!isMissingTable) {
+      console.error('[markCollectorSelfPaid] Error clearing payment signals:', clrErr)
+    }
+  }
+
+  revalidatePath(`/project/${projectId}`)
+}
+
 export async function selfReportExtraPaid(extraId: string, payerParticipantId: string) {
   'use server'
   const uid = await getCurrentUserId()
@@ -1359,6 +1451,94 @@ export async function selfReportExtraPaid(extraId: string, payerParticipantId: s
       amount_cents: due.amountCents,
       collector_participant_id: due.collectorParticipantId,
       title: due.extraTitle,
+    },
+  })
+
+  revalidatePath(`/project/${due.projectId}`)
+}
+
+export async function markExtraCollectorSelfPaid(extraId: string, payerParticipantId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!extraId || !payerParticipantId) throw new Error('Missing ids')
+
+  const due = await resolveExtraDueForParticipant(extraId, payerParticipantId)
+  if (due.payerUserId !== uid) throw new Error('Not your participant entry')
+  if (due.collectorParticipantId !== due.payerParticipantId) {
+    throw new Error('This extra requires a transfer to another collector')
+  }
+  if (!due.minParticipantsReached) {
+    throw new Error('Waiting for minimum participants')
+  }
+
+  const me = await requireActiveProjectParticipant(due.projectId, uid)
+  if (me.id !== due.collectorParticipantId || me.id !== due.payerParticipantId) {
+    throw new Error('Only this extra collector can mark payment')
+  }
+
+  const nowIso = new Date().toISOString()
+  const { data: existing, error: existingErr } = await supabaseAdmin
+    .from('extra_payments')
+    .select('id, reported_at, confirmed_at')
+    .eq('extra_id', extraId)
+    .eq('payer_participant_id', payerParticipantId)
+    .maybeSingle()
+  if (existingErr) {
+    if (missingTable(existingErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
+    throw new Error(existingErr.message ?? 'Failed to load extra payment')
+  }
+  if (existing?.confirmed_at) {
+    revalidatePath(`/project/${due.projectId}`)
+    return
+  }
+
+  if (existing?.id) {
+    const { error: updateErr } = await supabaseAdmin
+      .from('extra_payments')
+      .update({
+        collector_participant_id: due.collectorParticipantId,
+        amount_cents: due.amountCents,
+        reported_at: existing.reported_at ?? null,
+        confirmed_at: nowIso,
+        confirmed_by_participant_id: me.id,
+      })
+      .eq('id', existing.id)
+    if (updateErr) {
+      if (missingTable(updateErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
+      throw new Error(updateErr.message ?? 'Failed to mark extra as paid')
+    }
+  } else {
+    const { error: insertErr } = await supabaseAdmin
+      .from('extra_payments')
+      .insert({
+        extra_id: extraId,
+        payer_participant_id: payerParticipantId,
+        collector_participant_id: due.collectorParticipantId,
+        amount_cents: due.amountCents,
+        confirmed_at: nowIso,
+        confirmed_by_participant_id: me.id,
+      })
+    if (insertErr) {
+      if (missingTable(insertErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
+      throw new Error(insertErr.message ?? 'Failed to mark extra as paid')
+    }
+  }
+
+  await recordProjectActivity({
+    projectId: due.projectId,
+    entryType: 'payment_confirmed',
+    actorUserId: uid,
+    actorParticipantId: me.id,
+    targetUserId: due.payerUserId ?? uid,
+    targetParticipantId: due.payerParticipantId,
+    extraId,
+    metadata: {
+      scope: 'extra',
+      amount_cents: due.amountCents,
+      collector_participant_id: due.collectorParticipantId,
+      title: due.extraTitle,
+      source: 'collector_self_marked',
     },
   })
 
@@ -2285,7 +2465,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   const { data: project, error: projectErr } = await supabaseAdmin
     .from('projects')
     .select(
-      'id, collector_participant_id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at'
+      'id, collector_participant_id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at, event_location_label, event_location_address, event_location_lat, event_location_lng, event_location_place_id'
     )
     .eq('id', projectId)
     .single()
@@ -2316,6 +2496,11 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   const eventStartTime = (formData.get('event_start_time') as string) ?? null
   const eventEndDate = (formData.get('event_end_date') as string) ?? null
   const eventEndTime = (formData.get('event_end_time') as string) ?? null
+  const eventLocationLabelRaw = String(formData.get('event_location_label') ?? '').trim()
+  const eventLocationAddressRaw = String(formData.get('event_location_address') ?? '').trim()
+  const eventLocationPlaceIdRaw = String(formData.get('event_location_place_id') ?? '').trim()
+  const eventLocationLatRaw = String(formData.get('event_location_lat') ?? '').trim()
+  const eventLocationLngRaw = String(formData.get('event_location_lng') ?? '').trim()
   if (!title) throw new Error('Title is required')
 
   const normalizedAmount = totalEur.replace(',', '.').trim()
@@ -2401,6 +2586,31 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     throw new Error('Event end must be after event start')
   }
 
+  const hasEventLocationLat = eventLocationLatRaw.length > 0
+  const hasEventLocationLng = eventLocationLngRaw.length > 0
+  if (hasEventLocationLat !== hasEventLocationLng) {
+    throw new Error('Location coordinates must include both latitude and longitude')
+  }
+  const parseCoordinate = (value: string, axis: 'latitude' | 'longitude') => {
+    if (!value) return null
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`Invalid location ${axis}`)
+    }
+    if (axis === 'latitude' && (parsed < -90 || parsed > 90)) {
+      throw new Error('Location latitude must be between -90 and 90')
+    }
+    if (axis === 'longitude' && (parsed < -180 || parsed > 180)) {
+      throw new Error('Location longitude must be between -180 and 180')
+    }
+    return parsed
+  }
+  const eventLocationLat = parseCoordinate(eventLocationLatRaw, 'latitude')
+  const eventLocationLng = parseCoordinate(eventLocationLngRaw, 'longitude')
+  const eventLocationLabel = eventLocationLabelRaw || null
+  const eventLocationAddress = eventLocationAddressRaw || null
+  const eventLocationPlaceId = eventLocationPlaceIdRaw || null
+
   const { error } = await supabaseAdmin
     .from('projects')
     .update({
@@ -2412,10 +2622,25 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
       max_participants: maxParticipants,
       event_start_at: eventStartAt,
       event_end_at: eventEndAt,
+      event_location_label: eventLocationLabel,
+      event_location_address: eventLocationAddress,
+      event_location_lat: eventLocationLat,
+      event_location_lng: eventLocationLng,
+      event_location_place_id: eventLocationPlaceId,
     })
     .eq('id', projectId)
   if (error) throw error
 
+  const toNullableNumber = (value: unknown) => {
+    if (value === null || typeof value === 'undefined') return null
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  const equalNullableNumber = (a: number | null, b: number | null) => {
+    if (a === null && b === null) return true
+    if (a === null || b === null) return false
+    return Math.abs(a - b) < 1e-9
+  }
   const changedFields: string[] = []
   if ((project.title ?? null) !== title) changedFields.push('title')
   if ((project.description ?? null) !== description) changedFields.push('description')
@@ -2425,6 +2650,15 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   if ((project.max_participants ?? null) !== maxParticipants) changedFields.push('max_participants')
   if ((project.event_start_at ?? null) !== eventStartAt) changedFields.push('event_start_at')
   if ((project.event_end_at ?? null) !== eventEndAt) changedFields.push('event_end_at')
+  if ((project.event_location_label ?? null) !== eventLocationLabel) changedFields.push('event_location_label')
+  if ((project.event_location_address ?? null) !== eventLocationAddress) changedFields.push('event_location_address')
+  if (!equalNullableNumber(toNullableNumber(project.event_location_lat), eventLocationLat)) {
+    changedFields.push('event_location_lat')
+  }
+  if (!equalNullableNumber(toNullableNumber(project.event_location_lng), eventLocationLng)) {
+    changedFields.push('event_location_lng')
+  }
+  if ((project.event_location_place_id ?? null) !== eventLocationPlaceId) changedFields.push('event_location_place_id')
 
   await recordProjectActivity({
     projectId,
