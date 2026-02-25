@@ -1,4 +1,5 @@
 import { SummaryCards } from '@/components/Project/SummaryCards'
+import { PendingOverviewCards } from '@/components/Project/PendingOverviewCards'
 import { Participants } from '@/components/Project/Participants'
 import Chat from '@/components/Project/Chat'
 import Voting from '@/components/Project/Voting'
@@ -83,6 +84,40 @@ type ActivityLogRow = {
   metadata: Record<string, unknown> | null
 }
 
+type ProjectTabKey =
+  | 'overview'
+  | 'people'
+  | 'participants'
+  | 'payments'
+  | 'activity'
+  | 'profile'
+  | 'voting'
+  | 'extras'
+  | 'settings'
+  | 'admin'
+
+const getSingleQueryParam = (value: string | string[] | undefined) =>
+  Array.isArray(value) ? value[0] : value
+
+const resolveProjectTab = (value: string | undefined): ProjectTabKey => {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  switch (normalized) {
+    case 'people':
+    case 'participants':
+    case 'payments':
+    case 'activity':
+    case 'profile':
+    case 'voting':
+    case 'extras':
+    case 'settings':
+    case 'admin':
+      return normalized
+    case 'overview':
+    default:
+      return 'overview'
+  }
+}
+
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
 
@@ -123,15 +158,20 @@ export default async function ProjectPage({
   searchParams,
 }: {
   params: { id?: string } | Promise<{ id?: string }>
-  searchParams?: { id?: string | string[] } | Promise<{ id?: string | string[] }>
+  searchParams?:
+    | { id?: string | string[]; tab?: string | string[]; adminModal?: string | string[] }
+    | Promise<{ id?: string | string[]; tab?: string | string[]; adminModal?: string | string[] }>
 }) {
   const resolvedParams = await params
   const resolvedSearchParams = searchParams ? await searchParams : undefined
 
   const pathId = Array.isArray(resolvedParams?.id) ? resolvedParams?.id?.[0] : resolvedParams?.id
-  const queryId = resolvedSearchParams
-    ? (Array.isArray(resolvedSearchParams?.id) ? resolvedSearchParams?.id?.[0] : resolvedSearchParams?.id)
-    : undefined
+  const queryId = resolvedSearchParams ? getSingleQueryParam(resolvedSearchParams.id) : undefined
+  const queryTab = resolvedSearchParams ? getSingleQueryParam(resolvedSearchParams.tab) : undefined
+  const queryAdminModal = resolvedSearchParams ? getSingleQueryParam(resolvedSearchParams.adminModal) : undefined
+  const adminModalKey = String(queryAdminModal ?? '').trim().toLowerCase()
+  const defaultProjectTab = resolveProjectTab(queryTab)
+  const openRequestsOnLoad = defaultProjectTab === 'admin' && adminModalKey === 'requests'
   const projectId = pathId || queryId
 
   if (!projectId) {
@@ -221,6 +261,7 @@ export default async function ProjectPage({
     )
   }
 
+  const isPendingStatus = project.status === 'pending'
   const isCollectingStatus = project.status === 'collecting'
   const isClosedStatus = project.status === 'closed'
   const isCancelledStatus = project.status === 'cancelled' || project.status === 'canceled'
@@ -236,6 +277,12 @@ export default async function ProjectPage({
       return {
         label: 'Closed',
         className: 'border-slate-200 bg-slate-100 text-slate-700',
+      }
+    }
+    if (isPendingStatus) {
+      return {
+        label: 'Pending',
+        className: 'border-amber-200 bg-amber-100 text-amber-700',
       }
     }
     if (isCollectingStatus) {
@@ -613,7 +660,7 @@ export default async function ProjectPage({
     ? perPersonCents * Math.max(1, participantsCount)
     : storedTotalCents
   const participantsNow = participantsCount
-  const showPaymentsTab = participantsCount > 1
+  const showPaymentsTab = participantsCount > 1 && !isPendingStatus
   const viewerPaid = !!(myParticipantId && paidSet.has(myParticipantId))
   const viewerHasPendingSignal = !!(myParticipantId && pendingSignalsSet.has(myParticipantId))
   const viewerPaidCents = viewerPaid ? perPersonCents : 0
@@ -629,6 +676,12 @@ export default async function ProjectPage({
         plus1: Math.floor(totalCents / Math.max(1, participantsNow + 1)),
         plus2: Math.floor(totalCents / Math.max(1, participantsNow + 2))
       }
+  const minimumScenarioCents =
+    minParticipants && minParticipants > 0
+      ? totalIsPerPerson
+        ? perPersonCents
+        : Math.floor(totalCents / Math.max(1, minParticipants))
+      : scenarios.now
 
   const optionVoteCounts = new Map<string, number>()
   for (const vote of pollVotes ?? []) {
@@ -656,6 +709,14 @@ export default async function ProjectPage({
       options: optionsByPoll.get(poll.id) ?? [],
       created_by: poll.created_by ?? null,
     }))
+  const resolvedRequiredPollsCount = pollsForVotingBase.reduce((count, poll) => {
+    const requiredVotes = Math.max(1, Number(poll.required_votes ?? 1))
+    const highestVotes = (poll.options ?? []).reduce((maxVotes, option) => {
+      return Math.max(maxVotes, Number(option.votes ?? 0))
+    }, 0)
+    return highestVotes >= requiredVotes ? count + 1 : count
+  }, 0)
+  const unresolvedRequiredPollsCount = Math.max(0, pollsForVotingBase.length - resolvedRequiredPollsCount)
 
   // Find organizer
   const organizer = participantsClean.find(p => p.role === 'organizer')
@@ -930,6 +991,29 @@ export default async function ProjectPage({
       is_active: opt.is_active !== false,
     }))
   }
+
+  const collectorHasActivePaymentOptions = collectorPaymentOptions.length > 0
+  const hasEventWindow = !!(eventStartLocale || eventEndLocale)
+  const hasEventDetails = hasEventWindow || hasEventLocation
+  const participantTargetRatio =
+    minParticipants && minParticipants > 0
+      ? Math.max(0, Math.min(1, participantsNow / minParticipants))
+      : 1
+  const requiredPollResolutionRatio =
+    pollsForVotingBase.length > 0
+      ? Math.max(0, Math.min(1, resolvedRequiredPollsCount / pollsForVotingBase.length))
+      : 1
+  const readinessScore = Math.round(
+    participantTargetRatio * 45 +
+      (collectorHasActivePaymentOptions ? 30 : 0) +
+      requiredPollResolutionRatio * 15 +
+      (hasEventDetails ? 10 : 0)
+  )
+  const pendingRequestsCountForOverview = viewerIsCollector ? (pendingForOrganizer?.length ?? 0) : null
+  const pendingRequestsHref =
+    pendingRequestsCountForOverview && pendingRequestsCountForOverview > 0
+      ? `/project/${projectId}?tab=admin&adminModal=requests`
+      : null
   
   console.log('[ProjectPage] Manager check:', {
     myParticipantRole,
@@ -1239,41 +1323,67 @@ export default async function ProjectPage({
       )}
 
       <ProjectTabs
+        defaultTab={defaultProjectTab}
         counts={{
           participants: participantsCount,
           activity: unreadCount,
           adminPending: viewerIsCollector ? (pendingForOrganizer ?? []).length : 0,
-          paymentsPending: pendingPaymentsCountWithExtras || undefined,
+          paymentsPending: showPaymentsTab ? pendingPaymentsCountWithExtras || undefined : undefined,
         }}
         sections={{
           overview: (
             <div className="space-y-6">
-              <SummaryCards
-                totalCents={totalCents}
-                collectedCents={collectedCentsDisplay}
-                totalIsPerPerson={totalIsPerPerson}
-                minParticipants={project.min_participants as number | null}
-                maxParticipants={project.max_participants as number | null}
-                participantsNow={participantsNow}
-                scenarios={scenarios}
-                extrasSummary={
-                  extraTargetCents > 0
-                    ? {
-                        targetCents: extraTargetCents,
-                        collectedCents: extraCollectedCents,
-                        grandTotalTargetCents: extraGrandTotalTargetCents,
-                        grandTotalCollectedCents: extraGrandTotalCollectedCents,
-                        perPersonTargetCents: extraPerPersonTargetCents,
-                        perPersonCollectedCents: extraPerPersonCollectedCents,
-                      }
-                    : null
-                }
-                lateSummary={{
-                  joinersCount: lateJoinersCount,
-                  pendingCount: lateTransfersPendingCount,
-                  pendingCents: lateTransfersPendingCents,
-                }}
-              />
+              {isPendingStatus ? (
+                <PendingOverviewCards
+                  readinessScore={readinessScore}
+                  participantsNow={participantsNow}
+                  minParticipants={minParticipants}
+                  maxParticipants={maxParticipants}
+                  pendingRequestsCount={pendingRequestsCountForOverview}
+                  pendingRequestsHref={pendingRequestsHref}
+                  minParticipantsReached={minParticipantsReached}
+                  collectorPaymentOptionsCount={collectorPaymentOptions.length}
+                  pollCount={pollsForVotingBase.length}
+                  resolvedPollCount={resolvedRequiredPollsCount}
+                  unresolvedPollCount={unresolvedRequiredPollsCount}
+                  hasEventWindow={hasEventWindow}
+                  hasEventLocation={hasEventLocation}
+                  totalIsPerPerson={totalIsPerPerson}
+                  scenarios={{
+                    now: scenarios.now,
+                    atMinimum: minimumScenarioCents,
+                    plus1: scenarios.plus1,
+                    plus2: scenarios.plus2,
+                  }}
+                />
+              ) : (
+                <SummaryCards
+                  totalCents={totalCents}
+                  collectedCents={collectedCentsDisplay}
+                  totalIsPerPerson={totalIsPerPerson}
+                  minParticipants={project.min_participants as number | null}
+                  maxParticipants={project.max_participants as number | null}
+                  participantsNow={participantsNow}
+                  scenarios={scenarios}
+                  extrasSummary={
+                    extraTargetCents > 0
+                      ? {
+                          targetCents: extraTargetCents,
+                          collectedCents: extraCollectedCents,
+                          grandTotalTargetCents: extraGrandTotalTargetCents,
+                          grandTotalCollectedCents: extraGrandTotalCollectedCents,
+                          perPersonTargetCents: extraPerPersonTargetCents,
+                          perPersonCollectedCents: extraPerPersonCollectedCents,
+                        }
+                      : null
+                  }
+                  lateSummary={{
+                    joinersCount: lateJoinersCount,
+                    pendingCount: lateTransfersPendingCount,
+                    pendingCents: lateTransfersPendingCents,
+                  }}
+                />
+              )}
             </div>
           ),
           profile: <ProfileTab projectId={projectId} />,
@@ -1769,7 +1879,12 @@ export default async function ProjectPage({
               pendingCount={viewerIsCollector ? (pendingForOrganizer ?? []).length : 0}
               canManage={viewerIsCollector}
               canFinalize={isCollectingStatus && !isAborted}
+              canStartCollecting={isPendingStatus && !isAborted}
+              startCollectingBlockedReason={
+                isPendingStatus && !minParticipantsReached ? 'Waiting for minimum participants' : null
+              }
               canCancel={!isAborted && !isFinalized}
+              openRequestsOnMount={openRequestsOnLoad}
               activityItems={activityItems}
             />
           ) : null,

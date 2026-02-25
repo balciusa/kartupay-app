@@ -1,6 +1,6 @@
 'use client'
 
-import { ReactNode, useMemo, useState } from 'react'
+import { ReactNode, useEffect, useMemo, useState } from 'react'
 
 type TabKey =
   | 'overview'
@@ -47,6 +47,10 @@ export function ProjectTabs({
 }) {
   const [active, setActive] = useState<TabKey>(defaultTab)
   const [peopleSeen, setPeopleSeen] = useState(false)
+
+  useEffect(() => {
+    setActive(defaultTab)
+  }, [defaultTab])
 
   const peopleBadge = active === 'people' || peopleSeen ? counts?.participants : (counts?.activity ?? counts?.participants)
   const peopleBadgeStyle = active === 'people' || peopleSeen || !counts?.activity ? 'neutral' : 'solid'

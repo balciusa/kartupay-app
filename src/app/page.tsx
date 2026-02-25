@@ -31,7 +31,7 @@ export default async function Home({
   const statusFilter = (() => {
     const normalized = statusParam.trim().toLowerCase()
     if (normalized === 'cancelled') return 'canceled'
-    if (normalized === 'collecting' || normalized === 'closed' || normalized === 'canceled') {
+    if (normalized === 'pending' || normalized === 'collecting' || normalized === 'closed' || normalized === 'canceled') {
       return normalized
     }
     return ''
@@ -45,7 +45,9 @@ export default async function Home({
     query = query.ilike('title', `%${searchQuery}%`)
   }
 
-  if (statusFilter === 'collecting') {
+  if (statusFilter === 'pending') {
+    query = query.eq('status', 'pending')
+  } else if (statusFilter === 'collecting') {
     query = query.eq('status', 'collecting')
   } else if (statusFilter === 'closed') {
     query = query.eq('status', 'closed')
@@ -94,6 +96,10 @@ export default async function Home({
   }
 
   const statusStyles = {
+    pending: {
+      label: 'Pending',
+      className: 'border-amber-200 bg-amber-100 text-amber-700',
+    },
     collecting: {
       label: 'Collecting',
       className: 'border-emerald-200 bg-emerald-100 text-emerald-700',
@@ -118,6 +124,7 @@ export default async function Home({
   const getStatusKey = (status: string | null | undefined, canceledAt: string | null | undefined) => {
     const normalized = (status ?? '').toLowerCase()
     if (canceledAt || normalized === 'canceled' || normalized === 'cancelled') return 'canceled'
+    if (normalized === 'pending') return 'pending'
     if (normalized === 'closed') return 'closed'
     if (normalized === 'collecting') return 'collecting'
     return 'unknown'
@@ -130,6 +137,7 @@ export default async function Home({
       label: 'All',
       className: 'border-border bg-muted text-foreground',
     },
+    { key: 'pending', value: 'pending', ...statusStyles.pending },
     { key: 'collecting', value: 'collecting', ...statusStyles.collecting },
     { key: 'closed', value: 'closed', ...statusStyles.closed },
     { key: 'canceled', value: 'canceled', ...statusStyles.canceled },
