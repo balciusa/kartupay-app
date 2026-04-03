@@ -5,8 +5,6 @@ import { useRouter } from 'next/navigation'
 import { ActivityLogTab, type ActivityLogItem } from '@/components/Project/ActivityLogTab'
 import {
   abortProject,
-  finalizeProject,
-  startCollecting,
   approveJoinRequestFromForm,
   rejectJoinRequestFromForm,
   setCollector,
@@ -52,9 +50,6 @@ export function AdminPanel({
   pendingRequests,
   pendingCount,
   canManage,
-  canFinalize,
-  canStartCollecting,
-  startCollectingBlockedReason,
   canCancel,
   openRequestsOnMount = false,
   activityItems,
@@ -66,16 +61,12 @@ export function AdminPanel({
   pendingRequests: JoinRequest[]
   pendingCount: number
   canManage: boolean
-  canFinalize: boolean
-  canStartCollecting: boolean
-  startCollectingBlockedReason: string | null
   canCancel: boolean
   openRequestsOnMount?: boolean
   activityItems: ActivityLogItem[]
 }) {
   const [requestsOpen, setRequestsOpen] = useState(!!openRequestsOnMount)
   const [participantsOpen, setParticipantsOpen] = useState(false)
-  const [startCollectingOpen, setStartCollectingOpen] = useState(false)
   const [assigningCollector, startAssigningCollector] = useTransition()
   const [selectedCollectorId, setSelectedCollectorId] = useState<string | null>(collectorId)
   const router = useRouter()
@@ -159,7 +150,7 @@ export function AdminPanel({
   }, [participantsOpen])
   return (
     <section className="space-y-5">
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
         <div className="border rounded-xl p-5 md:p-6 space-y-4">
           <div className="space-y-1">
             <div className="text-lg font-semibold">Organize</div>
@@ -192,36 +183,11 @@ export function AdminPanel({
         </div>
         <div className="border rounded-xl p-5 md:p-6 space-y-4">
           <div className="space-y-1">
-            <div className="text-lg font-semibold">Project status</div>
+            <div className="text-lg font-semibold">Project controls</div>
             <div className="text-sm text-muted-foreground">
-              {canStartCollecting ? 'Start collecting when ready, then close or cancel when needed.' : 'Close or cancel when needed.'}
+              Use the flow above to advance project status. Cancellation stays here because it is destructive.
             </div>
           </div>
-          {canStartCollecting && (
-            <div className="space-y-1.5">
-              <button
-                type="button"
-                className="w-full px-4 py-2 rounded-full bg-black text-white text-sm disabled:opacity-50"
-                disabled={!canManage || !!startCollectingBlockedReason}
-                onClick={() => setStartCollectingOpen(true)}
-              >
-                Start collecting
-              </button>
-              {startCollectingBlockedReason && (
-                <div className="text-xs text-slate-500">{startCollectingBlockedReason}</div>
-              )}
-            </div>
-          )}
-          <form className="w-full">
-            <button
-              type="submit"
-              className="w-full px-4 py-2 rounded-full bg-black text-white text-sm disabled:opacity-50"
-              formAction={canManage && canFinalize ? finalizeProject.bind(null, projectId) : undefined}
-              disabled={!canManage || !canFinalize}
-            >
-                Close project
-              </button>
-          </form>
           <form className="w-full">
             <button
               type="submit"
@@ -237,61 +203,6 @@ export function AdminPanel({
       <section className="border rounded-xl p-5 md:p-6">
         <ActivityLogTab items={activityItems} />
       </section>
-      {startCollectingOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <button
-            type="button"
-            aria-label="Close start collecting modal"
-            className="absolute inset-0 bg-black/40"
-            onClick={() => setStartCollectingOpen(false)}
-          />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Start collecting confirmation"
-            className="relative w-full max-w-lg rounded-lg bg-white shadow-lg border"
-          >
-            <div className="px-4 py-3 border-b font-medium">Start collecting</div>
-            <div className="p-4 space-y-3 text-sm text-slate-700">
-              <p>
-                You are the collector for this project. Starting collection will move the project from
-                <span className="font-medium"> Pending </span>
-                to
-                <span className="font-medium"> Collecting</span>.
-              </p>
-              <p>
-                This action will automatically mark your
-                <span className="font-medium"> base share</span>
-                as paid.
-              </p>
-              <p>
-                It will also auto-mark your share as paid for any extras where you are both payer and collector.
-              </p>
-            </div>
-            <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
-              <button
-                type="button"
-                className="px-3 py-1.5 rounded border text-sm"
-                onClick={() => setStartCollectingOpen(false)}
-              >
-                Cancel
-              </button>
-              <form
-                action={canManage && !startCollectingBlockedReason ? startCollecting.bind(null, projectId) : undefined}
-                onSubmit={() => setStartCollectingOpen(false)}
-              >
-                <button
-                  type="submit"
-                  className="px-3 py-1.5 rounded bg-black text-white text-sm disabled:opacity-50"
-                  disabled={!canManage || !!startCollectingBlockedReason}
-                >
-                  Confirm and start
-                </button>
-              </form>
-            </div>
-          </div>
-        </div>
-      )}
       {participantsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <button

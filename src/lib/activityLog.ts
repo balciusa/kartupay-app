@@ -28,6 +28,11 @@ export const ACTIVITY_ENTRY_TYPES = [
   'extra_left',
   'extra_collector_changed',
   'extra_deleted',
+  'refund_requested',
+  'refund_approved',
+  'refund_rejected',
+  'refund_sent',
+  'refund_completed',
 ] as const
 
 export type ActivityEntryType = (typeof ACTIVITY_ENTRY_TYPES)[number]
@@ -62,6 +67,11 @@ const ACTIVITY_CATEGORY_BY_TYPE: Record<ActivityEntryType, ActivityCategory> = {
   extra_left: 'extras',
   extra_collector_changed: 'extras',
   extra_deleted: 'extras',
+  refund_requested: 'payments',
+  refund_approved: 'payments',
+  refund_rejected: 'payments',
+  refund_sent: 'payments',
+  refund_completed: 'payments',
 }
 
 export const getActivityCategory = (entryType: string): ActivityCategory => {

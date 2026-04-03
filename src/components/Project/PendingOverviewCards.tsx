@@ -8,18 +8,20 @@ function formatCurrency(cents: number) {
 type PendingOverviewCardsProps = {
   readinessScore: number
   participantsNow: number
+  participantsWithPaymentCount: number
+  participantsTotalCount: number
   minParticipants: number | null
   maxParticipants: number | null
   pendingRequestsCount: number | null
   pendingRequestsHref?: string | null
   minParticipantsReached: boolean
-  collectorPaymentOptionsCount: number
   pollCount: number
   resolvedPollCount: number
   unresolvedPollCount: number
   hasEventWindow: boolean
   hasEventLocation: boolean
   totalIsPerPerson: boolean
+  bundleLabel?: string | null
   scenarios: {
     now: number
     atMinimum: number
@@ -63,11 +65,14 @@ export function PendingOverviewCards(props: PendingOverviewCardsProps) {
 
   const recommendedChecks: CheckItem[] = [
     {
-      label: 'Collector payment method active',
-      hint: props.collectorPaymentOptionsCount > 0
-        ? `${props.collectorPaymentOptionsCount} active option(s)`
-        : 'Add at least one payment method',
-      ok: props.collectorPaymentOptionsCount > 0,
+      label: 'Payment methods configured',
+      hint:
+        props.participantsTotalCount > 0
+          ? `${props.participantsWithPaymentCount}/${props.participantsTotalCount} participants have an active payment method`
+          : 'No active participants',
+      ok:
+        props.participantsTotalCount === 0 ||
+        props.participantsWithPaymentCount >= props.participantsTotalCount,
     },
     {
       label: 'Required poll votes reached',
@@ -132,7 +137,7 @@ export function PendingOverviewCards(props: PendingOverviewCardsProps) {
 
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="text-sm text-slate-600">Participant funnel</div>
+            <div className="text-sm text-slate-600">Participants</div>
             <div className="mt-2 text-3xl font-semibold leading-none text-slate-900">{props.participantsNow}</div>
             <div className="mt-2 text-sm text-slate-600">
               Min: {minParticipants ?? 'none'} | Max: {maxParticipants ?? 'none'}
@@ -218,7 +223,9 @@ export function PendingOverviewCards(props: PendingOverviewCardsProps) {
             <div className="text-sm text-slate-600">Budget scenarios</div>
             <div className="mt-1 text-xs text-slate-500">
               {props.totalIsPerPerson
-                ? 'Per-person amount is fixed by project settings.'
+                ? props.bundleLabel
+                  ? `${props.bundleLabel}. Per-person share changes as the group crosses bundle thresholds.`
+                  : 'Per-person amount is fixed by project settings.'
                 : 'Per-person amount drops as more participants join.'}
             </div>
             <div className="mt-3 space-y-2">
@@ -226,6 +233,11 @@ export function PendingOverviewCards(props: PendingOverviewCardsProps) {
                 <div className="text-[11px] uppercase tracking-wide text-slate-500">Current</div>
                 <div className="text-lg font-semibold text-slate-900">{formatCurrency(props.scenarios.now)}</div>
               </div>
+              {props.bundleLabel && (
+                <div className="rounded-md border border-dashed border-slate-200 px-2.5 py-1.5 text-sm text-slate-600">
+                  {props.bundleLabel}
+                </div>
+              )}
               <div className="flex items-center justify-between rounded-md border border-slate-200 px-2.5 py-1.5 text-sm">
                 <span className="text-slate-600">{minimumScenarioLabel}</span>
                 <span className="font-semibold text-slate-900">{formatCurrency(props.scenarios.atMinimum)}</span>

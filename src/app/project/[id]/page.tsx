@@ -1,5 +1,6 @@
 import { SummaryCards } from '@/components/Project/SummaryCards'
 import { PendingOverviewCards } from '@/components/Project/PendingOverviewCards'
+import { PendingMemberOverview } from '@/components/Project/PendingMemberOverview'
 import { Participants } from '@/components/Project/Participants'
 import Chat from '@/components/Project/Chat'
 import Voting from '@/components/Project/Voting'
@@ -14,16 +15,23 @@ import { ProjectSettingsTab } from '@/components/Project/ProjectSettingsTab'
 import { LateOutgoingTransfers } from '@/components/Project/LateOutgoingTransfers'
 import { ExtrasTab } from '@/components/Project/ExtrasTab'
 import { LocationLinkMenu } from '@/components/Project/LocationLinkMenu'
+import { ProjectFlowBar } from '@/components/Project/ProjectFlowBar'
 import { getActivityCategory } from '@/lib/activityLog'
 import { buildExtraDueRows, extraDueKey } from '@/lib/extraPayments'
+import { calculateProjectPricing, describeBundlePricing } from '@/lib/projectPricing'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import {
+  approveParticipantRefund,
+  confirmParticipantRefundReceived,
   confirmLateJoinReceipt,
+  markParticipantRefundSent,
   markCollectorSelfPaid,
   markExtraCollectorSelfPaid,
   markExtraReceived,
   markReceived,
+  rejectParticipantRefund,
+  requestParticipantRefund,
   selfReportExtraPaid,
 } from './actions'
 
@@ -65,6 +73,36 @@ type ExtraPaymentRow = {
   amount_cents: number
   reported_at: string | null
   confirmed_at: string | null
+}
+
+type RefundRequestRow = {
+  id: string
+  project_id: string
+  participant_id: string
+  collector_participant_id: string
+  requested_by_participant_id: string
+  base_amount_cents: number
+  extras_amount_cents: number
+  total_amount_cents: number
+  status: string
+  requested_at: string
+  decided_at: string | null
+  decided_by_participant_id: string | null
+  collector_marked_sent_at: string | null
+  participant_confirmed_at: string | null
+  completed_at: string | null
+  rejection_reason: string | null
+  created_at: string
+  updated_at: string
+}
+
+type BaseItineraryItemRow = {
+  id: string
+  project_id: string
+  title: string
+  amount_cents: number
+  sort_order: number
+  created_at: string
 }
 
 type ActivityLogRow = {
@@ -194,6 +232,8 @@ export default async function ProjectPage({
     'closed_at',
     'aborted_at',
     'finalized_at',
+    'bundle_size',
+    'bundle_pay_for',
     'event_location_label',
     'event_location_address',
     'event_location_lat',
@@ -266,36 +306,6 @@ export default async function ProjectPage({
   const isClosedStatus = project.status === 'closed'
   const isCancelledStatus = project.status === 'cancelled' || project.status === 'canceled'
   const isAborted = isCancelledStatus || !!project.aborted_at || !!project.canceled_at
-  const statusPill = (() => {
-    if (isAborted) {
-      return {
-        label: 'Canceled',
-        className: 'border-red-200 bg-red-50 text-red-700',
-      }
-    }
-    if (isClosedStatus) {
-      return {
-        label: 'Closed',
-        className: 'border-slate-200 bg-slate-100 text-slate-700',
-      }
-    }
-    if (isPendingStatus) {
-      return {
-        label: 'Pending',
-        className: 'border-amber-200 bg-amber-100 text-amber-700',
-      }
-    }
-    if (isCollectingStatus) {
-      return {
-        label: 'Collecting',
-        className: 'border-emerald-200 bg-emerald-100 text-emerald-700',
-      }
-    }
-    return {
-      label: typeof project.status === 'string' && project.status.trim() ? project.status : 'Unknown',
-      className: 'border-border bg-muted text-muted-foreground',
-    }
-  })()
   const isFinalized = isClosedStatus || !!project.finalized_at || !!project.closed_at
   const abortedAtDisplay = (project.aborted_at as string | null) ?? (project.canceled_at as string | null) ?? null
   const abortedAtLocale = abortedAtDisplay ? new Date(abortedAtDisplay).toLocaleString() : null
@@ -387,6 +397,26 @@ export default async function ProjectPage({
     return (data ?? []) as ExtraRow[]
   })()
 
+  const baseItineraryPromise = (async (): Promise<BaseItineraryItemRow[]> => {
+    const { data, error } = await supabaseAdmin
+      .from('project_base_itinerary_items')
+      .select('id, project_id, title, amount_cents, sort_order, created_at')
+      .eq('project_id', projectId)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true })
+
+    if (error) {
+      if (missingTable(error, 'project_base_itinerary_items')) {
+        console.warn('[ProjectPage] project_base_itinerary_items table missing, skipping base itinerary')
+        return []
+      }
+      console.error('[ProjectPage] base itinerary fetch error', error)
+      return []
+    }
+
+    return (data ?? []) as BaseItineraryItemRow[]
+  })()
+
   const [
     { data: participants },
     { data: messages },
@@ -428,6 +458,7 @@ export default async function ProjectPage({
         .in('poll_id', pollIds)
     : { data: [] as Array<{ poll_id: string; option_id: string; user_id: string }> }
   const extrasRaw = await extrasPromise
+  const baseItineraryRaw = await baseItineraryPromise
   const extraIds = extrasRaw.map(extra => extra.id)
   const { data: extraMembershipRows, error: extraMembershipsErr } = extraIds.length
     ? await supabase
@@ -461,6 +492,25 @@ export default async function ProjectPage({
     } else {
       extraPaymentRows = (rawExtraPayments ?? []) as ExtraPaymentRow[]
     }
+  }
+  let refundRequestsAvailable = true
+  let refundRequestRows: RefundRequestRow[] = []
+  const { data: rawRefundRequests, error: refundRequestsErr } = await supabaseAdmin
+    .from('participant_refund_requests')
+    .select(
+      'id, project_id, participant_id, collector_participant_id, requested_by_participant_id, base_amount_cents, extras_amount_cents, total_amount_cents, status, requested_at, decided_at, decided_by_participant_id, collector_marked_sent_at, participant_confirmed_at, completed_at, rejection_reason, created_at, updated_at'
+    )
+    .eq('project_id', projectId)
+    .order('created_at', { ascending: false })
+  if (refundRequestsErr) {
+    if (missingTable(refundRequestsErr, 'participant_refund_requests')) {
+      refundRequestsAvailable = false
+      console.warn('[ProjectPage] participant_refund_requests table missing, skipping refund workflow')
+    } else {
+      console.error('[ProjectPage] refund requests fetch error', refundRequestsErr)
+    }
+  } else {
+    refundRequestRows = (rawRefundRequests ?? []) as RefundRequestRow[]
   }
   const messageAuthorIds = Array.from(
     new Set((messages ?? []).map(m => m.user_id ?? m.author_user_id).filter(Boolean))
@@ -565,7 +615,10 @@ export default async function ProjectPage({
     })
   }
 
-  const participantsClean = rawParticipants
+  const participantsClean = (rawParticipants ?? []).map(participant => ({
+    ...participant,
+    users: Array.isArray(participant.users) ? participant.users[0] ?? null : participant.users ?? null,
+  }))
   const maskEmail = (email?: string | null) => {
     if (!email) return null
     const [name, domain] = email.split('@')
@@ -650,38 +703,64 @@ export default async function ProjectPage({
   // Calculate scenarios
   const totalIsPerPerson = !!project.total_is_per_person
   const storedTotalCents = Number(project.total_cents ?? 0)
-  const perPersonCents = totalIsPerPerson
-    ? storedTotalCents
-    : Math.floor(storedTotalCents / Math.max(1, participantsCount))
-  const perPersonCentsAtFinalize = totalIsPerPerson
-    ? storedTotalCents
-    : Math.floor(storedTotalCents / Math.max(1, baseParticipantsCount))
-  const totalCents = totalIsPerPerson
-    ? perPersonCents * Math.max(1, participantsCount)
-    : storedTotalCents
+  const pricingNow = calculateProjectPricing({
+    totalCents: storedTotalCents,
+    totalIsPerPerson,
+    participantCount: participantsCount,
+    bundleSize: project.bundle_size ?? null,
+    bundlePayFor: project.bundle_pay_for ?? null,
+  })
+  const pricingAtFinalize = calculateProjectPricing({
+    totalCents: storedTotalCents,
+    totalIsPerPerson,
+    participantCount: baseParticipantsCount,
+    bundleSize: project.bundle_size ?? null,
+    bundlePayFor: project.bundle_pay_for ?? null,
+  })
+  const pricingPlus1 = calculateProjectPricing({
+    totalCents: storedTotalCents,
+    totalIsPerPerson,
+    participantCount: participantsCount + 1,
+    bundleSize: project.bundle_size ?? null,
+    bundlePayFor: project.bundle_pay_for ?? null,
+  })
+  const pricingPlus2 = calculateProjectPricing({
+    totalCents: storedTotalCents,
+    totalIsPerPerson,
+    participantCount: participantsCount + 2,
+    bundleSize: project.bundle_size ?? null,
+    bundlePayFor: project.bundle_pay_for ?? null,
+  })
+  const perPersonCents = pricingNow.perPersonCents
+  const perPersonCentsAtFinalize = pricingAtFinalize.perPersonCents
+  const totalCents = pricingNow.totalCents
   const participantsNow = participantsCount
-  const showPaymentsTab = participantsCount > 1 && !isPendingStatus
+  const showPaymentsTab = !isPendingStatus
   const viewerPaid = !!(myParticipantId && paidSet.has(myParticipantId))
   const viewerHasPendingSignal = !!(myParticipantId && pendingSignalsSet.has(myParticipantId))
   const viewerPaidCents = viewerPaid ? perPersonCents : 0
   const formatEuro = (cents: number) => `€${(cents / 100).toFixed(2)}`
-  const scenarios = totalIsPerPerson
-    ? {
-        now: perPersonCents,
-        plus1: perPersonCents,
-        plus2: perPersonCents
-      }
-    : {
-        now: Math.floor(totalCents / Math.max(1, participantsNow)),
-        plus1: Math.floor(totalCents / Math.max(1, participantsNow + 1)),
-        plus2: Math.floor(totalCents / Math.max(1, participantsNow + 2))
-      }
+  const bundleLabel = describeBundlePricing(pricingNow.bundleSize, pricingNow.bundlePayFor)
+  const scenarios = {
+    now: pricingNow.perPersonCents,
+    plus1: pricingPlus1.perPersonCents,
+    plus2: pricingPlus2.perPersonCents,
+  }
   const minimumScenarioCents =
     minParticipants && minParticipants > 0
-      ? totalIsPerPerson
-        ? perPersonCents
-        : Math.floor(totalCents / Math.max(1, minParticipants))
+      ? calculateProjectPricing({
+          totalCents: storedTotalCents,
+          totalIsPerPerson,
+          participantCount: minParticipants,
+          bundleSize: project.bundle_size ?? null,
+          bundlePayFor: project.bundle_pay_for ?? null,
+        }).perPersonCents
       : scenarios.now
+  const baseItineraryItems = baseItineraryRaw.map(item => ({
+    ...item,
+    amount_cents: Number(item.amount_cents ?? 0),
+  }))
+  const baseItineraryTotalCents = baseItineraryItems.reduce((sum, item) => sum + item.amount_cents, 0)
 
   const optionVoteCounts = new Map<string, number>()
   for (const vote of pollVotes ?? []) {
@@ -744,7 +823,7 @@ export default async function ProjectPage({
     .filter(p => baseParticipantIds.has(p.participant_id))
     .map(p => p.participant_id)
   const basePaidSet = new Set(basePaidIds)
-  const collectedCentsDisplay = Math.min(perPersonCentsAtFinalize * basePaidSet.size, totalCents)
+  const collectedCentsDisplay = Math.min(perPersonCentsAtFinalize * basePaidSet.size, pricingAtFinalize.totalCents)
   const lateJoinerIds = new Set(
     finalizedAtDate
       ? participantsClean
@@ -752,7 +831,7 @@ export default async function ProjectPage({
           .map(p => p.id)
       : []
   )
-  const lateJoinerPendingIds = new Set(
+  const lateOutgoingPendingIds = new Set(
     lateTransfers.filter(t => !t.received_at).map(t => t.from_participant_id)
   )
   const lateJoinersCount = lateJoinerIds.size
@@ -761,8 +840,11 @@ export default async function ProjectPage({
     .filter(t => !t.received_at)
     .reduce((sum, t) => sum + t.expected_cents, 0)
   const settledIds = new Set<string>(basePaidSet)
+  for (const id of lateOutgoingPendingIds) {
+    settledIds.delete(id)
+  }
   for (const id of lateJoinerIds) {
-    if (!lateJoinerPendingIds.has(id)) settledIds.add(id)
+    if (!lateOutgoingPendingIds.has(id)) settledIds.add(id)
   }
   const effectivePaidCount = Math.min(settledIds.size, participantsCount)
   const lateIncomingPendingCents = myParticipantId
@@ -790,12 +872,10 @@ export default async function ProjectPage({
     !!collectorId &&
     !viewerPaid &&
     !viewerHasPendingSignal
-  const lateOutgoingDueCount = lateOutgoingTransfers.length
-  const outgoingPaymentsDueCount = isFinalized
-    ? lateOutgoingDueCount
-    : outgoingPayAvailable
-      ? 1
-      : 0
+  const lateOutgoingDueCount = lateOutgoingTransfers.filter(t => !t.received_at).length
+  const outgoingPaymentsDueCount =
+    lateOutgoingDueCount +
+    (!isFinalized && outgoingPayAvailable ? 1 : 0)
   const pendingPaymentsCount =
     pendingSignalCount + pendingLateConfirmations + outgoingPaymentsDueCount
 
@@ -920,6 +1000,25 @@ export default async function ProjectPage({
     .reduce((sum, row) => {
       return sum + (row.confirmed ? row.amount_cents : 0)
     }, 0)
+  const extraDueSummaryById = new Map<string, { targetCents: number; collectedCents: number }>()
+  for (const row of extraDueWithStatus) {
+    const summary = extraDueSummaryById.get(row.extra_id) ?? { targetCents: 0, collectedCents: 0 }
+    summary.targetCents += row.amount_cents
+    if (row.confirmed) summary.collectedCents += row.amount_cents
+    extraDueSummaryById.set(row.extra_id, summary)
+  }
+  const extraBreakdownRows = extrasForTab.map(extra => {
+    const summary = extraDueSummaryById.get(extra.id)
+    return {
+      id: extra.id,
+      title: extra.title,
+      amount_cents: extra.amount_cents,
+      amount_is_per_person: extra.amount_is_per_person,
+      member_count: extra.member_count,
+      target_cents: summary?.targetCents ?? 0,
+      collected_cents: summary?.collectedCents ?? 0,
+    }
+  })
   const extraIncomingForViewer = myParticipantId
     ? extraDueWithStatus.filter(
         row =>
@@ -947,8 +1046,46 @@ export default async function ProjectPage({
   const pendingExtraCollectorCount = extraIncomingForViewer.length
   const pendingExtraOutgoingCount = extraOutgoingForViewer.length
   const pendingExtraSelfMarkCount = extraSelfMarkRowsForViewer.length
+  const myLatestRefundRequest = myParticipantId
+    ? refundRequestRows.find(row => row.participant_id === myParticipantId) ?? null
+    : null
+  const collectorRefundRequests = viewerIsCollector
+    ? refundRequestRows.filter(
+        row => row.status === 'pending' || row.status === 'approved' || row.status === 'sent'
+      )
+    : []
+  const myBaseRefundableCents = myParticipantId && basePaidSet.has(myParticipantId) ? perPersonCents : 0
+  const myExtrasRefundableCents = myParticipantId
+    ? extraPaymentRows
+        .filter(
+          row =>
+            row.payer_participant_id === myParticipantId &&
+            !!row.confirmed_at &&
+            row.collector_participant_id !== myParticipantId
+        )
+        .reduce((sum, row) => sum + Math.max(0, Number(row.amount_cents ?? 0)), 0)
+    : 0
+  const myRefundEligibleTotalCents = myBaseRefundableCents + myExtrasRefundableCents
+  const showMyRefundSection =
+    !!myParticipantId &&
+    isMeParticipant &&
+    !viewerIsCollector &&
+    !isFinalized &&
+    !isAborted &&
+    (myRefundEligibleTotalCents > 0 || !!myLatestRefundRequest)
+  const showCollectorRefundSection = viewerIsCollector && !isAborted && collectorRefundRequests.length > 0
+  const pendingRefundApprovalCount = viewerIsCollector
+    ? collectorRefundRequests.filter(row => row.status === 'pending').length
+    : 0
+  const pendingRefundReceiptCount =
+    !viewerIsCollector && myLatestRefundRequest?.status === 'sent' ? 1 : 0
   const pendingPaymentsCountWithExtras =
-    pendingPaymentsCount + pendingExtraCollectorCount + pendingExtraOutgoingCount + pendingExtraSelfMarkCount
+    pendingPaymentsCount +
+    pendingExtraCollectorCount +
+    pendingExtraOutgoingCount +
+    pendingExtraSelfMarkCount +
+    pendingRefundApprovalCount +
+    pendingRefundReceiptCount
   const totalCentsWithExtras = totalCents + extraTargetCents
   const collectedCentsWithExtras = collectedCentsDisplay + extraCollectedCents
   const collectedCentsWithExtrasClamped =
@@ -992,7 +1129,54 @@ export default async function ProjectPage({
     }))
   }
 
-  const collectorHasActivePaymentOptions = collectorPaymentOptions.length > 0
+  const activeProjectPaymentParticipantIds = new Set(
+    (paymentOptions ?? [])
+      .filter(option => option.is_active !== false)
+      .map(option => option.participant_id)
+  )
+  const participantUserIds = Array.from(
+    new Set(
+      participantsClean
+        .map(participant => participant.user_id)
+        .filter((userId): userId is string => typeof userId === 'string' && userId.length > 0)
+    )
+  )
+  const usersWithActivePaymentOption = new Set<string>()
+  if (participantUserIds.length > 0) {
+    const { data: userPaymentRows, error: userPaymentErr } = await supabaseAdmin
+      .from('user_payment_options')
+      .select('user_id')
+      .in('user_id', participantUserIds)
+      .eq('is_active', true)
+
+    if (userPaymentErr) {
+      if (missingTable(userPaymentErr, 'user_payment_options')) {
+        console.warn('[ProjectPage] user_payment_options table missing, skipping user-level payment fallback')
+      } else {
+        console.error('[ProjectPage] Error fetching user payment options:', userPaymentErr)
+      }
+    } else {
+      for (const row of userPaymentRows ?? []) {
+        if (typeof row.user_id === 'string' && row.user_id.length > 0) {
+          usersWithActivePaymentOption.add(row.user_id)
+        }
+      }
+    }
+  }
+  const participantsReadyForPaymentIds = new Set<string>()
+  for (const participant of participantsClean) {
+    const hasProjectOption = activeProjectPaymentParticipantIds.has(participant.id)
+    const hasUserFallback = !!(participant.user_id && usersWithActivePaymentOption.has(participant.user_id))
+    if (hasProjectOption || hasUserFallback) {
+      participantsReadyForPaymentIds.add(participant.id)
+    }
+  }
+  const participantsWithPaymentCount = participantsReadyForPaymentIds.size
+  const viewerHasPaymentMethod = !!(myParticipantId && participantsReadyForPaymentIds.has(myParticipantId))
+  const participantPaymentCoverageRatio =
+    participantsCount > 0
+      ? Math.max(0, Math.min(1, participantsWithPaymentCount / participantsCount))
+      : 1
   const hasEventWindow = !!(eventStartLocale || eventEndLocale)
   const hasEventDetails = hasEventWindow || hasEventLocation
   const participantTargetRatio =
@@ -1005,7 +1189,7 @@ export default async function ProjectPage({
       : 1
   const readinessScore = Math.round(
     participantTargetRatio * 45 +
-      (collectorHasActivePaymentOptions ? 30 : 0) +
+      participantPaymentCoverageRatio * 30 +
       requiredPollResolutionRatio * 15 +
       (hasEventDetails ? 10 : 0)
   )
@@ -1093,7 +1277,10 @@ export default async function ProjectPage({
           console.error('[ProjectPage] activity participants lookup error', missingParticipantsErr)
         } else {
           for (const participant of missingParticipants ?? []) {
-            activityParticipantsById.set(participant.id, participant)
+            activityParticipantsById.set(participant.id, {
+              ...participant,
+              users: Array.isArray(participant.users) ? participant.users[0] ?? null : participant.users ?? null,
+            })
           }
         }
       }
@@ -1240,6 +1427,21 @@ export default async function ProjectPage({
           case 'extra_deleted':
             message = `${actorLabel} deleted extra${extraTitle ? ` \"${extraTitle}\"` : ''}`
             break
+          case 'refund_requested':
+            message = `${actorLabel} requested a refund`
+            break
+          case 'refund_approved':
+            message = `${actorLabel} approved a refund request${row.target_participant_id ? ` for ${targetLabel}` : ''}`
+            break
+          case 'refund_rejected':
+            message = `${actorLabel} rejected a refund request${row.target_participant_id ? ` for ${targetLabel}` : ''}`
+            break
+          case 'refund_sent':
+            message = `${actorLabel} marked a refund as sent${row.target_participant_id ? ` to ${targetLabel}` : ''}`
+            break
+          case 'refund_completed':
+            message = `${actorLabel} confirmed refund receipt`
+            break
           default:
             break
         }
@@ -1259,11 +1461,6 @@ export default async function ProjectPage({
       <section className="relative rounded-3xl border border-slate-200 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.14),transparent_45%),linear-gradient(to_bottom,#ffffff,#f8fafc)] p-5 md:p-7">
         <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0 space-y-3">
-            <div>
-              <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${statusPill.className}`}>
-                {statusPill.label}
-              </span>
-            </div>
             <h1 className="break-words text-3xl font-semibold tracking-tight text-slate-900 md:text-4xl">{project.title}</h1>
             {project.description && (
               <div className="max-w-2xl text-sm text-slate-600 md:text-base">{project.description}</div>
@@ -1322,6 +1519,19 @@ export default async function ProjectPage({
         </div>
       )}
 
+      <ProjectFlowBar
+        projectId={projectId}
+        status={project.status as string | null | undefined}
+        isCanceled={isAborted}
+        isFinalized={isFinalized}
+        canManage={viewerIsCollector}
+        canStartCollecting={isPendingStatus && !isAborted}
+        canFinalize={isCollectingStatus && !isAborted}
+        startCollectingBlockedReason={
+          isPendingStatus && !minParticipantsReached ? 'Waiting for minimum participants' : null
+        }
+      />
+
       <ProjectTabs
         defaultTab={defaultProjectTab}
         counts={{
@@ -1334,33 +1544,47 @@ export default async function ProjectPage({
           overview: (
             <div className="space-y-6">
               {isPendingStatus ? (
-                <PendingOverviewCards
-                  readinessScore={readinessScore}
-                  participantsNow={participantsNow}
-                  minParticipants={minParticipants}
-                  maxParticipants={maxParticipants}
-                  pendingRequestsCount={pendingRequestsCountForOverview}
-                  pendingRequestsHref={pendingRequestsHref}
-                  minParticipantsReached={minParticipantsReached}
-                  collectorPaymentOptionsCount={collectorPaymentOptions.length}
-                  pollCount={pollsForVotingBase.length}
-                  resolvedPollCount={resolvedRequiredPollsCount}
-                  unresolvedPollCount={unresolvedRequiredPollsCount}
-                  hasEventWindow={hasEventWindow}
-                  hasEventLocation={hasEventLocation}
-                  totalIsPerPerson={totalIsPerPerson}
-                  scenarios={{
-                    now: scenarios.now,
-                    atMinimum: minimumScenarioCents,
-                    plus1: scenarios.plus1,
-                    plus2: scenarios.plus2,
-                  }}
-                />
+                viewerIsCollector ? (
+                  <PendingOverviewCards
+                    readinessScore={readinessScore}
+                    participantsNow={participantsNow}
+                    participantsWithPaymentCount={participantsWithPaymentCount}
+                    participantsTotalCount={participantsCount}
+                    minParticipants={minParticipants}
+                    maxParticipants={maxParticipants}
+                    pendingRequestsCount={pendingRequestsCountForOverview}
+                    pendingRequestsHref={pendingRequestsHref}
+                    minParticipantsReached={minParticipantsReached}
+                    pollCount={pollsForVotingBase.length}
+                    resolvedPollCount={resolvedRequiredPollsCount}
+                    unresolvedPollCount={unresolvedRequiredPollsCount}
+                    hasEventWindow={hasEventWindow}
+                    hasEventLocation={hasEventLocation}
+                    totalIsPerPerson={totalIsPerPerson}
+                    bundleLabel={bundleLabel}
+                    scenarios={{
+                      now: scenarios.now,
+                      atMinimum: minimumScenarioCents,
+                      plus1: scenarios.plus1,
+                      plus2: scenarios.plus2,
+                    }}
+                  />
+                ) : (
+                  <PendingMemberOverview
+                    projectId={projectId}
+                    participantsNow={participantsNow}
+                    minParticipants={minParticipants}
+                    maxParticipants={maxParticipants}
+                    viewerIsParticipant={isMeParticipant}
+                    viewerHasPaymentMethod={viewerHasPaymentMethod}
+                  />
+                )
               ) : (
                 <SummaryCards
                   totalCents={totalCents}
                   collectedCents={collectedCentsDisplay}
                   totalIsPerPerson={totalIsPerPerson}
+                  bundleLabel={bundleLabel}
                   minParticipants={project.min_participants as number | null}
                   maxParticipants={project.max_participants as number | null}
                   participantsNow={participantsNow}
@@ -1459,13 +1683,164 @@ export default async function ProjectPage({
                       </div>
                     </div>
                     <div className="mt-4 space-y-2.5">
-                      <div className="text-sm text-slate-700">
-                        Base: {formatEuro(collectedCentsDisplay)} / {formatEuro(totalCents)}
-                      </div>
-                      {extraTargetCents > 0 && (
-                        <div className="text-sm text-slate-700">
-                          Extras: {formatEuro(extraCollectedCents)} / {formatEuro(extraTargetCents)}
+                      <details className="group rounded-xl border border-slate-200 bg-white/80 [&_summary::-webkit-details-marker]:hidden">
+                        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm text-slate-700 transition-colors hover:bg-slate-100/70">
+                          <span>
+                            <span className="font-semibold text-slate-900 underline decoration-dotted underline-offset-2">
+                              Base:
+                            </span>{' '}
+                            {formatEuro(collectedCentsDisplay)} / {formatEuro(totalCents)}
+                          </span>
+                          <span className="text-xs text-slate-500 group-open:hidden">Show itinerary</span>
+                          <span className="hidden text-xs text-slate-500 group-open:inline">Hide itinerary</span>
+                        </summary>
+                        <div className="border-t border-slate-200 px-3 py-3">
+                          {baseItineraryItems.length === 0 ? (
+                            <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+                              No base itinerary has been published yet.
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              <div className="overflow-x-auto rounded-lg border border-slate-200">
+                                <table className="min-w-full border-collapse text-sm">
+                                  <thead>
+                                    <tr className="bg-slate-100 text-slate-700">
+                                      <th className="w-14 border-b border-r border-slate-200 px-3 py-2 text-left font-semibold">
+                                        #
+                                      </th>
+                                      <th className="border-b border-r border-slate-200 px-3 py-2 text-left font-semibold">
+                                        Included in Base
+                                      </th>
+                                      <th className="w-36 border-b border-slate-200 px-3 py-2 text-right font-semibold">
+                                        Price
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {baseItineraryItems.map((item, index) => (
+                                      <tr key={item.id} className="bg-white odd:bg-white even:bg-slate-50/60">
+                                        <td className="border-b border-r border-slate-200 px-3 py-2 text-slate-600">
+                                          {index + 1}
+                                        </td>
+                                        <td className="border-b border-r border-slate-200 px-3 py-2 font-medium text-slate-900">
+                                          {item.title}
+                                        </td>
+                                        <td className="border-b border-slate-200 px-3 py-2 text-right font-medium text-slate-900">
+                                          {formatEuro(item.amount_cents)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                  <tfoot>
+                                    <tr className="bg-slate-100/80">
+                                      <td
+                                        className="border-r border-slate-200 px-3 py-2 text-right font-semibold text-slate-700"
+                                        colSpan={2}
+                                      >
+                                        Itinerary total
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-semibold text-slate-900">
+                                        {formatEuro(baseItineraryTotalCents)}
+                                      </td>
+                                    </tr>
+                                  </tfoot>
+                                </table>
+                              </div>
+                              {baseItineraryTotalCents !== totalCents && (
+                                <div className="text-xs text-slate-500">
+                                  Note: itinerary total is {formatEuro(baseItineraryTotalCents)}, while base target is{' '}
+                                  {formatEuro(totalCents)}.
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
+                      </details>
+                      {extraBreakdownRows.length > 0 && (
+                        <details className="group rounded-xl border border-slate-200 bg-white/80 [&_summary::-webkit-details-marker]:hidden">
+                          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm text-slate-700 transition-colors hover:bg-slate-100/70">
+                            <span>
+                              <span className="font-semibold text-slate-900 underline decoration-dotted underline-offset-2">
+                                Extras:
+                              </span>{' '}
+                              {formatEuro(extraCollectedCents)} / {formatEuro(extraTargetCents)}
+                            </span>
+                            <span className="text-xs text-slate-500 group-open:hidden">Show extras</span>
+                            <span className="hidden text-xs text-slate-500 group-open:inline">Hide extras</span>
+                          </summary>
+                          <div className="border-t border-slate-200 px-3 py-3">
+                            <div className="space-y-2">
+                              <div className="overflow-x-auto rounded-lg border border-slate-200">
+                                <table className="min-w-full border-collapse text-sm">
+                                  <thead>
+                                    <tr className="bg-slate-100 text-slate-700">
+                                      <th className="w-14 border-b border-r border-slate-200 px-3 py-2 text-left font-semibold">
+                                        #
+                                      </th>
+                                      <th className="border-b border-r border-slate-200 px-3 py-2 text-left font-semibold">
+                                        Extra
+                                      </th>
+                                      <th className="w-32 border-b border-r border-slate-200 px-3 py-2 text-left font-semibold">
+                                        Type
+                                      </th>
+                                      <th className="w-24 border-b border-r border-slate-200 px-3 py-2 text-right font-semibold">
+                                        Members
+                                      </th>
+                                      <th className="w-32 border-b border-r border-slate-200 px-3 py-2 text-right font-semibold">
+                                        Price
+                                      </th>
+                                      <th className="w-40 border-b border-slate-200 px-3 py-2 text-right font-semibold">
+                                        Collected / Target
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {extraBreakdownRows.map((row, index) => (
+                                      <tr key={row.id} className="bg-white odd:bg-white even:bg-slate-50/60">
+                                        <td className="border-b border-r border-slate-200 px-3 py-2 text-slate-600">
+                                          {index + 1}
+                                        </td>
+                                        <td className="border-b border-r border-slate-200 px-3 py-2 font-medium text-slate-900">
+                                          {row.title}
+                                        </td>
+                                        <td className="border-b border-r border-slate-200 px-3 py-2 text-slate-700">
+                                          {row.amount_is_per_person ? 'Per person' : 'Grand total'}
+                                        </td>
+                                        <td className="border-b border-r border-slate-200 px-3 py-2 text-right text-slate-700">
+                                          {row.member_count}
+                                        </td>
+                                        <td className="border-b border-r border-slate-200 px-3 py-2 text-right font-medium text-slate-900">
+                                          {formatEuro(row.amount_cents)}
+                                        </td>
+                                        <td className="border-b border-slate-200 px-3 py-2 text-right font-medium text-slate-900">
+                                          {formatEuro(row.collected_cents)} / {formatEuro(row.target_cents)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                  <tfoot>
+                                    <tr className="bg-slate-100/80">
+                                      <td
+                                        className="border-r border-slate-200 px-3 py-2 text-right font-semibold text-slate-700"
+                                        colSpan={5}
+                                      >
+                                        Extras total
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-semibold text-slate-900">
+                                        {formatEuro(extraCollectedCents)} / {formatEuro(extraTargetCents)}
+                                      </td>
+                                    </tr>
+                                  </tfoot>
+                                </table>
+                              </div>
+                              {extraTargetCents === 0 && (
+                                <div className="text-xs text-slate-500">
+                                  No extra payments are due yet because no active members are assigned.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </details>
                       )}
                       <div className="space-y-1.5">
                         <div className="flex items-center justify-between text-sm text-slate-700">
@@ -1657,7 +2032,7 @@ export default async function ProjectPage({
 
                 {myParticipantId ? (
                   (() => {
-                    const showLateOutgoing = isFinalized && lateOutgoingTransfers.length > 0
+                    const showLateOutgoing = lateOutgoingTransfers.length > 0
                     const showBaseOutgoing = !viewerIsCollector && !!collectorId && !isFinalized && !viewerPaid
                     const showBaseSelfMark =
                       viewerIsCollector && !!collectorId && myParticipantId === collectorId && !collectorIsCountedPaid
@@ -1847,6 +2222,185 @@ export default async function ProjectPage({
                   </div>
                 )}
               </section>
+
+              {showMyRefundSection && (
+                <section className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm md:p-5">
+                  <div className="space-y-0.5">
+                    <h3 className="text-base font-semibold text-slate-900">Leave With Refund</h3>
+                    <p className="text-sm text-slate-600">
+                      If you already paid, request collector approval before leaving.
+                    </p>
+                  </div>
+
+                  {!refundRequestsAvailable ? (
+                    <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/80 p-4 text-sm text-slate-500">
+                      Refund workflow is unavailable until the latest migration is applied.
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                        <div className="text-xs uppercase tracking-wide text-slate-600">Eligible refund</div>
+                        <div className="mt-1 text-lg font-semibold text-slate-900">
+                          {formatEuro(myRefundEligibleTotalCents)}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-600">
+                          Base {formatEuro(myBaseRefundableCents)} + Extras {formatEuro(myExtrasRefundableCents)}
+                        </div>
+                      </div>
+
+                      {myLatestRefundRequest ? (
+                        <div className="rounded-xl border border-slate-200 bg-white p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-medium text-slate-900">
+                              Refund status: {String(myLatestRefundRequest.status).replaceAll('_', ' ')}
+                            </span>
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                              Requested {new Date(myLatestRefundRequest.requested_at).toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-xs text-slate-600">
+                            Amount {formatEuro(Number(myLatestRefundRequest.total_amount_cents ?? 0))}
+                          </div>
+
+                          {myLatestRefundRequest.status === 'pending' && (
+                            <div className="mt-2 text-xs text-amber-700">
+                              Waiting for collector approval.
+                            </div>
+                          )}
+                          {myLatestRefundRequest.status === 'approved' && (
+                            <div className="mt-2 text-xs text-slate-600">
+                              Approved. Waiting for collector to mark refund as sent.
+                            </div>
+                          )}
+                          {myLatestRefundRequest.status === 'sent' && (
+                            <div className="mt-2">
+                              <form action={confirmParticipantRefundReceived.bind(null, myLatestRefundRequest.id)}>
+                                <button
+                                  className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                                  type="submit"
+                                >
+                                  Confirm refund received and leave
+                                </button>
+                              </form>
+                            </div>
+                          )}
+                          {(myLatestRefundRequest.status === 'rejected' || myLatestRefundRequest.status === 'canceled') && (
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <span className="text-xs text-red-700">Request was not approved.</span>
+                              <form action={requestParticipantRefund.bind(null, projectId)}>
+                                <button
+                                  className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                                  type="submit"
+                                >
+                                  Request again
+                                </button>
+                              </form>
+                            </div>
+                          )}
+                          {myLatestRefundRequest.status === 'completed' && (
+                            <div className="mt-2 text-xs text-emerald-700">
+                              Refund completed. You can leave the project now.
+                            </div>
+                          )}
+                        </div>
+                      ) : myRefundEligibleTotalCents > 0 ? (
+                        <form action={requestParticipantRefund.bind(null, projectId)}>
+                          <button
+                            className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                            type="submit"
+                          >
+                            Request refund approval
+                          </button>
+                        </form>
+                      ) : (
+                        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/80 p-3 text-xs text-slate-600">
+                          No confirmed payments are currently eligible for refund.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {showCollectorRefundSection && (
+                <section className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm md:p-5">
+                  <div className="space-y-0.5">
+                    <h3 className="text-base font-semibold text-slate-900">Refund Requests</h3>
+                    <p className="text-sm text-slate-600">Approve, reject, and mark participant refunds as sent.</p>
+                  </div>
+
+                  <div className="mt-3 space-y-2.5">
+                    {collectorRefundRequests.map(refund => {
+                      const participant = participantsById.get(refund.participant_id)
+                      const requesterLabel = participant ? participantName(participant) : `#${refund.participant_id.slice(0, 6)}`
+                      return (
+                        <div key={refund.id} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="space-y-0.5">
+                              <div className="text-sm font-medium text-slate-900">
+                                {requesterLabel} {formatEuro(Number(refund.total_amount_cents ?? 0))}
+                              </div>
+                              <div className="text-xs text-slate-600">
+                                Base {formatEuro(Number(refund.base_amount_cents ?? 0))} + Extras{' '}
+                                {formatEuro(Number(refund.extras_amount_cents ?? 0))}
+                              </div>
+                              <div className="text-[11px] text-slate-500">
+                                Status {refund.status.replaceAll('_', ' ')} · Requested{' '}
+                                {new Date(refund.requested_at).toLocaleString()}
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {refund.status === 'pending' && (
+                                <>
+                                  <form action={approveParticipantRefund.bind(null, refund.id)}>
+                                    <button
+                                      className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                                      type="submit"
+                                    >
+                                      Approve
+                                    </button>
+                                  </form>
+                                  <form action={rejectParticipantRefund.bind(null, refund.id)}>
+                                    <button
+                                      className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                                      type="submit"
+                                    >
+                                      Reject
+                                    </button>
+                                  </form>
+                                </>
+                              )}
+                              {refund.status === 'approved' && (
+                                <>
+                                  <form action={markParticipantRefundSent.bind(null, refund.id)}>
+                                    <button
+                                      className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                                      type="submit"
+                                    >
+                                      Mark sent
+                                    </button>
+                                  </form>
+                                  <form action={rejectParticipantRefund.bind(null, refund.id)}>
+                                    <button
+                                      className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                                      type="submit"
+                                    >
+                                      Reject
+                                    </button>
+                                  </form>
+                                </>
+                              )}
+                              {refund.status === 'sent' && (
+                                <span className="text-xs text-slate-600">Waiting for participant confirmation</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </section>
+              )}
             </div>
           ) : undefined,
           voting: (
@@ -1878,11 +2432,6 @@ export default async function ProjectPage({
               pendingRequests={pendingForOrganizer ?? []}
               pendingCount={viewerIsCollector ? (pendingForOrganizer ?? []).length : 0}
               canManage={viewerIsCollector}
-              canFinalize={isCollectingStatus && !isAborted}
-              canStartCollecting={isPendingStatus && !isAborted}
-              startCollectingBlockedReason={
-                isPendingStatus && !minParticipantsReached ? 'Waiting for minimum participants' : null
-              }
               canCancel={!isAborted && !isFinalized}
               openRequestsOnMount={openRequestsOnLoad}
               activityItems={activityItems}

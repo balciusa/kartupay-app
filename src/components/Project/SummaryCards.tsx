@@ -12,6 +12,7 @@ export function SummaryCards(props: {
   totalCents: number
   collectedCents: number
   totalIsPerPerson: boolean
+  bundleLabel?: string | null
   minParticipants: number | null
   maxParticipants?: number | null
   participantsNow: number
@@ -62,7 +63,7 @@ export function SummaryCards(props: {
   const showLateJoiners =
     lateSummary.joinersCount > 0 || lateSummary.pendingCount > 0 || lateSummary.pendingCents > 0
   const showExtras = !!extrasSummary && extrasSummary.targetCents > 0
-  const showScenarios = !props.totalIsPerPerson
+  const showScenarios = !props.totalIsPerPerson || !!props.bundleLabel
   const cardsCount = 1 + (showLateJoiners ? 1 : 0) + (showExtras ? 1 : 0) + (showScenarios ? 1 : 0)
   const gridColsClass = cardsCount === 1 ? 'md:grid-cols-1' : cardsCount === 2 ? 'md:grid-cols-2' : 'md:grid-cols-3'
 
@@ -193,6 +194,9 @@ export function SummaryCards(props: {
           {showScenarios && (
             <div className="rounded-xl border border-slate-200 bg-white p-4">
               <div className="text-sm text-slate-600">Per-person price scenarios</div>
+              {props.bundleLabel && (
+                <div className="mt-1 text-xs text-slate-500">{props.bundleLabel}</div>
+              )}
               <div className="mt-2 space-y-2">
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
                   <div className="text-[11px] uppercase tracking-wide text-slate-500">Current</div>

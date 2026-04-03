@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createSupabaseServerClient } from '@/lib/supabaseClient'
 import { NewProjectModal } from '@/components/Home/NewProjectModal'
 import { ProjectsToolbar } from '@/components/Home/ProjectsToolbar'
+import { getProjectStatusUiKey, projectStatusUi } from '@/lib/projectStatusUi'
 
 type SearchParams = {
   q?: string | string[]
@@ -95,40 +96,8 @@ export default async function Home({
     return `Ends ${formatDate(end)}`
   }
 
-  const statusStyles = {
-    pending: {
-      label: 'Pending',
-      className: 'border-amber-200 bg-amber-100 text-amber-700',
-    },
-    collecting: {
-      label: 'Collecting',
-      className: 'border-emerald-200 bg-emerald-100 text-emerald-700',
-    },
-    closed: {
-      label: 'Closed',
-      className: 'border-slate-200 bg-slate-100 text-slate-700',
-    },
-    canceled: {
-      label: 'Canceled',
-      className: 'border-destructive/20 bg-destructive/10 text-destructive',
-    },
-    unknown: {
-      label: 'Unknown',
-      className: 'border-border bg-muted text-muted-foreground',
-    },
-  } as const
-
   const statusBadgeBase = 'rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide'
   const filterBadgeBase = statusBadgeBase
-
-  const getStatusKey = (status: string | null | undefined, canceledAt: string | null | undefined) => {
-    const normalized = (status ?? '').toLowerCase()
-    if (canceledAt || normalized === 'canceled' || normalized === 'cancelled') return 'canceled'
-    if (normalized === 'pending') return 'pending'
-    if (normalized === 'closed') return 'closed'
-    if (normalized === 'collecting') return 'collecting'
-    return 'unknown'
-  }
 
   const filterOptions = [
     {
@@ -137,10 +106,10 @@ export default async function Home({
       label: 'All',
       className: 'border-border bg-muted text-foreground',
     },
-    { key: 'pending', value: 'pending', ...statusStyles.pending },
-    { key: 'collecting', value: 'collecting', ...statusStyles.collecting },
-    { key: 'closed', value: 'closed', ...statusStyles.closed },
-    { key: 'canceled', value: 'canceled', ...statusStyles.canceled },
+    { key: 'pending', value: 'pending', label: projectStatusUi.pending.label, className: projectStatusUi.pending.badgeClassName },
+    { key: 'collecting', value: 'collecting', label: projectStatusUi.collecting.label, className: projectStatusUi.collecting.badgeClassName },
+    { key: 'closed', value: 'closed', label: 'Locked', className: projectStatusUi.locked.badgeClassName },
+    { key: 'canceled', value: 'canceled', label: projectStatusUi.canceled.label, className: projectStatusUi.canceled.badgeClassName },
   ]
 
   return (
@@ -184,10 +153,10 @@ export default async function Home({
             const eventEnd = p.event_end_at as string | null | undefined
             const createdAt = p.created_at as string | null | undefined
             const rawStatus = (p.status ?? '') as string
-            const statusKey = getStatusKey(rawStatus, canceledAt)
-            const statusMeta = statusStyles[statusKey]
+            const statusKey = getProjectStatusUiKey({ status: rawStatus, canceledAt })
+            const statusMeta = projectStatusUi[statusKey]
             const statusLabel = statusKey === 'unknown' && rawStatus ? rawStatus : statusMeta.label
-            const statusClass = statusMeta.className
+            const statusClass = statusMeta.badgeClassName
             const isCanceled = statusKey === 'canceled'
 
             return (

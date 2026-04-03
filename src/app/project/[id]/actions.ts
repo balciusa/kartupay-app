@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import { randomUUID } from 'crypto'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { recordProjectActivity } from '@/lib/activityLog'
+import { calculateProjectPricing, validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getCurrentUserId } from '@/lib/supabaseServer'
 import { buildExtraDueRows } from '@/lib/extraPayments'
 
@@ -94,6 +95,269 @@ export async function cancelProject(projectId: string) {
       canceled_at: nowIso,
     },
   })
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function startCollecting(projectId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+
+  const manager = await requireActiveManager(projectId, uid)
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
+
+  const { data: project, error: projectErr } = await supabaseAdmin
+    .from('projects')
+    .select('id, status, collector_participant_id, min_participants')
+    .eq('id', projectId)
+    .single()
+  if (projectErr || !project) throw projectErr || new Error('Project not found')
+
+  if (!project.collector_participant_id || manager.id !== project.collector_participant_id) {
+    throw new Error('Only the collector can start collecting')
+  }
+
+  const status = normalizeProjectStatus(project.status)
+  if (status === 'collecting') {
+    revalidatePath(`/project/${projectId}`)
+    return
+  }
+  if (status !== 'pending') {
+    throw new Error('Project is not in pending status')
+  }
+
+  const { count: activeParticipantsCount, error: countErr } = await supabaseAdmin
+    .from('participants')
+    .select('id', { count: 'exact', head: true })
+    .eq('project_id', projectId)
+    .is('left_at', null)
+  if (countErr) throw countErr
+
+  const minParticipants = Number(project.min_participants ?? 0)
+  if (minParticipants > 0 && (activeParticipantsCount ?? 0) < minParticipants) {
+    throw new Error('Waiting for minimum participants')
+  }
+
+  const startedAtIso = new Date().toISOString()
+  const { error: startErr } = await supabaseAdmin
+    .from('projects')
+    .update({ status: 'collecting', started_collecting_at: startedAtIso })
+    .eq('id', projectId)
+    .eq('status', 'pending')
+  if (startErr) {
+    if (missingColumn(startErr, 'started_collecting_at')) {
+      const { error: retryErr } = await supabaseAdmin
+        .from('projects')
+        .update({ status: 'collecting' })
+        .eq('id', projectId)
+        .eq('status', 'pending')
+      if (retryErr) {
+        if (statusConstraintViolated(retryErr)) {
+          throw new Error('Pending status is unavailable until the latest database migration is applied')
+        }
+        throw new Error(retryErr.message ?? 'Failed to start collecting')
+      }
+    } else {
+      if (statusConstraintViolated(startErr)) {
+        throw new Error('Pending status is unavailable until the latest database migration is applied')
+      }
+      throw new Error(startErr.message ?? 'Failed to start collecting')
+    }
+  }
+
+  const { data: existingCounted, error: existingErr } = await supabaseAdmin
+    .from('payments')
+    .select('id')
+    .eq('participant_id', project.collector_participant_id)
+    .eq('is_counted', true)
+    .limit(1)
+  if (existingErr) throw existingErr
+
+  let basePaymentId: string | null = null
+  if ((existingCounted?.length ?? 0) === 0) {
+    const { data: paymentRow, error: paymentErr } = await supabaseAdmin
+      .from('payments')
+      .insert({ participant_id: project.collector_participant_id, is_counted: true })
+      .select('id')
+      .single()
+    if (paymentErr) throw paymentErr
+    basePaymentId = paymentRow?.id ?? null
+  }
+
+  const { error: clrErr } = await supabaseAdmin
+    .from('payment_signals')
+    .update({ cleared_at: startedAtIso })
+    .eq('participant_id', project.collector_participant_id)
+    .is('cleared_at', null)
+  if (clrErr) {
+    const code = typeof clrErr === 'object' && clrErr !== null && 'code' in clrErr
+      ? (clrErr as { code?: string }).code
+      : undefined
+    const isMissingTable = code === '42P01' || clrErr.message?.toLowerCase()?.includes('payment_signals')
+    if (!isMissingTable) {
+      console.error('[startCollecting] Error clearing payment signals:', clrErr)
+    }
+  }
+
+  const { data: extras, error: extrasErr } = await supabaseAdmin
+    .from('extras')
+    .select(
+      'id, title, amount_cents, amount_is_per_person, collection_mode, dedicated_collector_participant_id'
+    )
+    .eq('project_id', projectId)
+  if (extrasErr) {
+    if (!missingTable(extrasErr, 'extras')) {
+      throw new Error(extrasErr.message ?? 'Failed to load extras')
+    }
+  }
+  const extrasList = extras ?? []
+  if (extrasList.length > 0) {
+    const extraIds = extrasList.map(extra => extra.id)
+    const [
+      { data: activeParticipants, error: participantsErr },
+      { data: memberships, error: membershipsErr },
+    ] = await Promise.all([
+      supabaseAdmin
+        .from('participants')
+        .select('id')
+        .eq('project_id', projectId)
+        .is('left_at', null),
+      supabaseAdmin
+        .from('extra_memberships')
+        .select('extra_id, participant_id, left_at')
+        .in('extra_id', extraIds)
+        .is('left_at', null),
+    ])
+    if (participantsErr) throw new Error(participantsErr.message ?? 'Failed to load participants')
+    if (membershipsErr) {
+      if (missingTable(membershipsErr, 'extra_memberships')) throw friendlyExtrasUnavailableError()
+      throw new Error(membershipsErr.message ?? 'Failed to load extra memberships')
+    }
+
+    const activeParticipantIds = new Set((activeParticipants ?? []).map(participant => participant.id))
+    const dueRows = buildExtraDueRows({
+      extras: extrasList.map(extra => ({
+        id: extra.id,
+        title: extra.title ?? null,
+        amount_cents: Number(extra.amount_cents ?? 0),
+        amount_is_per_person: !!extra.amount_is_per_person,
+        collection_mode: extra.collection_mode ?? null,
+        dedicated_collector_participant_id: extra.dedicated_collector_participant_id ?? null,
+      })),
+      memberships: (memberships ?? []).map(membership => ({
+        extra_id: membership.extra_id,
+        participant_id: membership.participant_id,
+        left_at: membership.left_at,
+      })),
+      activeParticipantIds,
+      projectCollectorParticipantId: project.collector_participant_id,
+    })
+
+    const selfRows = dueRows.filter(
+      row =>
+        row.payer_participant_id === project.collector_participant_id &&
+        row.collector_participant_id === project.collector_participant_id &&
+        row.amount_cents > 0
+    )
+
+    if (selfRows.length > 0) {
+      const selfExtraIds = Array.from(new Set(selfRows.map(row => row.extra_id)))
+      const { data: existingExtraPayments, error: existingExtraErr } = await supabaseAdmin
+        .from('extra_payments')
+        .select('id, extra_id, payer_participant_id, reported_at, confirmed_at')
+        .eq('payer_participant_id', project.collector_participant_id)
+        .in('extra_id', selfExtraIds)
+      if (existingExtraErr) {
+        if (missingTable(existingExtraErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
+        throw new Error(existingExtraErr.message ?? 'Failed to load extra payment statuses')
+      }
+      const existingByExtraId = new Map((existingExtraPayments ?? []).map(payment => [payment.extra_id, payment]))
+
+      for (const row of selfRows) {
+        const existingPayment = existingByExtraId.get(row.extra_id)
+        if (existingPayment?.confirmed_at) continue
+
+        if (existingPayment?.id) {
+          const { error: updateErr } = await supabaseAdmin
+            .from('extra_payments')
+            .update({
+              collector_participant_id: project.collector_participant_id,
+              amount_cents: row.amount_cents,
+              reported_at: existingPayment.reported_at ?? null,
+              confirmed_at: startedAtIso,
+              confirmed_by_participant_id: project.collector_participant_id,
+            })
+            .eq('id', existingPayment.id)
+          if (updateErr) {
+            if (missingTable(updateErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
+            throw new Error(updateErr.message ?? 'Failed to auto-confirm extra payment')
+          }
+        } else {
+          const { error: insertErr } = await supabaseAdmin
+            .from('extra_payments')
+            .insert({
+              extra_id: row.extra_id,
+              payer_participant_id: row.payer_participant_id,
+              collector_participant_id: row.collector_participant_id,
+              amount_cents: row.amount_cents,
+              confirmed_at: startedAtIso,
+              confirmed_by_participant_id: project.collector_participant_id,
+            })
+          if (insertErr) {
+            if (missingTable(insertErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
+            throw new Error(insertErr.message ?? 'Failed to auto-confirm extra payment')
+          }
+        }
+
+        await recordProjectActivity({
+          projectId,
+          entryType: 'payment_confirmed',
+          actorUserId,
+          actorParticipantId,
+          targetUserId: uid,
+          targetParticipantId: project.collector_participant_id,
+          extraId: row.extra_id,
+          metadata: {
+            scope: 'extra',
+            amount_cents: row.amount_cents,
+            collector_participant_id: row.collector_participant_id,
+            title: row.extra_title,
+            source: 'start_collecting_auto_confirmed',
+          },
+        })
+      }
+    }
+  }
+
+  await recordProjectActivity({
+    projectId,
+    entryType: 'project_status_changed',
+    actorUserId,
+    actorParticipantId,
+    metadata: {
+      from_status: 'pending',
+      to_status: 'collecting',
+      started_collecting_at: startedAtIso,
+    },
+  })
+
+  if (basePaymentId) {
+    await recordProjectActivity({
+      projectId,
+      entryType: 'payment_confirmed',
+      actorUserId,
+      actorParticipantId,
+      targetUserId: uid,
+      targetParticipantId: project.collector_participant_id,
+      paymentId: basePaymentId,
+      metadata: {
+        is_counted: true,
+        source: 'start_collecting_auto_confirmed',
+      },
+    })
+  }
 
   revalidatePath(`/project/${projectId}`)
 }
@@ -239,7 +503,7 @@ export async function abortProject(projectId: string) {
     .from('projects')
     .update(values)
     .eq('id', projectId)
-    .in('status', ['collecting', 'closed'])
+    .in('status', ['pending', 'collecting', 'closed'])
   if (error) {
     if (missingColumn(error, 'aborted_at')) {
       const { error: retryErr } = await supabaseAdmin
@@ -278,7 +542,6 @@ export async function leaveProject(projectId: string) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('You must be signed in')
-  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
 
   const { data: me, error: meErr } = await supabaseAdmin
     .from('participants')
@@ -291,19 +554,38 @@ export async function leaveProject(projectId: string) {
   if (meErr) throw meErr
   if (!me) { revalidatePath(`/project/${projectId}`); return { ok: true } }
 
-  const { error: updErr } = await supabaseAdmin
-    .from('participants')
-    .update({ left_at: new Date().toISOString() })
-    .eq('id', me.id)
-  if (updErr) throw updErr
+  const refundSummary = await computeParticipantRefundSummary(projectId, me.id)
+  if (refundSummary.totalAmountCents > 0) {
+    const latestRefund = await getLatestParticipantRefundRequest(projectId, me.id)
+    if (!latestRefund) {
+      throw new Error(
+        `You have ${formatEurCents(refundSummary.totalAmountCents)} in confirmed payments. Request a refund in Payments before leaving.`
+      )
+    }
+    if (latestRefund.status !== 'completed') {
+      if (latestRefund.status === 'pending') {
+        throw new Error('Your refund request is pending collector approval.')
+      }
+      if (latestRefund.status === 'approved') {
+        throw new Error('Refund was approved. Wait for the collector to mark it as sent.')
+      }
+      if (latestRefund.status === 'sent') {
+        throw new Error('Collector marked refund as sent. Confirm receipt in Payments to finish leaving.')
+      }
+      if (latestRefund.status === 'rejected' || latestRefund.status === 'canceled') {
+        throw new Error('Your refund request was not completed. Submit a new refund request in Payments before leaving.')
+      }
+      throw new Error('Your refund request must be completed before leaving.')
+    }
+  }
 
-  await recordProjectActivity({
+  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
+  await markParticipantLeftWithActivity({
     projectId,
-    entryType: 'participant_left',
+    participantId: me.id,
+    targetUserId: uid,
     actorUserId,
     actorParticipantId,
-    targetUserId: uid,
-    targetParticipantId: me.id,
   })
 
   revalidatePath(`/project/${projectId}`)
@@ -436,6 +718,318 @@ async function getActiveParticipantContext(projectId: string, userId: string | n
   }
 }
 
+export async function requestParticipantRefund(projectId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+
+  const me = await requireActiveProjectParticipant(projectId, uid)
+  const summary = await computeParticipantRefundSummary(projectId, me.id)
+  if (summary.projectStatus === 'pending') {
+    throw new Error('Refunds are unavailable before collecting starts')
+  }
+  if (summary.projectStatus === 'closed' || summary.projectStatus === 'finalized') {
+    throw new Error('Refund requests are locked after finalization')
+  }
+  if (summary.projectStatus === 'canceled' || summary.projectStatus === 'cancelled') {
+    throw new Error('Refunds are disabled for canceled projects')
+  }
+  if (summary.totalAmountCents <= 0) {
+    throw new Error('No confirmed payments are eligible for refund')
+  }
+  if (!summary.collectorParticipantId) {
+    throw new Error('Set an active collector before requesting a refund')
+  }
+  if (summary.collectorParticipantId === me.id) {
+    throw new Error('Collectors cannot request participant refunds from themselves')
+  }
+
+  const existing = await getLatestParticipantRefundRequest(projectId, me.id)
+  if (existing && (existing.status === 'pending' || existing.status === 'approved' || existing.status === 'sent')) {
+    revalidatePath(`/project/${projectId}`)
+    return
+  }
+
+  const nowIso = new Date().toISOString()
+  const { data: created, error: createErr } = await supabaseAdmin
+    .from('participant_refund_requests')
+    .insert({
+      project_id: projectId,
+      participant_id: me.id,
+      collector_participant_id: summary.collectorParticipantId,
+      requested_by_participant_id: me.id,
+      base_amount_cents: summary.baseAmountCents,
+      extras_amount_cents: summary.extrasAmountCents,
+      total_amount_cents: summary.totalAmountCents,
+      status: 'pending',
+      requested_at: nowIso,
+      updated_at: nowIso,
+    })
+    .select('id')
+    .single()
+  if (createErr) {
+    if (missingTable(createErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
+    throw new Error(createErr.message ?? 'Failed to create refund request')
+  }
+
+  await recordProjectActivity({
+    projectId,
+    entryType: 'refund_requested',
+    actorUserId: uid,
+    actorParticipantId: me.id,
+    targetUserId: uid,
+    targetParticipantId: me.id,
+    metadata: {
+      refund_request_id: created?.id ?? null,
+      base_amount_cents: summary.baseAmountCents,
+      extras_amount_cents: summary.extrasAmountCents,
+      total_amount_cents: summary.totalAmountCents,
+    },
+  })
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function approveParticipantRefund(refundRequestId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!refundRequestId) throw new Error('Missing refund request id')
+
+  const { data: refund, error: refundErr } = await supabaseAdmin
+    .from('participant_refund_requests')
+    .select(
+      'id, project_id, participant_id, collector_participant_id, requested_by_participant_id, base_amount_cents, extras_amount_cents, total_amount_cents, status'
+    )
+    .eq('id', refundRequestId)
+    .maybeSingle()
+  if (refundErr) {
+    if (missingTable(refundErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
+    throw new Error(refundErr.message ?? 'Failed to load refund request')
+  }
+  if (!refund) throw new Error('Refund request not found')
+
+  await requireActiveManager(refund.project_id, uid)
+  const actor = await getActiveParticipantContext(refund.project_id, uid)
+
+  if (refund.status === 'approved' || refund.status === 'sent' || refund.status === 'completed') {
+    revalidatePath(`/project/${refund.project_id}`)
+    return
+  }
+  if (refund.status !== 'pending') throw new Error('Refund request is no longer pending')
+
+  const nowIso = new Date().toISOString()
+  const { error: updateErr } = await supabaseAdmin
+    .from('participant_refund_requests')
+    .update({
+      status: 'approved',
+      decided_at: nowIso,
+      decided_by_participant_id: actor.actorParticipantId,
+      updated_at: nowIso,
+    })
+    .eq('id', refundRequestId)
+    .eq('status', 'pending')
+  if (updateErr) {
+    if (missingTable(updateErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
+    throw new Error(updateErr.message ?? 'Failed to approve refund request')
+  }
+
+  await recordProjectActivity({
+    projectId: refund.project_id,
+    entryType: 'refund_approved',
+    actorUserId: actor.actorUserId,
+    actorParticipantId: actor.actorParticipantId,
+    targetParticipantId: refund.participant_id,
+    metadata: {
+      refund_request_id: refund.id,
+      total_amount_cents: Number(refund.total_amount_cents ?? 0),
+    },
+  })
+
+  revalidatePath(`/project/${refund.project_id}`)
+}
+
+export async function rejectParticipantRefund(refundRequestId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!refundRequestId) throw new Error('Missing refund request id')
+
+  const { data: refund, error: refundErr } = await supabaseAdmin
+    .from('participant_refund_requests')
+    .select('id, project_id, participant_id, total_amount_cents, status')
+    .eq('id', refundRequestId)
+    .maybeSingle()
+  if (refundErr) {
+    if (missingTable(refundErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
+    throw new Error(refundErr.message ?? 'Failed to load refund request')
+  }
+  if (!refund) throw new Error('Refund request not found')
+
+  const manager = await requireActiveManager(refund.project_id, uid)
+  const actor = await getActiveParticipantContext(refund.project_id, uid)
+
+  if (refund.status === 'rejected' || refund.status === 'canceled') {
+    revalidatePath(`/project/${refund.project_id}`)
+    return
+  }
+  if (refund.status !== 'pending' && refund.status !== 'approved') {
+    throw new Error('Only pending or approved refund requests can be rejected')
+  }
+
+  const nowIso = new Date().toISOString()
+  const { error: updateErr } = await supabaseAdmin
+    .from('participant_refund_requests')
+    .update({
+      status: 'rejected',
+      decided_at: nowIso,
+      decided_by_participant_id: manager.id,
+      updated_at: nowIso,
+    })
+    .eq('id', refundRequestId)
+  if (updateErr) {
+    if (missingTable(updateErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
+    throw new Error(updateErr.message ?? 'Failed to reject refund request')
+  }
+
+  await recordProjectActivity({
+    projectId: refund.project_id,
+    entryType: 'refund_rejected',
+    actorUserId: actor.actorUserId,
+    actorParticipantId: actor.actorParticipantId,
+    targetParticipantId: refund.participant_id,
+    metadata: {
+      refund_request_id: refund.id,
+      total_amount_cents: Number(refund.total_amount_cents ?? 0),
+    },
+  })
+
+  revalidatePath(`/project/${refund.project_id}`)
+}
+
+export async function markParticipantRefundSent(refundRequestId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!refundRequestId) throw new Error('Missing refund request id')
+
+  const { data: refund, error: refundErr } = await supabaseAdmin
+    .from('participant_refund_requests')
+    .select('id, project_id, participant_id, total_amount_cents, status')
+    .eq('id', refundRequestId)
+    .maybeSingle()
+  if (refundErr) {
+    if (missingTable(refundErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
+    throw new Error(refundErr.message ?? 'Failed to load refund request')
+  }
+  if (!refund) throw new Error('Refund request not found')
+
+  await requireActiveManager(refund.project_id, uid)
+  const actor = await getActiveParticipantContext(refund.project_id, uid)
+
+  if (refund.status === 'sent' || refund.status === 'completed') {
+    revalidatePath(`/project/${refund.project_id}`)
+    return
+  }
+  if (refund.status !== 'approved') throw new Error('Refund must be approved before marking as sent')
+
+  const nowIso = new Date().toISOString()
+  const { error: updateErr } = await supabaseAdmin
+    .from('participant_refund_requests')
+    .update({
+      status: 'sent',
+      collector_marked_sent_at: nowIso,
+      updated_at: nowIso,
+    })
+    .eq('id', refundRequestId)
+    .eq('status', 'approved')
+  if (updateErr) {
+    if (missingTable(updateErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
+    throw new Error(updateErr.message ?? 'Failed to mark refund as sent')
+  }
+
+  await recordProjectActivity({
+    projectId: refund.project_id,
+    entryType: 'refund_sent',
+    actorUserId: actor.actorUserId,
+    actorParticipantId: actor.actorParticipantId,
+    targetParticipantId: refund.participant_id,
+    metadata: {
+      refund_request_id: refund.id,
+      total_amount_cents: Number(refund.total_amount_cents ?? 0),
+    },
+  })
+
+  revalidatePath(`/project/${refund.project_id}`)
+}
+
+export async function confirmParticipantRefundReceived(refundRequestId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!refundRequestId) throw new Error('Missing refund request id')
+
+  const { data: refund, error: refundErr } = await supabaseAdmin
+    .from('participant_refund_requests')
+    .select('id, project_id, participant_id, total_amount_cents, status')
+    .eq('id', refundRequestId)
+    .maybeSingle()
+  if (refundErr) {
+    if (missingTable(refundErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
+    throw new Error(refundErr.message ?? 'Failed to load refund request')
+  }
+  if (!refund) throw new Error('Refund request not found')
+
+  const me = await requireActiveProjectParticipant(refund.project_id, uid)
+  if (me.id !== refund.participant_id) throw new Error('Only the requesting participant can confirm refund receipt')
+  if (refund.status === 'completed') {
+    revalidatePath(`/project/${refund.project_id}`)
+    return
+  }
+  if (refund.status !== 'sent') throw new Error('Refund is not marked as sent yet')
+
+  const actor = await getActiveParticipantContext(refund.project_id, uid)
+  const nowIso = new Date().toISOString()
+  const { error: updateErr } = await supabaseAdmin
+    .from('participant_refund_requests')
+    .update({
+      status: 'completed',
+      participant_confirmed_at: nowIso,
+      completed_at: nowIso,
+      updated_at: nowIso,
+    })
+    .eq('id', refundRequestId)
+    .eq('status', 'sent')
+  if (updateErr) {
+    if (missingTable(updateErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
+    throw new Error(updateErr.message ?? 'Failed to complete refund')
+  }
+
+  await recordProjectActivity({
+    projectId: refund.project_id,
+    entryType: 'refund_completed',
+    actorUserId: actor.actorUserId,
+    actorParticipantId: actor.actorParticipantId,
+    targetUserId: uid,
+    targetParticipantId: refund.participant_id,
+    metadata: {
+      refund_request_id: refund.id,
+      total_amount_cents: Number(refund.total_amount_cents ?? 0),
+    },
+  })
+
+  await markParticipantLeftWithActivity({
+    projectId: refund.project_id,
+    participantId: refund.participant_id,
+    targetUserId: uid,
+    actorUserId: actor.actorUserId,
+    actorParticipantId: actor.actorParticipantId,
+  })
+
+  revalidatePath(`/project/${refund.project_id}`)
+}
+
 const missingColumn = (
   error: { message?: string; details?: string | null; hint?: string | null; code?: string } | null,
   column: string
@@ -471,6 +1065,196 @@ const missingTable = (
 const statusConstraintViolated = (error?: { message?: string; code?: string } | null) =>
   !!error && (error.code === '23514' || error.message?.includes('projects_status_check'))
 
+const normalizeProjectStatus = (status: unknown) => String(status ?? '').trim().toLowerCase()
+
+type RefundRequestStatus = 'pending' | 'approved' | 'rejected' | 'sent' | 'completed' | 'canceled'
+
+type ParticipantRefundRequestRow = {
+  id: string
+  project_id: string
+  participant_id: string
+  collector_participant_id: string
+  requested_by_participant_id: string
+  base_amount_cents: number
+  extras_amount_cents: number
+  total_amount_cents: number
+  status: RefundRequestStatus
+  requested_at: string
+  decided_at: string | null
+  decided_by_participant_id: string | null
+  collector_marked_sent_at: string | null
+  participant_confirmed_at: string | null
+  completed_at: string | null
+  rejection_reason: string | null
+  created_at: string
+  updated_at: string
+}
+
+type ParticipantRefundSummary = {
+  projectId: string
+  participantId: string
+  collectorParticipantId: string | null
+  projectStatus: string
+  baseAmountCents: number
+  extrasAmountCents: number
+  totalAmountCents: number
+}
+
+const formatEurCents = (cents: number) => `EUR ${(Math.max(0, Number(cents ?? 0)) / 100).toFixed(2)}`
+
+const resolveActiveCollectorParticipantId = async (projectId: string, collectorParticipantId: string | null) => {
+  if (collectorParticipantId) {
+    const { data: collector, error: collectorErr } = await supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('id', collectorParticipantId)
+      .eq('project_id', projectId)
+      .is('left_at', null)
+      .maybeSingle()
+    if (collectorErr) throw new Error(collectorErr.message ?? 'Failed to load collector')
+    if (collector?.id) return collector.id
+  }
+
+  const { data: organizer, error: organizerErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('role', 'organizer')
+    .is('left_at', null)
+    .limit(1)
+    .maybeSingle()
+  if (organizerErr) throw new Error(organizerErr.message ?? 'Failed to resolve organizer collector fallback')
+  return organizer?.id ?? null
+}
+
+const computeParticipantRefundSummary = async (
+  projectId: string,
+  participantId: string
+): Promise<ParticipantRefundSummary> => {
+  const { data: project, error: projectErr } = await supabaseAdmin
+    .from('projects')
+    .select('id, status, total_cents, total_is_per_person, bundle_size, bundle_pay_for, collector_participant_id')
+    .eq('id', projectId)
+    .maybeSingle()
+  if (projectErr || !project) throw projectErr || new Error('Project not found')
+
+  const projectStatus = normalizeProjectStatus(project.status)
+
+  const [{ count: activeParticipantsCount, error: activeCountErr }, { count: basePaidCount, error: basePaidErr }] =
+    await Promise.all([
+      supabaseAdmin
+        .from('participants')
+        .select('id', { count: 'exact', head: true })
+        .eq('project_id', projectId)
+        .is('left_at', null),
+      supabaseAdmin
+        .from('payments')
+        .select('id', { count: 'exact', head: true })
+        .eq('participant_id', participantId)
+        .eq('is_counted', true),
+    ])
+  if (activeCountErr) throw new Error(activeCountErr.message ?? 'Failed to count active participants')
+  if (basePaidErr) throw new Error(basePaidErr.message ?? 'Failed to load base payment state')
+
+  const pricing = calculateProjectPricing({
+    totalCents: Number(project.total_cents ?? 0),
+    totalIsPerPerson: project.total_is_per_person === true,
+    participantCount: Number(activeParticipantsCount ?? 0),
+    bundleSize: project.bundle_size ?? null,
+    bundlePayFor: project.bundle_pay_for ?? null,
+  })
+  const hasBasePayment = Number(basePaidCount ?? 0) > 0
+  const baseAmountCents = hasBasePayment ? pricing.perPersonCents : 0
+
+  let extrasAmountCents = 0
+  const { data: confirmedExtraPayments, error: extraPaidErr } = await supabaseAdmin
+    .from('extra_payments')
+    .select('amount_cents, collector_participant_id')
+    .eq('payer_participant_id', participantId)
+    .not('confirmed_at', 'is', null)
+  if (extraPaidErr) {
+    if (!missingTable(extraPaidErr, 'extra_payments')) {
+      throw new Error(extraPaidErr.message ?? 'Failed to load extra payment state')
+    }
+  } else {
+    for (const row of confirmedExtraPayments ?? []) {
+      if (!row) continue
+      if (!row.collector_participant_id || row.collector_participant_id === participantId) continue
+      extrasAmountCents += Math.max(0, Number(row.amount_cents ?? 0))
+    }
+  }
+
+  const collectorParticipantId = await resolveActiveCollectorParticipantId(
+    projectId,
+    (project.collector_participant_id as string | null) ?? null
+  )
+
+  return {
+    projectId,
+    participantId,
+    collectorParticipantId,
+    projectStatus,
+    baseAmountCents,
+    extrasAmountCents,
+    totalAmountCents: baseAmountCents + extrasAmountCents,
+  }
+}
+
+const getLatestParticipantRefundRequest = async (
+  projectId: string,
+  participantId: string
+): Promise<ParticipantRefundRequestRow | null> => {
+  const { data, error } = await supabaseAdmin
+    .from('participant_refund_requests')
+    .select(
+      'id, project_id, participant_id, collector_participant_id, requested_by_participant_id, base_amount_cents, extras_amount_cents, total_amount_cents, status, requested_at, decided_at, decided_by_participant_id, collector_marked_sent_at, participant_confirmed_at, completed_at, rejection_reason, created_at, updated_at'
+    )
+    .eq('project_id', projectId)
+    .eq('participant_id', participantId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) {
+    if (missingTable(error, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
+    throw new Error(error.message ?? 'Failed to load refund request')
+  }
+  return (data as ParticipantRefundRequestRow | null) ?? null
+}
+
+const markParticipantLeftWithActivity = async ({
+  projectId,
+  participantId,
+  targetUserId,
+  actorUserId,
+  actorParticipantId,
+}: {
+  projectId: string
+  participantId: string
+  targetUserId: string | null
+  actorUserId: string | null
+  actorParticipantId: string | null
+}) => {
+  const { data: updated, error: updErr } = await supabaseAdmin
+    .from('participants')
+    .update({ left_at: new Date().toISOString() })
+    .eq('id', participantId)
+    .is('left_at', null)
+    .select('id')
+    .maybeSingle()
+  if (updErr) throw updErr
+  if (!updated?.id) return false
+
+  await recordProjectActivity({
+    projectId,
+    entryType: 'participant_left',
+    actorUserId,
+    actorParticipantId,
+    targetUserId,
+    targetParticipantId: participantId,
+  })
+  return true
+}
+
 type LateJoinTransferRunResult = {
   processed: boolean
   recipientsCount: number
@@ -480,57 +1264,163 @@ type LateJoinTransferRunResult = {
 }
 
 async function runLateJoinTransferUpsert(projectId: string, newcomerParticipantId: string): Promise<LateJoinTransferRunResult> {
-  const { data: newcomer, error: newcomerErr } = await supabaseAdmin
+  const newcomerAttempt = await supabaseAdmin
     .from('participants')
-    .select('id, project_id')
+    .select('id, project_id, joined_at')
     .eq('id', newcomerParticipantId)
     .single()
+
+  let newcomer = newcomerAttempt.data
+  let newcomerErr = newcomerAttempt.error
+  if (missingColumn(newcomerAttempt.error, 'joined_at')) {
+    console.warn('[runLateJoinTransferUpsert] participants.joined_at missing, falling back without it')
+    const fallback = await supabaseAdmin
+      .from('participants')
+      .select('id, project_id')
+      .eq('id', newcomerParticipantId)
+      .single()
+    newcomer = fallback.data ? { ...fallback.data, joined_at: null } : null
+    newcomerErr = fallback.error
+  }
   if (newcomerErr || !newcomer) throw newcomerErr || new Error('Participant not found')
   if (newcomer.project_id !== projectId) throw new Error('Participant does not belong to this project')
 
-  const baseProjectFields = 'id, total_cents'
-  const projectAttempt = await supabaseAdmin
-    .from('projects')
-    .select(`${baseProjectFields}, finalized_at`)
-    .eq('id', projectId)
-    .single()
+  const baseProjectFields = 'id, total_cents, status, collector_participant_id'
+  const selectProject = async (selectList: string) =>
+    supabaseAdmin
+      .from('projects')
+      .select(selectList)
+      .eq('id', projectId)
+      .single()
 
-  let project = projectAttempt.data
+  type LateJoinProjectRow = {
+    id: string
+    total_cents: number | null
+    status: string | null
+    collector_participant_id: string | null
+    total_is_per_person: boolean | null
+    bundle_size: number | null
+    bundle_pay_for: number | null
+    finalized_at: string | null
+  }
+
+  const projectAttempt = await selectProject(
+    `${baseProjectFields}, total_is_per_person, bundle_size, bundle_pay_for, finalized_at`
+  )
+
+  let project = projectAttempt.data as LateJoinProjectRow | null
   let projectErr = projectAttempt.error
 
   if (missingColumn(projectAttempt.error, 'finalized_at')) {
     console.warn('[runLateJoinTransferUpsert] finalized_at column missing, falling back without it')
-    const fallback = await supabaseAdmin
-      .from('projects')
-      .select(baseProjectFields)
-      .eq('id', projectId)
-      .single()
-    project = fallback.data ? { ...fallback.data, finalized_at: null } : null
+    const fallback = await selectProject(`${baseProjectFields}, total_is_per_person, bundle_size, bundle_pay_for`)
+    project = fallback.data
+      ? { ...((fallback.data as unknown) as Omit<LateJoinProjectRow, 'finalized_at'>), finalized_at: null }
+      : null
+    projectErr = fallback.error
+  }
+
+  if (missingColumn(projectErr, 'bundle_size') || missingColumn(projectErr, 'bundle_pay_for')) {
+    console.warn('[runLateJoinTransferUpsert] bundle pricing columns missing, falling back without them')
+    const needsFinalizeFallback = missingColumn(projectErr, 'finalized_at')
+    const fallback = await selectProject(
+      needsFinalizeFallback
+        ? `${baseProjectFields}, total_is_per_person`
+        : `${baseProjectFields}, total_is_per_person, finalized_at`
+    )
+    project = fallback.data
+      ? {
+          ...((fallback.data as unknown) as Omit<LateJoinProjectRow, 'bundle_size' | 'bundle_pay_for'>),
+          finalized_at:
+            'finalized_at' in (fallback.data as object) ? (fallback.data as { finalized_at?: string | null }).finalized_at ?? null : null,
+          bundle_size: null,
+          bundle_pay_for: null,
+        }
+      : null
     projectErr = fallback.error
   }
 
   if (projectErr || !project) throw projectErr || new Error('Project not found for late join logic')
 
-  if (!project.finalized_at) {
+  const projectStatus = normalizeProjectStatus(project.status)
+  const finalizedAt = (project.finalized_at as string | null) ?? null
+  const isFinalized = !!finalizedAt || projectStatus === 'closed'
+  const isCollecting = projectStatus === 'collecting'
+  if (!isFinalized && !isCollecting) {
     return {
       processed: false,
       recipientsCount: 0,
       perPersonCents: 0,
       upsertedCount: 0,
-      reason: 'project_not_finalized',
+      reason: 'project_not_collecting_or_finalized',
     }
   }
 
-  const { data: recipients, error: recipientsErr } = await supabaseAdmin
+  const participantsAttempt = await supabaseAdmin
     .from('participants')
-    .select('id')
+    .select('id, joined_at')
     .eq('project_id', projectId)
     .is('left_at', null)
-    .lte('joined_at', project.finalized_at as string)
     .neq('id', newcomerParticipantId)
-  if (recipientsErr) throw recipientsErr
+  let participants = participantsAttempt.data
+  let participantsErr = participantsAttempt.error
+  if (missingColumn(participantsAttempt.error, 'joined_at')) {
+    console.warn('[runLateJoinTransferUpsert] participants.joined_at missing, falling back without it')
+    const fallback = await supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('project_id', projectId)
+      .is('left_at', null)
+      .neq('id', newcomerParticipantId)
+    participants = (fallback.data ?? []).map(row => ({ ...row, joined_at: null }))
+    participantsErr = fallback.error
+  }
+  if (participantsErr) throw participantsErr
 
-  const recipientList = recipients ?? []
+  const boundaryIso = isFinalized ? finalizedAt : (newcomer.joined_at as string | null)
+  const boundaryTime = boundaryIso ? new Date(boundaryIso).getTime() : Number.NaN
+  const hasBoundary = Number.isFinite(boundaryTime)
+  const participantList =
+    (participants ?? []).filter(participant => {
+      if (!hasBoundary) return true
+      if (!participant.joined_at) return true
+      const participantJoinedTime = new Date(participant.joined_at).getTime()
+      if (!Number.isFinite(participantJoinedTime)) return true
+      return participantJoinedTime <= boundaryTime
+    })
+
+  const participantsBeforeJoinCount = participantList.length
+  if (participantsBeforeJoinCount === 0) {
+    return {
+      processed: false,
+      recipientsCount: 0,
+      perPersonCents: 0,
+      upsertedCount: 0,
+      reason: isFinalized ? 'no_recipients_at_finalize' : 'no_participants_before_join',
+    }
+  }
+
+  let recipientList: Array<{ id: string }> = []
+  let denominatorParticipantsCount = participantsBeforeJoinCount
+
+  if (isFinalized) {
+    recipientList = participantList.map(participant => ({ id: participant.id }))
+    denominatorParticipantsCount = recipientList.length
+  } else {
+    const beforeJoinIds = participantList.map(participant => participant.id)
+    const { data: countedPayments, error: countedErr } = await supabaseAdmin
+      .from('payments')
+      .select('participant_id')
+      .eq('is_counted', true)
+      .in('participant_id', beforeJoinIds)
+    if (countedErr) throw countedErr
+
+    const paidParticipantIds = new Set((countedPayments ?? []).map(payment => payment.participant_id))
+    recipientList = participantList
+      .filter(participant => paidParticipantIds.has(participant.id))
+      .map(participant => ({ id: participant.id }))
+  }
+
   const recipientsCount = recipientList.length
   if (recipientsCount === 0) {
     return {
@@ -538,30 +1428,77 @@ async function runLateJoinTransferUpsert(projectId: string, newcomerParticipantI
       recipientsCount,
       perPersonCents: 0,
       upsertedCount: 0,
-      reason: 'no_recipients_at_finalize',
+      reason: isFinalized ? 'no_recipients_at_finalize' : 'no_paid_recipients_before_join',
     }
   }
 
-  const numerator = Number(project.total_cents ?? 0)
-  const denominator = recipientsCount * (recipientsCount + 1)
-  const perPersonCents = denominator > 0 ? Math.floor(numerator / denominator) : 0
+  const previousPricing = calculateProjectPricing({
+    totalCents: Number(project.total_cents ?? 0),
+    totalIsPerPerson: project.total_is_per_person === true,
+    participantCount: denominatorParticipantsCount,
+    bundleSize: project.bundle_size ?? null,
+    bundlePayFor: project.bundle_pay_for ?? null,
+  })
+  const nextPricing = calculateProjectPricing({
+    totalCents: Number(project.total_cents ?? 0),
+    totalIsPerPerson: project.total_is_per_person === true,
+    participantCount: denominatorParticipantsCount + 1,
+    bundleSize: project.bundle_size ?? null,
+    bundlePayFor: project.bundle_pay_for ?? null,
+  })
+  const perPersonCents = Math.abs(previousPricing.perPersonCents - nextPricing.perPersonCents)
+  const transferFromParticipantId =
+    previousPricing.perPersonCents >= nextPricing.perPersonCents ? newcomerParticipantId : null
+  const transferToParticipantId =
+    previousPricing.perPersonCents >= nextPricing.perPersonCents
+      ? null
+      : await resolveActiveCollectorParticipantId(projectId, (project.collector_participant_id as string | null) ?? null)
 
-  if (recipientsCount === 0) {
+  if (perPersonCents <= 0) {
+    return {
+      processed: false,
+      recipientsCount,
+      perPersonCents: 0,
+      upsertedCount: 0,
+      reason: 'no_share_change',
+    }
+  }
+
+  if (!transferFromParticipantId && !transferToParticipantId) {
     return {
       processed: false,
       recipientsCount,
       perPersonCents,
       upsertedCount: 0,
-      reason: 'no_recipients_at_close',
+      reason: 'collector_not_found_for_top_up',
     }
   }
 
-  const rows = recipientList.map(r => ({
-    project_id: project.id,
-    from_participant_id: newcomerParticipantId,
-    to_participant_id: r.id,
-    expected_cents: perPersonCents,
-  }))
+  const rows = transferFromParticipantId
+    ? recipientList.map(recipient => ({
+        project_id: project.id,
+        from_participant_id: newcomerParticipantId,
+        to_participant_id: recipient.id,
+        expected_cents: perPersonCents,
+      }))
+    : recipientList
+        .filter(recipient => recipient.id !== transferToParticipantId)
+        .map(recipient => ({
+          project_id: project.id,
+          from_participant_id: recipient.id,
+          to_participant_id: transferToParticipantId as string,
+          expected_cents: perPersonCents,
+        }))
+
+  if (rows.length === 0) {
+    return {
+      processed: false,
+      recipientsCount: 0,
+      perPersonCents: 0,
+      upsertedCount: 0,
+      reason: 'no_transfer_rows_needed',
+    }
+  }
 
   const { data: upserted, error: upsertErr } = await supabaseAdmin
     .from('late_join_transfers')
@@ -1031,7 +1968,14 @@ export async function approveJoinRequestFromForm(formData: FormData) {
     // Redirect is expected; surface it without logging as a failure.
     if (err?.message === 'NEXT_REDIRECT' || err?.digest === 'NEXT_REDIRECT') throw err
     console.error('[approveJoinRequestFromForm] error', err?.message || err)
-    throw err
+    if (err instanceof Error) throw err
+    const message =
+      typeof err?.message === 'string'
+        ? err.message
+        : typeof err?.error?.message === 'string'
+          ? err.error.message
+          : 'Failed to approve join request'
+    throw new Error(message)
   }
 }
 
@@ -1095,6 +2039,20 @@ export async function selfReportPaid(participantId: string) {
   const participant = mine[0]
   if (participant.user_id !== uid) throw new Error('Not your participant entry')
   if (participant.left_at) throw new Error('You have left this project')
+
+  const { data: project, error: projectErr } = await supabaseAdmin
+    .from('projects')
+    .select('status')
+    .eq('id', participant.project_id)
+    .maybeSingle()
+  if (projectErr || !project) throw projectErr || new Error('Project not found')
+  const projectStatus = normalizeProjectStatus(project.status)
+  if (projectStatus === 'pending') {
+    throw new Error('Start collecting before recording payments')
+  }
+  if (projectStatus !== 'collecting') {
+    throw new Error('Payments are not editable for this project status')
+  }
 
   const { data: existing, error: existingErr } = await supabaseAdmin
     .from('payment_signals')
@@ -1246,6 +2204,20 @@ export async function markReceived(participantId: string) {
     ? await getActiveParticipantContext(participant.project_id, uid)
     : { actorUserId: null, actorParticipantId: null as string | null }
 
+  const { data: project, error: projectErr } = await supabaseAdmin
+    .from('projects')
+    .select('status')
+    .eq('id', participant.project_id)
+    .maybeSingle()
+  if (projectErr || !project) throw projectErr || new Error('Project not found')
+  const projectStatus = normalizeProjectStatus(project.status)
+  if (projectStatus === 'pending') {
+    throw new Error('Start collecting before recording payments')
+  }
+  if (projectStatus !== 'collecting') {
+    throw new Error('Payments are not editable for this project status')
+  }
+
   const { data: paymentRow, error: e3 } = await supabaseAdmin
     .from('payments')
     .insert({ participant_id: participantId, is_counted: true })
@@ -1385,6 +2357,16 @@ export async function selfReportExtraPaid(extraId: string, payerParticipantId: s
   if (!extraId || !payerParticipantId) throw new Error('Missing ids')
 
   const due = await resolveExtraDueForParticipant(extraId, payerParticipantId)
+  const projectStatus = normalizeProjectStatus(due.projectStatus)
+  if (projectStatus === 'pending') {
+    throw new Error('Start collecting before recording payments')
+  }
+  if (projectStatus === 'cancelled' || projectStatus === 'canceled') {
+    throw new Error('Payments are disabled for canceled projects')
+  }
+  if (projectStatus !== 'collecting' && projectStatus !== 'closed') {
+    throw new Error('Payments are not editable for this project status')
+  }
   if (due.payerUserId !== uid) throw new Error('Not your participant entry')
   if (due.collectorParticipantId === due.payerParticipantId) {
     throw new Error('No transfer is needed for this extra')
@@ -1464,6 +2446,16 @@ export async function markExtraCollectorSelfPaid(extraId: string, payerParticipa
   if (!extraId || !payerParticipantId) throw new Error('Missing ids')
 
   const due = await resolveExtraDueForParticipant(extraId, payerParticipantId)
+  const projectStatus = normalizeProjectStatus(due.projectStatus)
+  if (projectStatus === 'pending') {
+    throw new Error('Start collecting before recording payments')
+  }
+  if (projectStatus === 'cancelled' || projectStatus === 'canceled') {
+    throw new Error('Payments are disabled for canceled projects')
+  }
+  if (projectStatus !== 'collecting' && projectStatus !== 'closed') {
+    throw new Error('Payments are not editable for this project status')
+  }
   if (due.payerUserId !== uid) throw new Error('Not your participant entry')
   if (due.collectorParticipantId !== due.payerParticipantId) {
     throw new Error('This extra requires a transfer to another collector')
@@ -1552,6 +2544,16 @@ export async function markExtraReceived(extraId: string, payerParticipantId: str
   if (!extraId || !payerParticipantId) throw new Error('Missing ids')
 
   const due = await resolveExtraDueForParticipant(extraId, payerParticipantId)
+  const projectStatus = normalizeProjectStatus(due.projectStatus)
+  if (projectStatus === 'pending') {
+    throw new Error('Start collecting before recording payments')
+  }
+  if (projectStatus === 'cancelled' || projectStatus === 'canceled') {
+    throw new Error('Payments are disabled for canceled projects')
+  }
+  if (projectStatus !== 'collecting' && projectStatus !== 'closed') {
+    throw new Error('Payments are not editable for this project status')
+  }
   if (due.collectorParticipantId === due.payerParticipantId) {
     revalidatePath(`/project/${due.projectId}`)
     return
@@ -2018,8 +3020,12 @@ const friendlyExtrasUnavailableError = () =>
 const friendlyExtraPaymentsUnavailableError = () =>
   new Error('Extra payments are unavailable until the latest database migration is applied')
 
+const friendlyRefundsUnavailableError = () =>
+  new Error('Refund requests are unavailable until the latest database migration is applied')
+
 type ResolvedExtraDue = {
   projectId: string
+  projectStatus: string
   extraTitle: string | null
   payerParticipantId: string
   payerUserId: string | null
@@ -2062,7 +3068,7 @@ const resolveExtraDueForParticipant = async (
   ] = await Promise.all([
     supabaseAdmin
       .from('projects')
-      .select('id, collector_participant_id, min_participants')
+      .select('id, collector_participant_id, min_participants, status')
       .eq('id', extra.project_id)
       .maybeSingle(),
     supabaseAdmin
@@ -2116,6 +3122,7 @@ const resolveExtraDueForParticipant = async (
 
   return {
     projectId: extra.project_id,
+    projectStatus: String(project.status ?? ''),
     extraTitle: extra.title ?? null,
     payerParticipantId: payerParticipant.id,
     payerUserId: payerParticipant.user_id ?? null,
@@ -2455,6 +3462,220 @@ export async function updateExtraCollector(projectId: string, extraId: string, f
   revalidatePath(`/project/${projectId}`)
 }
 
+const friendlyBaseItineraryUnavailableError = () =>
+  new Error('Base itinerary is unavailable until the latest database migration is applied')
+
+const friendlyBaseItineraryPricingUnavailableError = () =>
+  new Error('Base itinerary pricing is unavailable until the latest database migration is applied')
+
+const parseBaseItineraryDraft = (formData: FormData) => {
+  const title = String(formData.get('title') ?? '').trim()
+  const descriptionRaw = String(formData.get('description') ?? '').trim()
+  const amountRaw = String(formData.get('amount_eur') ?? '').trim()
+
+  const amountFloat = amountRaw ? Number(amountRaw.replace(',', '.')) : 0
+  if (!Number.isFinite(amountFloat) || amountFloat < 0) {
+    throw new Error('Included price is invalid')
+  }
+  const amountCents = Math.round(amountFloat * 100)
+
+  if (!title) throw new Error('Title is required')
+  if (title.length > 180) throw new Error('Title is too long')
+  if (descriptionRaw.length > 3000) throw new Error('Description is too long')
+
+  return {
+    title,
+    description: descriptionRaw || null,
+    amountCents,
+  }
+}
+
+export async function createBaseItineraryItem(projectId: string, formData: FormData) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+
+  await requireActiveManager(projectId, uid)
+  const { title, description, amountCents } = parseBaseItineraryDraft(formData)
+
+  const { data: lastItem, error: lastErr } = await supabaseAdmin
+    .from('project_base_itinerary_items')
+    .select('sort_order')
+    .eq('project_id', projectId)
+    .order('sort_order', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (lastErr) {
+    if (missingTable(lastErr, 'project_base_itinerary_items')) throw friendlyBaseItineraryUnavailableError()
+    throw new Error(lastErr.message ?? 'Failed to load itinerary order')
+  }
+  const nextSortOrder = Math.max(0, Number(lastItem?.sort_order ?? 0)) + 1
+  const nowIso = new Date().toISOString()
+
+  const { error: createErr } = await supabaseAdmin
+    .from('project_base_itinerary_items')
+    .insert({
+      project_id: projectId,
+      title,
+      description,
+      amount_cents: amountCents,
+      sort_order: nextSortOrder,
+      created_by: uid,
+      updated_at: nowIso,
+    })
+  if (createErr) {
+    if (missingTable(createErr, 'project_base_itinerary_items')) throw friendlyBaseItineraryUnavailableError()
+    if (missingColumn(createErr, 'amount_cents')) throw friendlyBaseItineraryPricingUnavailableError()
+    throw new Error(createErr.message ?? 'Failed to create itinerary item')
+  }
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function updateBaseItineraryItem(projectId: string, itemId: string, formData: FormData) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+  if (!itemId) throw new Error('Missing itinerary item id')
+
+  await requireActiveManager(projectId, uid)
+  const { title, description, amountCents } = parseBaseItineraryDraft(formData)
+
+  const { data: existingItem, error: existingErr } = await supabaseAdmin
+    .from('project_base_itinerary_items')
+    .select('id, project_id')
+    .eq('id', itemId)
+    .maybeSingle()
+  if (existingErr) {
+    if (missingTable(existingErr, 'project_base_itinerary_items')) throw friendlyBaseItineraryUnavailableError()
+    throw new Error(existingErr.message ?? 'Failed to load itinerary item')
+  }
+  if (!existingItem || existingItem.project_id !== projectId) {
+    throw new Error('Itinerary item not found')
+  }
+
+  const { error: updateErr } = await supabaseAdmin
+    .from('project_base_itinerary_items')
+    .update({
+      title,
+      description,
+      amount_cents: amountCents,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', itemId)
+    .eq('project_id', projectId)
+  if (updateErr) {
+    if (missingTable(updateErr, 'project_base_itinerary_items')) throw friendlyBaseItineraryUnavailableError()
+    if (missingColumn(updateErr, 'amount_cents')) throw friendlyBaseItineraryPricingUnavailableError()
+    throw new Error(updateErr.message ?? 'Failed to update itinerary item')
+  }
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function deleteBaseItineraryItem(projectId: string, itemId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+  if (!itemId) throw new Error('Missing itinerary item id')
+
+  await requireActiveManager(projectId, uid)
+
+  const { error: deleteErr } = await supabaseAdmin
+    .from('project_base_itinerary_items')
+    .delete()
+    .eq('id', itemId)
+    .eq('project_id', projectId)
+  if (deleteErr) {
+    if (missingTable(deleteErr, 'project_base_itinerary_items')) throw friendlyBaseItineraryUnavailableError()
+    throw new Error(deleteErr.message ?? 'Failed to delete itinerary item')
+  }
+
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function moveBaseItineraryItem(projectId: string, itemId: string, direction: 'up' | 'down') {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
+  if (!itemId) throw new Error('Missing itinerary item id')
+  if (direction !== 'up' && direction !== 'down') throw new Error('Invalid move direction')
+
+  await requireActiveManager(projectId, uid)
+
+  const { data: currentItem, error: currentErr } = await supabaseAdmin
+    .from('project_base_itinerary_items')
+    .select('id, project_id, sort_order')
+    .eq('id', itemId)
+    .maybeSingle()
+  if (currentErr) {
+    if (missingTable(currentErr, 'project_base_itinerary_items')) throw friendlyBaseItineraryUnavailableError()
+    throw new Error(currentErr.message ?? 'Failed to load itinerary item')
+  }
+  if (!currentItem || currentItem.project_id !== projectId) {
+    throw new Error('Itinerary item not found')
+  }
+
+  const neighborQuery = direction === 'up'
+    ? supabaseAdmin
+        .from('project_base_itinerary_items')
+        .select('id, sort_order')
+        .eq('project_id', projectId)
+        .lt('sort_order', Number(currentItem.sort_order ?? 0))
+        .order('sort_order', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(1)
+    : supabaseAdmin
+        .from('project_base_itinerary_items')
+        .select('id, sort_order')
+        .eq('project_id', projectId)
+        .gt('sort_order', Number(currentItem.sort_order ?? 0))
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: true })
+        .limit(1)
+
+  const { data: neighborItem, error: neighborErr } = await neighborQuery.maybeSingle()
+  if (neighborErr) {
+    if (missingTable(neighborErr, 'project_base_itinerary_items')) throw friendlyBaseItineraryUnavailableError()
+    throw new Error(neighborErr.message ?? 'Failed to move itinerary item')
+  }
+  if (!neighborItem) {
+    revalidatePath(`/project/${projectId}`)
+    return
+  }
+
+  const nowIso = new Date().toISOString()
+  const currentSortOrder = Number(currentItem.sort_order ?? 0)
+  const neighborSortOrder = Number(neighborItem.sort_order ?? 0)
+
+  const { error: currentUpdateErr } = await supabaseAdmin
+    .from('project_base_itinerary_items')
+    .update({ sort_order: neighborSortOrder, updated_at: nowIso })
+    .eq('id', currentItem.id)
+    .eq('project_id', projectId)
+  if (currentUpdateErr) {
+    if (missingTable(currentUpdateErr, 'project_base_itinerary_items')) throw friendlyBaseItineraryUnavailableError()
+    throw new Error(currentUpdateErr.message ?? 'Failed to move itinerary item')
+  }
+
+  const { error: neighborUpdateErr } = await supabaseAdmin
+    .from('project_base_itinerary_items')
+    .update({ sort_order: currentSortOrder, updated_at: nowIso })
+    .eq('id', neighborItem.id)
+    .eq('project_id', projectId)
+  if (neighborUpdateErr) {
+    if (missingTable(neighborUpdateErr, 'project_base_itinerary_items')) throw friendlyBaseItineraryUnavailableError()
+    throw new Error(neighborUpdateErr.message ?? 'Failed to move itinerary item')
+  }
+
+  revalidatePath(`/project/${projectId}`)
+}
+
 export async function updateProjectSettings(projectId: string, formData: FormData) {
   'use server'
   const uid = await getCurrentUserId()
@@ -2462,13 +3683,49 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   if (!projectId) throw new Error('Missing project id')
   const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
 
-  const { data: project, error: projectErr } = await supabaseAdmin
+  const projectSelect =
+    'id, collector_participant_id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at, event_location_label, event_location_address, event_location_lat, event_location_lng, event_location_place_id'
+    + ', bundle_size, bundle_pay_for'
+  const projectFallbackSelect =
+    'id, collector_participant_id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at, event_location_label, event_location_address, event_location_lat, event_location_lng, event_location_place_id'
+
+  const initialProjectResult = await supabaseAdmin
     .from('projects')
-    .select(
-      'id, collector_participant_id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at, event_location_label, event_location_address, event_location_lat, event_location_lng, event_location_place_id'
-    )
+    .select(projectSelect)
     .eq('id', projectId)
     .single()
+  let projectData = initialProjectResult.data as {
+    id: string
+    collector_participant_id: string | null
+    title: string | null
+    description: string | null
+    total_cents: number | null
+    total_is_per_person: boolean | null
+    bundle_size: number | null
+    bundle_pay_for: number | null
+    min_participants: number | null
+    max_participants: number | null
+    event_start_at: string | null
+    event_end_at: string | null
+    event_location_label: string | null
+    event_location_address: string | null
+    event_location_lat: number | null
+    event_location_lng: number | null
+    event_location_place_id: string | null
+  } | null
+  let projectErr = initialProjectResult.error
+  if (missingColumn(projectErr, 'bundle_size') || missingColumn(projectErr, 'bundle_pay_for')) {
+    const fallback = await supabaseAdmin
+      .from('projects')
+      .select(projectFallbackSelect)
+      .eq('id', projectId)
+      .single()
+    projectData = fallback.data
+      ? { ...fallback.data, bundle_size: null, bundle_pay_for: null }
+      : null
+    projectErr = fallback.error
+  }
+  const project = projectData
   if (projectErr || !project) throw projectErr || new Error('Project not found')
 
   if (!project.collector_participant_id) {
@@ -2490,6 +3747,8 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     ((formData.get('project_description') as string) || (formData.get('description') as string) || '').trim() || null
   const totalEur = (formData.get('totalEur') as string) ?? ''
   const totalIsPerPerson = (formData.get('total_is_per_person') as string) === 'true'
+  const bundleSizeRaw = String(formData.get('bundle_size') ?? '').trim()
+  const bundlePayForRaw = String(formData.get('bundle_pay_for') ?? '').trim()
   const minRaw = String(formData.get('min_participants') ?? '').trim()
   const maxRaw = String(formData.get('max_participants') ?? '').trim()
   const eventStartDate = (formData.get('event_start_date') as string) ?? null
@@ -2509,6 +3768,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     throw new Error('Invalid total amount')
   }
   const total_cents = Math.round(amountFloat * 100)
+  const { bundleSize, bundlePayFor } = validateBundlePricingConfig(totalIsPerPerson, bundleSizeRaw, bundlePayForRaw)
 
   const minParticipants = minRaw === '' ? null : Number(minRaw)
   const maxParticipants = maxRaw === '' ? null : Number(maxRaw)
@@ -2611,24 +3871,40 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   const eventLocationAddress = eventLocationAddressRaw || null
   const eventLocationPlaceId = eventLocationPlaceIdRaw || null
 
-  const { error } = await supabaseAdmin
+  const projectUpdate = {
+    title,
+    description,
+    total_cents,
+    total_is_per_person: totalIsPerPerson,
+    bundle_size: bundleSize,
+    bundle_pay_for: bundlePayFor,
+    min_participants: minParticipants,
+    max_participants: maxParticipants,
+    event_start_at: eventStartAt,
+    event_end_at: eventEndAt,
+    event_location_label: eventLocationLabel,
+    event_location_address: eventLocationAddress,
+    event_location_lat: eventLocationLat,
+    event_location_lng: eventLocationLng,
+    event_location_place_id: eventLocationPlaceId,
+  }
+
+  let { error } = await supabaseAdmin
     .from('projects')
-    .update({
-      title,
-      description,
-      total_cents,
-      total_is_per_person: totalIsPerPerson,
-      min_participants: minParticipants,
-      max_participants: maxParticipants,
-      event_start_at: eventStartAt,
-      event_end_at: eventEndAt,
-      event_location_label: eventLocationLabel,
-      event_location_address: eventLocationAddress,
-      event_location_lat: eventLocationLat,
-      event_location_lng: eventLocationLng,
-      event_location_place_id: eventLocationPlaceId,
-    })
+    .update(projectUpdate)
     .eq('id', projectId)
+  if (missingColumn(error, 'bundle_size') || missingColumn(error, 'bundle_pay_for')) {
+    if (bundleSize !== null || bundlePayFor !== null) {
+      throw new Error('Bundle pricing is unavailable until the latest database migration is applied')
+    }
+
+    const { bundle_size: _bundleSize, bundle_pay_for: _bundlePayFor, ...fallbackUpdate } = projectUpdate
+    const fallback = await supabaseAdmin
+      .from('projects')
+      .update(fallbackUpdate)
+      .eq('id', projectId)
+    error = fallback.error
+  }
   if (error) throw error
 
   const toNullableNumber = (value: unknown) => {
@@ -2646,6 +3922,8 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   if ((project.description ?? null) !== description) changedFields.push('description')
   if (Number(project.total_cents ?? 0) !== total_cents) changedFields.push('total_cents')
   if (!!project.total_is_per_person !== totalIsPerPerson) changedFields.push('total_is_per_person')
+  if ((project.bundle_size ?? null) !== bundleSize) changedFields.push('bundle_size')
+  if ((project.bundle_pay_for ?? null) !== bundlePayFor) changedFields.push('bundle_pay_for')
   if ((project.min_participants ?? null) !== minParticipants) changedFields.push('min_participants')
   if ((project.max_participants ?? null) !== maxParticipants) changedFields.push('max_participants')
   if ((project.event_start_at ?? null) !== eventStartAt) changedFields.push('event_start_at')

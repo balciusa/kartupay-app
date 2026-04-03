@@ -5,13 +5,32 @@ import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { recordProjectActivity } from '@/lib/activityLog'
+import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getCurrentUserId } from '@/lib/supabaseServer'
+
+const missingColumn = (
+  error: { message?: string; details?: string | null; hint?: string | null; code?: string } | null,
+  column: string
+) => {
+  const haystack = `${error?.message ?? ''} ${error?.details ?? ''} ${error?.hint ?? ''}`.toLowerCase()
+  const columnName = column.toLowerCase()
+  if (!haystack.includes(columnName)) return false
+  return (
+    haystack.includes('does not exist') ||
+    haystack.includes('could not find') ||
+    haystack.includes('schema cache') ||
+    haystack.includes('unknown column') ||
+    error?.code === 'PGRST204'
+  )
+}
 
 const schema = z.object({
   title: z.string().min(3).max(120),
   description: z.string().max(2000).optional().nullable(),
   totalEur: z.string().trim().regex(/^\d+([.,]\d{1,2})?$/),
   total_is_per_person: z.enum(['true', 'false']),
+  bundle_size: z.string().optional().nullable(),
+  bundle_pay_for: z.string().optional().nullable(),
   min_participants: z.string().optional().nullable(),
   max_participants: z.string().optional().nullable(),
   event_start_date: z.string().optional().nullable(),
@@ -59,6 +78,8 @@ export async function createProject(formData: FormData) {
     description: (formData.get('description') as string) || null,
     totalEur: (formData.get('totalEur') as string) ?? '',
     total_is_per_person: (formData.get('total_is_per_person') as string) ?? 'false',
+    bundle_size: (formData.get('bundle_size') as string) ?? null,
+    bundle_pay_for: (formData.get('bundle_pay_for') as string) ?? null,
     min_participants: typeof minParticipantsValue === 'string' ? minParticipantsValue : null,
     max_participants: typeof maxParticipantsValue === 'string' ? maxParticipantsValue : null,
     event_start_date: (formData.get('event_start_date') as string) ?? null,
@@ -82,6 +103,8 @@ export async function createProject(formData: FormData) {
     description,
     totalEur,
     total_is_per_person,
+    bundle_size,
+    bundle_pay_for,
     min_participants,
     max_participants,
     event_start_date,
@@ -117,6 +140,7 @@ export async function createProject(formData: FormData) {
   }
   const total_cents = Math.round(amountFloat * 100)
   const totalIsPerPerson = total_is_per_person === 'true'
+  const { bundleSize, bundlePayFor } = validateBundlePricingConfig(totalIsPerPerson, bundle_size, bundle_pay_for)
   const eventStartAt = parseEventDateTime(event_start_date, event_start_time, '09:00')
   const eventEndAt = parseEventDateTime(event_end_date, event_end_time, '17:00')
   if (eventStartAt && eventEndAt && new Date(eventEndAt) < new Date(eventStartAt)) {
@@ -150,26 +174,46 @@ export async function createProject(formData: FormData) {
   const locationLat = parseCoordinate(locationLatRaw, 'latitude')
   const locationLng = parseCoordinate(locationLngRaw, 'longitude')
 
-  const { data: proj, error: pErr } = await supabaseAdmin
+  const projectInsert = {
+    title,
+    description,
+    total_cents,
+    total_is_per_person: totalIsPerPerson,
+    bundle_size: bundleSize,
+    bundle_pay_for: bundlePayFor,
+    min_participants: minParticipants,
+    max_participants: maxParticipants,
+    event_start_at: eventStartAt,
+    event_end_at: eventEndAt,
+    event_location_label: locationLabel,
+    event_location_address: locationAddress,
+    event_location_place_id: locationPlaceId,
+    event_location_lat: locationLat,
+    event_location_lng: locationLng,
+    status: 'pending',
+  }
+
+  let { data: proj, error: pErr } = await supabaseAdmin
     .from('projects')
-    .insert({
-      title,
-      description,
-      total_cents,
-      total_is_per_person: totalIsPerPerson,
-      min_participants: minParticipants,
-      max_participants: maxParticipants,
-      event_start_at: eventStartAt,
-      event_end_at: eventEndAt,
-      event_location_label: locationLabel,
-      event_location_address: locationAddress,
-      event_location_place_id: locationPlaceId,
-      event_location_lat: locationLat,
-      event_location_lng: locationLng,
-      status: 'collecting',
-    })
+    .insert(projectInsert)
     .select('id')
     .single()
+
+  const bundleColumnsMissing = missingColumn(pErr, 'bundle_size') || missingColumn(pErr, 'bundle_pay_for')
+  if (bundleColumnsMissing) {
+    if (bundleSize !== null || bundlePayFor !== null) {
+      throw new Error('Bundle pricing is unavailable until the latest database migration is applied')
+    }
+
+    const { bundle_size: _bundleSize, bundle_pay_for: _bundlePayFor, ...fallbackInsert } = projectInsert
+    const fallback = await supabaseAdmin
+      .from('projects')
+      .insert(fallbackInsert)
+      .select('id')
+      .single()
+    proj = fallback.data
+    pErr = fallback.error
+  }
 
   if (pErr || !proj?.id) {
     throw new Error(
@@ -211,6 +255,8 @@ export async function createProject(formData: FormData) {
       title,
       total_cents,
       total_is_per_person: totalIsPerPerson,
+      bundle_size: bundleSize,
+      bundle_pay_for: bundlePayFor,
     },
   })
 

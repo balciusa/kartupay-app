@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { validateBundlePricingConfig } from '@/lib/projectPricing'
 
 type ProjectSettingsFormProps = {
   action: (formData: FormData) => void | Promise<void>
@@ -10,6 +11,8 @@ type ProjectSettingsFormProps = {
     description: string
     totalEur: string
     totalIsPerPerson: boolean
+    bundleSize: number | null
+    bundlePayFor: number | null
     minParticipants: number | null
     maxParticipants: number | null
     eventStartDate: string
@@ -98,12 +101,17 @@ const parseCoordinate = (value: string, axis: 'latitude' | 'longitude') => {
 }
 
 export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProps) {
+  const [totalIsPerPerson, setTotalIsPerPerson] = useState(initial.totalIsPerPerson)
+  const [bundleEnabled, setBundleEnabled] = useState(initial.bundleSize != null && initial.bundlePayFor != null)
+  const [bundleSize, setBundleSize] = useState(initial.bundleSize == null ? '' : String(initial.bundleSize))
+  const [bundlePayFor, setBundlePayFor] = useState(initial.bundlePayFor == null ? '' : String(initial.bundlePayFor))
   const [startDate, setStartDate] = useState(initial.eventStartDate)
   const [startTime, setStartTime] = useState(initial.eventStartTime)
   const [endDate, setEndDate] = useState(initial.eventEndDate)
   const [endTime, setEndTime] = useState(initial.eventEndTime)
   const [dateError, setDateError] = useState<string | null>(null)
   const [locationError, setLocationError] = useState<string | null>(null)
+  const [pricingError, setPricingError] = useState<string | null>(null)
 
   const [locationLabel, setLocationLabel] = useState(initial.eventLocationLabel)
   const [locationAddress, setLocationAddress] = useState(initial.eventLocationAddress)
@@ -216,6 +224,16 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
     return null
   }
 
+  const validatePricing = () => {
+    if (!totalIsPerPerson || !bundleEnabled) return null
+    try {
+      validateBundlePricingConfig(true, bundleSize, bundlePayFor)
+      return null
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Invalid bundle pricing'
+    }
+  }
+
   const geocodeAddress = (address: string) => {
     const geocoder = geocoderRef.current
     const normalizedAddress = address.trim()
@@ -245,16 +263,19 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     const eventError = validateEventRange()
     const locationValidationError = validateLocation()
+    const pricingValidationError = validatePricing()
 
-    if (eventError || locationValidationError) {
+    if (eventError || locationValidationError || pricingValidationError) {
       event.preventDefault()
-      setDateError(eventError)
-      setLocationError(locationValidationError)
+      setDateError(eventError ?? null)
+      setLocationError(locationValidationError ?? null)
+      setPricingError(pricingValidationError)
       return
     }
 
     setDateError(null)
     setLocationError(null)
+    setPricingError(null)
   }
 
   const clearLocation = () => {
@@ -320,7 +341,11 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
                 type="radio"
                 name="total_is_per_person"
                 value="false"
-                defaultChecked={!initial.totalIsPerPerson}
+                checked={!totalIsPerPerson}
+                onChange={() => {
+                  setTotalIsPerPerson(false)
+                  setPricingError(null)
+                }}
               />
               Grand total
             </label>
@@ -329,13 +354,85 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
                 type="radio"
                 name="total_is_per_person"
                 value="true"
-                defaultChecked={!!initial.totalIsPerPerson}
+                checked={!!totalIsPerPerson}
+                onChange={() => {
+                  setTotalIsPerPerson(true)
+                  setPricingError(null)
+                }}
               />
               Per person
             </label>
           </div>
         </div>
       </div>
+
+      {totalIsPerPerson && (
+        <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold text-slate-900">Bundle deal</h3>
+            <p className="text-xs text-slate-600">
+              Optional. Use the regular per-ticket price above and equal-split the discounted total across all
+              participants.
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={bundleEnabled}
+              onChange={event => {
+                const checked = event.target.checked
+                setBundleEnabled(checked)
+                setPricingError(null)
+                if (checked) {
+                  if (!bundleSize) setBundleSize('4')
+                  if (!bundlePayFor) setBundlePayFor('3')
+                }
+              }}
+            />
+            Apply bundle pricing
+          </label>
+          {bundleEnabled && (
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label htmlFor="settings-bundle-size" className="mb-1 block text-sm font-medium text-slate-700">
+                  Buy this many
+                </label>
+                <input
+                  id="settings-bundle-size"
+                  name="bundle_size"
+                  type="number"
+                  min={2}
+                  step={1}
+                  className="control-input"
+                  value={bundleSize}
+                  onChange={event => {
+                    setBundleSize(event.target.value)
+                    setPricingError(null)
+                  }}
+                />
+              </div>
+              <div>
+                <label htmlFor="settings-bundle-pay-for" className="mb-1 block text-sm font-medium text-slate-700">
+                  Pay for this many
+                </label>
+                <input
+                  id="settings-bundle-pay-for"
+                  name="bundle_pay_for"
+                  type="number"
+                  min={1}
+                  step={1}
+                  className="control-input"
+                  value={bundlePayFor}
+                  onChange={event => {
+                    setBundlePayFor(event.target.value)
+                    setPricingError(null)
+                  }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid gap-3 md:grid-cols-2">
         <div>
@@ -503,6 +600,11 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
       {locationError && (
         <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
           {locationError}
+        </div>
+      )}
+      {pricingError && (
+        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {pricingError}
         </div>
       )}
 

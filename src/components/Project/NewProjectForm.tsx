@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { createProject } from '@/app/project/new/actions'
 import { Button } from '@/components/ui/button'
+import { validateBundlePricingConfig } from '@/lib/projectPricing'
 
 type NewProjectFormProps = {
   showCancel?: boolean
@@ -72,6 +73,11 @@ const parseCoordinate = (value: string, axis: 'latitude' | 'longitude') => {
 }
 
 export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Create' }: NewProjectFormProps) {
+  const [totalIsPerPerson, setTotalIsPerPerson] = useState(false)
+  const [bundleEnabled, setBundleEnabled] = useState(false)
+  const [bundleSize, setBundleSize] = useState('')
+  const [bundlePayFor, setBundlePayFor] = useState('')
+  const [pricingError, setPricingError] = useState<string | null>(null)
   const [locationLabel, setLocationLabel] = useState('')
   const [locationAddress, setLocationAddress] = useState('')
   const [locationPlaceId, setLocationPlaceId] = useState('')
@@ -212,14 +218,27 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
     return null
   }
 
+  const validatePricing = () => {
+    if (!totalIsPerPerson || !bundleEnabled) return null
+    try {
+      validateBundlePricingConfig(true, bundleSize, bundlePayFor)
+      return null
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Invalid bundle pricing'
+    }
+  }
+
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     const validationError = validateLocation()
-    if (!validationError) {
+    const pricingValidationError = validatePricing()
+    if (!validationError && !pricingValidationError) {
       setLocationError(null)
+      setPricingError(null)
       return
     }
     event.preventDefault()
-    setLocationError(validationError)
+    setLocationError(validationError ?? null)
+    setPricingError(pricingValidationError)
   }
 
   const clearLocation = () => {
@@ -287,16 +306,102 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
           <label className="text-sm font-medium">Total type</label>
           <div className="control-radio-group space-y-2">
             <label className="flex items-center gap-2 text-sm">
-              <input type="radio" name="total_is_per_person" value="false" defaultChecked />
+              <input
+                type="radio"
+                name="total_is_per_person"
+                value="false"
+                checked={!totalIsPerPerson}
+                onChange={() => {
+                  setTotalIsPerPerson(false)
+                  setPricingError(null)
+                }}
+              />
               Grand total
             </label>
             <label className="flex items-center gap-2 text-sm">
-              <input type="radio" name="total_is_per_person" value="true" />
+              <input
+                type="radio"
+                name="total_is_per_person"
+                value="true"
+                checked={totalIsPerPerson}
+                onChange={() => {
+                  setTotalIsPerPerson(true)
+                  setPricingError(null)
+                }}
+              />
               Per person
             </label>
           </div>
         </div>
       </div>
+
+      {totalIsPerPerson && (
+        <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold text-slate-900">Bundle deal</h3>
+            <p className="text-xs text-slate-600">
+              Optional. Use the regular per-ticket price above and equal-split the discounted total across everyone,
+              for example buy 4 tickets and pay for 3.
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={bundleEnabled}
+              onChange={event => {
+                const checked = event.target.checked
+                setBundleEnabled(checked)
+                setPricingError(null)
+                if (checked) {
+                  if (!bundleSize) setBundleSize('4')
+                  if (!bundlePayFor) setBundlePayFor('3')
+                }
+              }}
+            />
+            Apply bundle pricing
+          </label>
+          {bundleEnabled && (
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-2">
+                <label htmlFor="project_bundle_size" className="text-sm font-medium">
+                  Buy this many
+                </label>
+                <input
+                  id="project_bundle_size"
+                  name="bundle_size"
+                  type="number"
+                  min={2}
+                  step={1}
+                  className="control-input"
+                  value={bundleSize}
+                  onChange={event => {
+                    setBundleSize(event.target.value)
+                    setPricingError(null)
+                  }}
+                />
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="project_bundle_pay_for" className="text-sm font-medium">
+                  Pay for this many
+                </label>
+                <input
+                  id="project_bundle_pay_for"
+                  name="bundle_pay_for"
+                  type="number"
+                  min={1}
+                  step={1}
+                  className="control-input"
+                  value={bundlePayFor}
+                  onChange={event => {
+                    setBundlePayFor(event.target.value)
+                    setPricingError(null)
+                  }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
@@ -444,6 +549,11 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
       {locationError && (
         <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
           {locationError}
+        </div>
+      )}
+      {pricingError && (
+        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {pricingError}
         </div>
       )}
 
