@@ -1,8 +1,9 @@
 import Link from 'next/link'
-import { createSupabaseServerClient } from '@/lib/supabaseClient'
 import { NewProjectModal } from '@/components/Home/NewProjectModal'
 import { ProjectsToolbar } from '@/components/Home/ProjectsToolbar'
 import { getProjectStatusUiKey, projectStatusUi } from '@/lib/projectStatusUi'
+import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
+import { supabaseAdmin } from '@/lib/supabaseAdmin'
 
 type SearchParams = {
   q?: string | string[]
@@ -10,12 +11,29 @@ type SearchParams = {
   sort?: string | string[]
 }
 
+const missingColumn = (
+  error: { message?: string; details?: string | null; hint?: string | null; code?: string } | null,
+  column: string
+) => {
+  const haystack = `${error?.message ?? ''} ${error?.details ?? ''} ${error?.hint ?? ''}`.toLowerCase()
+  const columnName = column.toLowerCase()
+  if (!haystack.includes(columnName)) return false
+  return (
+    haystack.includes('does not exist') ||
+    haystack.includes('could not find') ||
+    haystack.includes('schema cache') ||
+    haystack.includes('unknown column') ||
+    error?.code === 'PGRST204'
+  )
+}
+
 export default async function Home({
   searchParams,
 }: {
   searchParams?: SearchParams | Promise<SearchParams>
 }) {
-  const supabase = createSupabaseServerClient()
+  const supabase = await getSupabaseServer()
+  const uid = await getCurrentUserId()
   const resolvedSearchParams = searchParams ? await searchParams : {}
   const getParamValue = (value: string | string[] | undefined) =>
     Array.isArray(value) ? value[0] : value
@@ -38,44 +56,69 @@ export default async function Home({
     return ''
   })()
 
-  let query = supabase
-    .from('projects')
-    .select('id, title, total_cents, min_participants, status, canceled_at, event_start_at, event_end_at, created_at')
+  const buildProjectsQuery = (selectList: string) => {
+    let query = supabase
+      .from('projects')
+      .select(selectList)
 
-  if (searchQuery) {
-    query = query.ilike('title', `%${searchQuery}%`)
+    if (searchQuery) {
+      query = query.ilike('title', `%${searchQuery}%`)
+    }
+
+    if (statusFilter === 'pending') {
+      query = query.eq('status', 'pending')
+    } else if (statusFilter === 'collecting') {
+      query = query.eq('status', 'collecting')
+    } else if (statusFilter === 'closed') {
+      query = query.eq('status', 'closed')
+    } else if (statusFilter === 'canceled') {
+      query = query.or('status.eq.canceled,status.eq.cancelled,canceled_at.not.is.null')
+    }
+
+    switch (sortKey) {
+      case 'event':
+        query = query.order('event_start_at', { ascending: true, nullsFirst: false })
+        query = query.order('created_at', { ascending: false })
+        break
+      case 'budget_desc':
+        query = query.order('total_cents', { ascending: false, nullsFirst: false })
+        query = query.order('created_at', { ascending: false })
+        break
+      case 'budget_asc':
+        query = query.order('total_cents', { ascending: true, nullsFirst: false })
+        query = query.order('created_at', { ascending: false })
+        break
+      default:
+        query = query.order('created_at', { ascending: false })
+    }
+
+    return query
   }
 
-  if (statusFilter === 'pending') {
-    query = query.eq('status', 'pending')
-  } else if (statusFilter === 'collecting') {
-    query = query.eq('status', 'collecting')
-  } else if (statusFilter === 'closed') {
-    query = query.eq('status', 'closed')
-  } else if (statusFilter === 'canceled') {
-    query = query.or('status.eq.canceled,status.eq.cancelled,canceled_at.not.is.null')
+  const baseProjectSelect = 'id, title, total_cents, min_participants, status, canceled_at, event_start_at, event_end_at, created_at'
+  let { data: projects, error } = await buildProjectsQuery(`${baseProjectSelect}, is_public`)
+  let visibilityAvailable = true
+  if (missingColumn(error, 'is_public')) {
+    visibilityAvailable = false
+    const fallback = await buildProjectsQuery(baseProjectSelect)
+    projects = fallback.data ? fallback.data.map(project => ({ ...project, is_public: true })) : null
+    error = fallback.error
   }
 
-  switch (sortKey) {
-    case 'event':
-      query = query.order('event_start_at', { ascending: true, nullsFirst: false })
-      query = query.order('created_at', { ascending: false })
-      break
-    case 'budget_desc':
-      query = query.order('total_cents', { ascending: false, nullsFirst: false })
-      query = query.order('created_at', { ascending: false })
-      break
-    case 'budget_asc':
-      query = query.order('total_cents', { ascending: true, nullsFirst: false })
-      query = query.order('created_at', { ascending: false })
-      break
-    default:
-      query = query.order('created_at', { ascending: false })
-  }
+  const { data: membershipRows, error: membershipError } = uid
+    ? await supabaseAdmin
+        .from('participants')
+        .select('project_id')
+        .eq('user_id', uid)
+    : { data: [], error: null }
 
-  const { data: projects, error } = await query
+  const memberProjectIds = new Set((membershipRows ?? []).map(row => row.project_id))
+  const projectList = (projects ?? []).filter(project => {
+    if (!visibilityAvailable) return true
+    return project.is_public === true || memberProjectIds.has(project.id)
+  })
 
-  const projectList = projects ?? []
+  const pageError = error ?? membershipError
 
   const formatMoney = (cents: number | null | undefined) =>
     `EUR ${(Number(cents ?? 0) / 100).toFixed(2)}`
@@ -108,7 +151,7 @@ export default async function Home({
     },
     { key: 'pending', value: 'pending', label: projectStatusUi.pending.label, className: projectStatusUi.pending.badgeClassName },
     { key: 'collecting', value: 'collecting', label: projectStatusUi.collecting.label, className: projectStatusUi.collecting.badgeClassName },
-    { key: 'closed', value: 'closed', label: 'Locked', className: projectStatusUi.locked.badgeClassName },
+    { key: 'closed', value: 'closed', label: projectStatusUi.locked.label, className: projectStatusUi.locked.badgeClassName },
     { key: 'canceled', value: 'canceled', label: projectStatusUi.canceled.label, className: projectStatusUi.canceled.badgeClassName },
   ]
 
@@ -124,9 +167,9 @@ export default async function Home({
         <NewProjectModal />
       </div>
 
-      {error && (
+      {pageError && (
         <div className="rounded-xl border border-destructive/25 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          DB error: {error.message}
+          DB error: {pageError.message}
         </div>
       )}
 
@@ -158,6 +201,10 @@ export default async function Home({
             const statusLabel = statusKey === 'unknown' && rawStatus ? rawStatus : statusMeta.label
             const statusClass = statusMeta.badgeClassName
             const isCanceled = statusKey === 'canceled'
+            const isPublic = !visibilityAvailable || p.is_public === true
+            const visibilityClass = isPublic
+              ? 'border-sky-200 bg-sky-100 text-sky-700'
+              : 'border-slate-200 bg-slate-100 text-slate-700'
 
             return (
               <Link
@@ -171,6 +218,9 @@ export default async function Home({
                       <div className="text-lg font-semibold">{p.title}</div>
                       <span className={`${statusBadgeBase} ${statusClass}`}>
                         {statusLabel}
+                      </span>
+                      <span className={`${statusBadgeBase} ${visibilityClass}`}>
+                        {isPublic ? 'Public' : 'Private'}
                       </span>
                     </div>
                     <div className="text-sm text-muted-foreground">

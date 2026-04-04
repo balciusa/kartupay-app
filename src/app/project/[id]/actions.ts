@@ -3683,24 +3683,19 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   if (!projectId) throw new Error('Missing project id')
   const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
 
-  const projectSelect =
+  const baseProjectFields =
     'id, collector_participant_id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at, event_location_label, event_location_address, event_location_lat, event_location_lng, event_location_place_id'
-    + ', bundle_size, bundle_pay_for'
-  const projectFallbackSelect =
-    'id, collector_participant_id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at, event_location_label, event_location_address, event_location_lat, event_location_lng, event_location_place_id'
-
-  const initialProjectResult = await supabaseAdmin
-    .from('projects')
-    .select(projectSelect)
-    .eq('id', projectId)
-    .single()
-  let projectData = initialProjectResult.data as {
+  const optionalProjectFields = ['is_public', 'bundle_size', 'bundle_pay_for'] as const
+  let optionalFields = [...optionalProjectFields]
+  const missingFields = new Set<string>()
+  let projectData: {
     id: string
     collector_participant_id: string | null
     title: string | null
     description: string | null
     total_cents: number | null
     total_is_per_person: boolean | null
+    is_public: boolean | null
     bundle_size: number | null
     bundle_pay_for: number | null
     min_participants: number | null
@@ -3713,17 +3708,40 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     event_location_lng: number | null
     event_location_place_id: string | null
   } | null
-  let projectErr = initialProjectResult.error
-  if (missingColumn(projectErr, 'bundle_size') || missingColumn(projectErr, 'bundle_pay_for')) {
-    const fallback = await supabaseAdmin
+  let projectErr: { message?: string; details?: string | null; hint?: string | null; code?: string } | null = null
+
+  while (true) {
+    const selectList = [baseProjectFields, ...optionalFields].join(', ')
+    const result = await supabaseAdmin
       .from('projects')
-      .select(projectFallbackSelect)
+      .select(selectList)
       .eq('id', projectId)
       .single()
-    projectData = fallback.data
-      ? { ...fallback.data, bundle_size: null, bundle_pay_for: null }
+
+    const missingField = optionalFields.find(field => missingColumn(result.error, field))
+    if (missingField) {
+      optionalFields = optionalFields.filter(field => field !== missingField)
+      missingFields.add(missingField)
+      if (optionalFields.length === 0) {
+        projectData = result.data
+          ? { ...result.data, is_public: true, bundle_size: null, bundle_pay_for: null }
+          : null
+        projectErr = result.error
+        break
+      }
+      continue
+    }
+
+    projectData = result.data
+      ? {
+          ...result.data,
+          is_public: 'is_public' in result.data ? result.data.is_public ?? true : true,
+          bundle_size: 'bundle_size' in result.data ? result.data.bundle_size ?? null : null,
+          bundle_pay_for: 'bundle_pay_for' in result.data ? result.data.bundle_pay_for ?? null : null,
+        }
       : null
-    projectErr = fallback.error
+    projectErr = result.error
+    break
   }
   const project = projectData
   if (projectErr || !project) throw projectErr || new Error('Project not found')
@@ -3746,6 +3764,8 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   const description =
     ((formData.get('project_description') as string) || (formData.get('description') as string) || '').trim() || null
   const totalEur = (formData.get('totalEur') as string) ?? ''
+  const visibility = String(formData.get('visibility') ?? (project.is_public === true ? 'public' : 'private')).trim().toLowerCase()
+  const isPublic = visibility === 'public'
   const totalIsPerPerson = (formData.get('total_is_per_person') as string) === 'true'
   const bundleSizeRaw = String(formData.get('bundle_size') ?? '').trim()
   const bundlePayForRaw = String(formData.get('bundle_pay_for') ?? '').trim()
@@ -3876,6 +3896,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     description,
     total_cents,
     total_is_per_person: totalIsPerPerson,
+    is_public: isPublic,
     bundle_size: bundleSize,
     bundle_pay_for: bundlePayFor,
     min_participants: minParticipants,
@@ -3893,12 +3914,17 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     .from('projects')
     .update(projectUpdate)
     .eq('id', projectId)
+  if (missingColumn(error, 'is_public')) {
+    throw new Error('Project visibility is unavailable until the latest database migration is applied')
+  }
   if (missingColumn(error, 'bundle_size') || missingColumn(error, 'bundle_pay_for')) {
     if (bundleSize !== null || bundlePayFor !== null) {
       throw new Error('Bundle pricing is unavailable until the latest database migration is applied')
     }
 
     const { bundle_size: _bundleSize, bundle_pay_for: _bundlePayFor, ...fallbackUpdate } = projectUpdate
+    void _bundleSize
+    void _bundlePayFor
     const fallback = await supabaseAdmin
       .from('projects')
       .update(fallbackUpdate)
@@ -3922,6 +3948,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   if ((project.description ?? null) !== description) changedFields.push('description')
   if (Number(project.total_cents ?? 0) !== total_cents) changedFields.push('total_cents')
   if (!!project.total_is_per_person !== totalIsPerPerson) changedFields.push('total_is_per_person')
+  if (!!project.is_public !== isPublic) changedFields.push('is_public')
   if ((project.bundle_size ?? null) !== bundleSize) changedFields.push('bundle_size')
   if ((project.bundle_pay_for ?? null) !== bundlePayFor) changedFields.push('bundle_pay_for')
   if ((project.min_participants ?? null) !== minParticipants) changedFields.push('min_participants')

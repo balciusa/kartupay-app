@@ -14,6 +14,7 @@ type ProjectFlowBarProps = {
   canStartCollecting: boolean
   canFinalize: boolean
   startCollectingBlockedReason: string | null
+  collectorBaseShareLabel: string
 }
 
 export function ProjectFlowBar({
@@ -25,6 +26,7 @@ export function ProjectFlowBar({
   canStartCollecting,
   canFinalize,
   startCollectingBlockedReason,
+  collectorBaseShareLabel,
 }: ProjectFlowBarProps) {
   const [startCollectingOpen, setStartCollectingOpen] = useState(false)
   const flow = getProjectFlowState({
@@ -41,7 +43,7 @@ export function ProjectFlowBar({
   const stateView = (() => {
     if (flow.kind === 'canceled') {
       return {
-        message: 'This project was canceled before the participant list was locked.',
+        message: 'This project was canceled before the participant list was finalized.',
         helper: null,
         actionLabel: null,
         enabled: false,
@@ -71,7 +73,7 @@ export function ProjectFlowBar({
     }
 
     return {
-      message: 'Participant list is locked. Base contributions are frozen.',
+      message: 'Participant list is finalized. Base contributions are frozen.',
       helper: null,
       actionLabel: null,
       enabled: false,
@@ -169,13 +171,13 @@ export function ProjectFlowBar({
             <div className="space-y-3 p-4 text-sm text-slate-700">
               <p>
                 Opening payments moves the project from
-                <span className="font-medium"> Pending </span>
+                <span className="font-medium"> Planning </span>
                 to
                 <span className="font-medium"> Collecting</span>.
               </p>
               <p>
-                This action automatically marks your
-                <span className="font-medium"> base share</span>
+                This action automatically marks your{' '}
+                <span className="font-medium">base share ({collectorBaseShareLabel})</span>{' '}
                 as paid.
               </p>
               <p>

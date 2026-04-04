@@ -28,10 +28,14 @@ export function BaseItineraryEditor({
   projectId,
   available,
   items,
+  variant = 'standalone',
+  targetTotalCents = null,
 }: {
   projectId: string
   available: boolean
   items: BaseItineraryItem[]
+  variant?: 'standalone' | 'embedded'
+  targetTotalCents?: number | null
 }) {
   const [addOpen, setAddOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
@@ -49,6 +53,11 @@ export function BaseItineraryEditor({
       }),
     [items]
   )
+  const itineraryTotalCents = useMemo(
+    () => sortedItems.reduce((sum, item) => sum + Math.max(0, Number(item.amount_cents ?? 0)), 0),
+    [sortedItems]
+  )
+  const isEmbedded = variant === 'embedded'
 
   const closeAddModal = useCallback(() => {
     setAddOpen(false)
@@ -130,25 +139,40 @@ export function BaseItineraryEditor({
 
   return (
     <div className="space-y-4">
-      <div className="space-y-0.5">
-        <h2 className="text-lg font-semibold">Base price itinerary</h2>
-        <p className="text-sm text-muted-foreground">Add items, then click any item below to edit or delete it.</p>
-      </div>
+      {!isEmbedded ? (
+        <>
+          <div className="space-y-0.5">
+            <h2 className="text-lg font-semibold">Base price itinerary</h2>
+            <p className="text-sm text-muted-foreground">Add items, then click any item below to edit or delete it.</p>
+          </div>
 
-      <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-        <Button type="button" onClick={openAddModal} className="rounded-full px-5 py-2.5 text-sm flex items-center gap-2">
-          <Plus className="h-4 w-4" />
-          Add Item
-        </Button>
-      </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+            <Button type="button" onClick={openAddModal} className="rounded-full px-5 py-2.5 text-sm flex items-center gap-2">
+              <Plus className="h-4 w-4" />
+              Add Item
+            </Button>
+          </div>
+        </>
+      ) : (
+        <div className="flex justify-end">
+          <Button type="button" onClick={openAddModal} variant="outline" className="rounded-full px-4 py-2 text-sm flex items-center gap-2">
+            <Plus className="h-4 w-4" />
+            Add item
+          </Button>
+        </div>
+      )}
 
       <section className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-        <div className="border-b border-slate-200 bg-slate-50 px-4 py-2">
-          <h3 className="text-sm font-semibold text-slate-900">Items</h3>
-        </div>
+        {!isEmbedded ? (
+          <div className="border-b border-slate-200 bg-slate-50 px-4 py-2">
+            <h3 className="text-sm font-semibold text-slate-900">Items</h3>
+          </div>
+        ) : null}
 
         {sortedItems.length === 0 ? (
-          <div className="px-4 py-3 text-sm text-slate-500">No itinerary items yet.</div>
+          <div className="px-4 py-3 text-sm text-slate-500">
+            {isEmbedded ? 'No base itinerary has been published yet.' : 'No itinerary items yet.'}
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full border-collapse text-sm">
@@ -178,10 +202,28 @@ export function BaseItineraryEditor({
                   </tr>
                 ))}
               </tbody>
+              {targetTotalCents !== null ? (
+                <tfoot>
+                  <tr className="bg-slate-100/80">
+                    <td className="border-r border-slate-200 px-3 py-2 text-right font-semibold text-slate-700" colSpan={2}>
+                      Itinerary total
+                    </td>
+                    <td className="px-3 py-2 text-right font-semibold text-slate-900">
+                      {formatEuro(itineraryTotalCents)}
+                    </td>
+                  </tr>
+                </tfoot>
+              ) : null}
             </table>
           </div>
         )}
       </section>
+
+      {targetTotalCents !== null && itineraryTotalCents !== targetTotalCents ? (
+        <div className="text-xs text-slate-500">
+          Note: itinerary total is {formatEuro(itineraryTotalCents)}, while base target is {formatEuro(targetTotalCents)}.
+        </div>
+      ) : null}
 
       {addOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

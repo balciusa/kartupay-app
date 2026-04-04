@@ -117,8 +117,8 @@ export function PendingOverviewCards(props: PendingOverviewCardsProps) {
             !
           </div>
           <div className="space-y-0.5">
-            <h2 className="text-2xl font-semibold text-slate-900">Pending Readiness</h2>
-            <p className="text-sm text-slate-600">Track what will move this project from pending to collecting.</p>
+            <h2 className="text-2xl font-semibold text-slate-900">Planning Readiness</h2>
+            <p className="text-sm text-slate-600">Track what will move this project from planning to collecting.</p>
           </div>
         </div>
 

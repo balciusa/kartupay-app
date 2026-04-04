@@ -16,6 +16,7 @@ import { LateOutgoingTransfers } from '@/components/Project/LateOutgoingTransfer
 import { ExtrasTab } from '@/components/Project/ExtrasTab'
 import { LocationLinkMenu } from '@/components/Project/LocationLinkMenu'
 import { ProjectFlowBar } from '@/components/Project/ProjectFlowBar'
+import { BaseItineraryEditor } from '@/components/Project/BaseItineraryEditor'
 import { getActivityCategory } from '@/lib/activityLog'
 import { buildExtraDueRows, extraDueKey } from '@/lib/extraPayments'
 import { calculateProjectPricing, describeBundlePricing } from '@/lib/projectPricing'
@@ -229,6 +230,7 @@ export default async function ProjectPage({
   const baseProjectFields =
     'id, title, description, total_cents, total_is_per_person, min_participants, max_participants, status, canceled_at, collector_participant_id, event_start_at, event_end_at'
   const optionalProjectFields = [
+    'is_public',
     'closed_at',
     'aborted_at',
     'finalized_at',
@@ -279,7 +281,7 @@ export default async function ProjectPage({
   if (project && optionalProjectFields.length) {
     for (const field of optionalProjectFields) {
       if (missingFields.has(field) || typeof project[field] === 'undefined') {
-        project[field] = null
+        project[field] = field === 'is_public' ? true : null
       }
     }
   }
@@ -354,6 +356,48 @@ export default async function ProjectPage({
       : null
 
   const uid = await getCurrentUserId()
+  if (project.is_public !== true) {
+    if (!uid) {
+      return (
+        <main className="p-6 max-w-2xl mx-auto space-y-4">
+          <h1 className="text-xl font-semibold">Private project</h1>
+          <p className="text-sm opacity-70">
+            This project is private. Sign in with a member account to view it.
+          </p>
+        </main>
+      )
+    }
+
+    const { data: privateMembership, error: privateMembershipError } = await supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('user_id', uid)
+      .limit(1)
+
+    if (privateMembershipError) {
+      console.error('[ProjectPage] private membership check error', privateMembershipError)
+      return (
+        <main className="p-6 max-w-2xl mx-auto space-y-4">
+          <h1 className="text-xl font-semibold">Project unavailable</h1>
+          <p className="text-sm opacity-70">
+            The privacy check failed while opening this project.
+          </p>
+        </main>
+      )
+    }
+
+    if (!privateMembership?.length) {
+      return (
+        <main className="p-6 max-w-2xl mx-auto space-y-4">
+          <h1 className="text-xl font-semibold">Private project</h1>
+          <p className="text-sm opacity-70">
+            This project is only visible to the creator and members who already joined it.
+          </p>
+        </main>
+      )
+    }
+  }
 
   // Fetch all related data in parallel
   const pollsPromise = (async () => {
@@ -397,7 +441,7 @@ export default async function ProjectPage({
     return (data ?? []) as ExtraRow[]
   })()
 
-  const baseItineraryPromise = (async (): Promise<BaseItineraryItemRow[]> => {
+  const baseItineraryPromise = (async (): Promise<{ available: boolean; items: BaseItineraryItemRow[] }> => {
     const { data, error } = await supabaseAdmin
       .from('project_base_itinerary_items')
       .select('id, project_id, title, amount_cents, sort_order, created_at')
@@ -408,13 +452,13 @@ export default async function ProjectPage({
     if (error) {
       if (missingTable(error, 'project_base_itinerary_items')) {
         console.warn('[ProjectPage] project_base_itinerary_items table missing, skipping base itinerary')
-        return []
+        return { available: false, items: [] }
       }
       console.error('[ProjectPage] base itinerary fetch error', error)
-      return []
+      return { available: true, items: [] }
     }
 
-    return (data ?? []) as BaseItineraryItemRow[]
+    return { available: true, items: (data ?? []) as BaseItineraryItemRow[] }
   })()
 
   const [
@@ -458,7 +502,7 @@ export default async function ProjectPage({
         .in('poll_id', pollIds)
     : { data: [] as Array<{ poll_id: string; option_id: string; user_id: string }> }
   const extrasRaw = await extrasPromise
-  const baseItineraryRaw = await baseItineraryPromise
+  const { available: baseItineraryAvailable, items: baseItineraryRaw } = await baseItineraryPromise
   const extraIds = extrasRaw.map(extra => extra.id)
   const { data: extraMembershipRows, error: extraMembershipsErr } = extraIds.length
     ? await supabase
@@ -735,7 +779,7 @@ export default async function ProjectPage({
   const perPersonCentsAtFinalize = pricingAtFinalize.perPersonCents
   const totalCents = pricingNow.totalCents
   const participantsNow = participantsCount
-  const showPaymentsTab = !isPendingStatus
+  const paymentsOpen = !isPendingStatus
   const viewerPaid = !!(myParticipantId && paidSet.has(myParticipantId))
   const viewerHasPendingSignal = !!(myParticipantId && pendingSignalsSet.has(myParticipantId))
   const viewerPaidCents = viewerPaid ? perPersonCents : 0
@@ -1530,6 +1574,7 @@ export default async function ProjectPage({
         startCollectingBlockedReason={
           isPendingStatus && !minParticipantsReached ? 'Waiting for minimum participants' : null
         }
+        collectorBaseShareLabel={formatEuro(perPersonCents)}
       />
 
       <ProjectTabs
@@ -1538,7 +1583,7 @@ export default async function ProjectPage({
           participants: participantsCount,
           activity: unreadCount,
           adminPending: viewerIsCollector ? (pendingForOrganizer ?? []).length : 0,
-          paymentsPending: showPaymentsTab ? pendingPaymentsCountWithExtras || undefined : undefined,
+          paymentsPending: pendingPaymentsCountWithExtras || undefined,
         }}
         sections={{
           overview: (
@@ -1650,7 +1695,7 @@ export default async function ProjectPage({
               </section>
             </div>
           ),
-          payments: showPaymentsTab ? (
+          payments: (
             <div className="space-y-6">
               <section className="rounded-2xl border border-slate-200/80 bg-gradient-to-br from-white to-slate-100 p-5 shadow-sm md:p-6">
                 <div className="space-y-5">
@@ -1663,6 +1708,13 @@ export default async function ProjectPage({
                       <p className="text-sm text-slate-600">Track balances and settle transfers quickly.</p>
                     </div>
                   </div>
+
+                  {isPendingStatus && (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 text-sm text-amber-900">
+                      Payments are still closed. You can review the base itinerary and projected totals here, but payment
+                      actions will unlock after the collector opens payments.
+                    </div>
+                  )}
 
                   <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 md:p-5">
                     <div className="flex flex-wrap items-end gap-2">
@@ -1695,64 +1747,74 @@ export default async function ProjectPage({
                           <span className="hidden text-xs text-slate-500 group-open:inline">Hide itinerary</span>
                         </summary>
                         <div className="border-t border-slate-200 px-3 py-3">
-                          {baseItineraryItems.length === 0 ? (
-                            <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-500">
-                              No base itinerary has been published yet.
-                            </div>
+                          {viewerIsCollector ? (
+                            <BaseItineraryEditor
+                              projectId={projectId}
+                              available={baseItineraryAvailable}
+                              items={baseItineraryItems}
+                              variant="embedded"
+                              targetTotalCents={totalCents}
+                            />
                           ) : (
-                            <div className="space-y-2">
-                              <div className="overflow-x-auto rounded-lg border border-slate-200">
-                                <table className="min-w-full border-collapse text-sm">
-                                  <thead>
-                                    <tr className="bg-slate-100 text-slate-700">
-                                      <th className="w-14 border-b border-r border-slate-200 px-3 py-2 text-left font-semibold">
-                                        #
-                                      </th>
-                                      <th className="border-b border-r border-slate-200 px-3 py-2 text-left font-semibold">
-                                        Included in Base
-                                      </th>
-                                      <th className="w-36 border-b border-slate-200 px-3 py-2 text-right font-semibold">
-                                        Price
-                                      </th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {baseItineraryItems.map((item, index) => (
-                                      <tr key={item.id} className="bg-white odd:bg-white even:bg-slate-50/60">
-                                        <td className="border-b border-r border-slate-200 px-3 py-2 text-slate-600">
-                                          {index + 1}
+                            baseItineraryItems.length === 0 ? (
+                              <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+                                No base itinerary has been published yet.
+                              </div>
+                            ) : (
+                              <div className="space-y-2">
+                                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                                  <table className="min-w-full border-collapse text-sm">
+                                    <thead>
+                                      <tr className="bg-slate-100 text-slate-700">
+                                        <th className="w-14 border-b border-r border-slate-200 px-3 py-2 text-left font-semibold">
+                                          #
+                                        </th>
+                                        <th className="border-b border-r border-slate-200 px-3 py-2 text-left font-semibold">
+                                          Included in Base
+                                        </th>
+                                        <th className="w-36 border-b border-slate-200 px-3 py-2 text-right font-semibold">
+                                          Price
+                                        </th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {baseItineraryItems.map((item, index) => (
+                                        <tr key={item.id} className="bg-white odd:bg-white even:bg-slate-50/60">
+                                          <td className="border-b border-r border-slate-200 px-3 py-2 text-slate-600">
+                                            {index + 1}
+                                          </td>
+                                          <td className="border-b border-r border-slate-200 px-3 py-2 font-medium text-slate-900">
+                                            {item.title}
+                                          </td>
+                                          <td className="border-b border-slate-200 px-3 py-2 text-right font-medium text-slate-900">
+                                            {formatEuro(item.amount_cents)}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                    <tfoot>
+                                      <tr className="bg-slate-100/80">
+                                        <td
+                                          className="border-r border-slate-200 px-3 py-2 text-right font-semibold text-slate-700"
+                                          colSpan={2}
+                                        >
+                                          Itinerary total
                                         </td>
-                                        <td className="border-b border-r border-slate-200 px-3 py-2 font-medium text-slate-900">
-                                          {item.title}
-                                        </td>
-                                        <td className="border-b border-slate-200 px-3 py-2 text-right font-medium text-slate-900">
-                                          {formatEuro(item.amount_cents)}
+                                        <td className="px-3 py-2 text-right font-semibold text-slate-900">
+                                          {formatEuro(baseItineraryTotalCents)}
                                         </td>
                                       </tr>
-                                    ))}
-                                  </tbody>
-                                  <tfoot>
-                                    <tr className="bg-slate-100/80">
-                                      <td
-                                        className="border-r border-slate-200 px-3 py-2 text-right font-semibold text-slate-700"
-                                        colSpan={2}
-                                      >
-                                        Itinerary total
-                                      </td>
-                                      <td className="px-3 py-2 text-right font-semibold text-slate-900">
-                                        {formatEuro(baseItineraryTotalCents)}
-                                      </td>
-                                    </tr>
-                                  </tfoot>
-                                </table>
-                              </div>
-                              {baseItineraryTotalCents !== totalCents && (
-                                <div className="text-xs text-slate-500">
-                                  Note: itinerary total is {formatEuro(baseItineraryTotalCents)}, while base target is{' '}
-                                  {formatEuro(totalCents)}.
+                                    </tfoot>
+                                  </table>
                                 </div>
-                              )}
-                            </div>
+                                {baseItineraryTotalCents !== totalCents && (
+                                  <div className="text-xs text-slate-500">
+                                    Note: itinerary total is {formatEuro(baseItineraryTotalCents)}, while base target is{' '}
+                                    {formatEuro(totalCents)}.
+                                  </div>
+                                )}
+                              </div>
+                            )
                           )}
                         </div>
                       </details>
@@ -2033,15 +2095,15 @@ export default async function ProjectPage({
                 {myParticipantId ? (
                   (() => {
                     const showLateOutgoing = lateOutgoingTransfers.length > 0
-                    const showBaseOutgoing = !viewerIsCollector && !!collectorId && !isFinalized && !viewerPaid
+                    const showBaseOutgoing = paymentsOpen && !viewerIsCollector && !!collectorId && !isFinalized && !viewerPaid
                     const showBaseSelfMark =
-                      viewerIsCollector && !!collectorId && myParticipantId === collectorId && !collectorIsCountedPaid
-                    const showExtraOutgoing = extraOutgoingForViewer.length > 0
-                    const showExtraSelfMark = extraSelfMarkRowsForViewer.length > 0
+                      paymentsOpen && viewerIsCollector && !!collectorId && myParticipantId === collectorId && !collectorIsCountedPaid
+                    const showExtraOutgoing = paymentsOpen && extraOutgoingForViewer.length > 0
+                    const showExtraSelfMark = paymentsOpen && extraSelfMarkRowsForViewer.length > 0
                     if (!showLateOutgoing && !showBaseOutgoing && !showBaseSelfMark && !showExtraOutgoing && !showExtraSelfMark) {
                       return (
                         <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/80 p-4 text-sm text-slate-500">
-                          No outgoing transfers.
+                          {isPendingStatus ? 'Payments are not open yet.' : 'No outgoing transfers.'}
                         </div>
                       )
                     }
@@ -2068,7 +2130,7 @@ export default async function ProjectPage({
                               viewerPaid={viewerPaid}
                               viewerHasPendingSignal={viewerHasPendingSignal}
                               projectCanceled={isAborted}
-                              canPay={minParticipantsReached}
+                              canPay={paymentsOpen && minParticipantsReached}
                             />
                           </div>
                         )}
@@ -2148,7 +2210,7 @@ export default async function ProjectPage({
                                   viewerPaid={false}
                                   viewerHasPendingSignal={row.reported}
                                   projectCanceled={isAborted}
-                                  canPay={minParticipantsReached}
+                                  canPay={paymentsOpen && minParticipantsReached}
                                   contextLabel={row.extra_title ? `Extra: ${row.extra_title}` : 'Extra payment'}
                                   reportPaidAction={selfReportExtraPaid.bind(null, row.extra_id, row.payer_participant_id)}
                                 />
@@ -2189,7 +2251,9 @@ export default async function ProjectPage({
                                         {row.extra_title ? `Extra: ${row.extra_title}` : 'Extra payment'}
                                       </span>
                                     </div>
-                                    {!minParticipantsReached ? (
+                                    {!paymentsOpen ? (
+                                      <span className="text-xs text-slate-500">Open payments to mark your share</span>
+                                    ) : !minParticipantsReached ? (
                                       <span className="text-xs text-slate-500">Waiting for minimum participants</span>
                                     ) : (
                                       <form
@@ -2218,7 +2282,7 @@ export default async function ProjectPage({
                   })()
                 ) : (
                   <div className="mt-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/80 p-4 text-sm text-slate-500">
-                    No outgoing transfers.
+                    {isPendingStatus ? 'Payments are not open yet.' : 'No outgoing transfers.'}
                   </div>
                 )}
               </section>
@@ -2402,7 +2466,7 @@ export default async function ProjectPage({
                 </section>
               )}
             </div>
-          ) : undefined,
+          ),
           voting: (
             <Voting
               projectId={projectId}

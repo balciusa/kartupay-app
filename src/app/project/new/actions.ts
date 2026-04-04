@@ -27,6 +27,7 @@ const missingColumn = (
 const schema = z.object({
   title: z.string().min(3).max(120),
   description: z.string().max(2000).optional().nullable(),
+  visibility: z.enum(['private', 'public']),
   totalEur: z.string().trim().regex(/^\d+([.,]\d{1,2})?$/),
   total_is_per_person: z.enum(['true', 'false']),
   bundle_size: z.string().optional().nullable(),
@@ -76,6 +77,7 @@ export async function createProject(formData: FormData) {
   const payload = {
     title: formData.get('title') as string,
     description: (formData.get('description') as string) || null,
+    visibility: (formData.get('visibility') as string) ?? 'private',
     totalEur: (formData.get('totalEur') as string) ?? '',
     total_is_per_person: (formData.get('total_is_per_person') as string) ?? 'false',
     bundle_size: (formData.get('bundle_size') as string) ?? null,
@@ -101,6 +103,7 @@ export async function createProject(formData: FormData) {
   const {
     title,
     description,
+    visibility,
     totalEur,
     total_is_per_person,
     bundle_size,
@@ -140,6 +143,7 @@ export async function createProject(formData: FormData) {
   }
   const total_cents = Math.round(amountFloat * 100)
   const totalIsPerPerson = total_is_per_person === 'true'
+  const isPublic = visibility === 'public'
   const { bundleSize, bundlePayFor } = validateBundlePricingConfig(totalIsPerPerson, bundle_size, bundle_pay_for)
   const eventStartAt = parseEventDateTime(event_start_date, event_start_time, '09:00')
   const eventEndAt = parseEventDateTime(event_end_date, event_end_time, '17:00')
@@ -190,6 +194,7 @@ export async function createProject(formData: FormData) {
     event_location_place_id: locationPlaceId,
     event_location_lat: locationLat,
     event_location_lng: locationLng,
+    is_public: isPublic,
     status: 'pending',
   }
 
@@ -199,6 +204,11 @@ export async function createProject(formData: FormData) {
     .select('id')
     .single()
 
+  const visibilityColumnMissing = missingColumn(pErr, 'is_public')
+  if (visibilityColumnMissing) {
+    throw new Error('Project visibility is unavailable until the latest database migration is applied')
+  }
+
   const bundleColumnsMissing = missingColumn(pErr, 'bundle_size') || missingColumn(pErr, 'bundle_pay_for')
   if (bundleColumnsMissing) {
     if (bundleSize !== null || bundlePayFor !== null) {
@@ -206,6 +216,8 @@ export async function createProject(formData: FormData) {
     }
 
     const { bundle_size: _bundleSize, bundle_pay_for: _bundlePayFor, ...fallbackInsert } = projectInsert
+    void _bundleSize
+    void _bundlePayFor
     const fallback = await supabaseAdmin
       .from('projects')
       .insert(fallbackInsert)
@@ -254,6 +266,7 @@ export async function createProject(formData: FormData) {
     metadata: {
       title,
       total_cents,
+      is_public: isPublic,
       total_is_per_person: totalIsPerPerson,
       bundle_size: bundleSize,
       bundle_pay_for: bundlePayFor,

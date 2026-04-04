@@ -38,10 +38,10 @@ export function PendingMemberOverview({
           <span
             className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${projectStatusUi.pending.badgeClassName}`}
           >
-            Pending
+            Planning
           </span>
           <div className="space-y-0.5">
-            <h2 className="text-2xl font-semibold text-slate-900">Project is still pending</h2>
+            <h2 className="text-2xl font-semibold text-slate-900">Project is still in planning</h2>
             <p className="text-sm text-slate-600">
               The collector is still preparing the project before opening payments.
             </p>

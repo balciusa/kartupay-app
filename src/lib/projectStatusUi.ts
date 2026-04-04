@@ -9,7 +9,7 @@ type ProjectStatusUiMeta = {
 
 export const projectStatusUi: Record<ProjectStatusUiKey, ProjectStatusUiMeta> = {
   pending: {
-    label: 'Pending',
+    label: 'Planning',
     badgeClassName: 'border-amber-200 bg-amber-100 text-amber-700',
     flowCardClassName: 'border-amber-200 bg-amber-50',
     flowBadgeClassName: 'border-amber-300 bg-white text-amber-700',
@@ -21,7 +21,7 @@ export const projectStatusUi: Record<ProjectStatusUiKey, ProjectStatusUiMeta> = 
     flowBadgeClassName: 'border-emerald-300 bg-white text-emerald-700',
   },
   locked: {
-    label: 'Locked',
+    label: 'Finalized',
     badgeClassName: 'border-slate-200 bg-slate-100 text-slate-700',
     flowCardClassName: 'border-slate-200 bg-slate-100',
     flowBadgeClassName: 'border-slate-200 bg-white text-slate-700',

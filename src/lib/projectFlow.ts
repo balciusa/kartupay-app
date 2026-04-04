@@ -21,7 +21,7 @@ export type ProjectFlowState =
 export const PROJECT_FLOW_STEPS: ProjectFlowStep[] = [
   {
     key: 'planning',
-    label: 'Pending',
+    label: 'Planning',
     description: 'Gather participants and finalize details before collection starts.',
   },
   {
@@ -31,7 +31,7 @@ export const PROJECT_FLOW_STEPS: ProjectFlowStep[] = [
   },
   {
     key: 'locked',
-    label: 'Locked',
+    label: 'Finalized',
     description: 'Base shares are frozen and the participant list is treated as final.',
   },
 ]

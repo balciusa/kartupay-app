@@ -1,31 +1,6 @@
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { updateProjectSettings } from '@/app/project/[id]/actions'
 import { ProjectSettingsForm } from '@/components/Project/ProjectSettingsForm'
-import { BaseItineraryEditor } from '@/components/Project/BaseItineraryEditor'
-
-type BaseItineraryItem = {
-  id: string
-  title: string
-  amount_cents: number
-  sort_order: number
-  created_at: string
-}
-
-const missingTable = (
-  error: { message?: string; details?: string | null; hint?: string | null; code?: string } | null,
-  table: string
-) => {
-  const haystack = `${error?.message ?? ''} ${error?.details ?? ''} ${error?.hint ?? ''}`.toLowerCase()
-  const tableName = table.toLowerCase()
-  if (!haystack.includes(tableName) && error?.code !== '42P01') return false
-  return (
-    error?.code === '42P01' ||
-    haystack.includes('does not exist') ||
-    haystack.includes('could not find') ||
-    haystack.includes('schema cache') ||
-    haystack.includes('unknown table')
-  )
-}
 
 const missingColumn = (
   error: { message?: string; details?: string | null; hint?: string | null; code?: string } | null,
@@ -66,49 +41,70 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
   }
 
   const supabase = await getSupabaseServer()
-  const projectSelect =
-    'id, title, description, total_cents, total_is_per_person, bundle_size, bundle_pay_for, min_participants, max_participants, event_start_at, event_end_at, event_location_label, event_location_address, event_location_lat, event_location_lng, event_location_place_id'
-  const projectFallbackSelect =
+  const baseProjectFields =
     'id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at, event_location_label, event_location_address, event_location_lat, event_location_lng, event_location_place_id'
+  const optionalProjectFields = ['is_public', 'bundle_size', 'bundle_pay_for'] as const
+  let optionalFields = [...optionalProjectFields]
+  const missingFields = new Set<string>()
+  let project: {
+    id: string
+    title: string | null
+    description: string | null
+    total_cents: number | null
+    total_is_per_person: boolean | null
+    is_public: boolean | null
+    bundle_size: number | null
+    bundle_pay_for: number | null
+    min_participants: number | null
+    max_participants: number | null
+    event_start_at: string | null
+    event_end_at: string | null
+    event_location_label: string | null
+    event_location_address: string | null
+    event_location_lat: number | null
+    event_location_lng: number | null
+    event_location_place_id: string | null
+  } | null = null
+  let projectErr: { message?: string; details?: string | null; hint?: string | null; code?: string } | null = null
 
-  let { data: project, error: projectErr } = await supabase
-    .from('projects')
-    .select(projectSelect)
-    .eq('id', projectId)
-    .single()
-
-  if (missingColumn(projectErr, 'bundle_size') || missingColumn(projectErr, 'bundle_pay_for')) {
-    const fallback = await supabase
+  while (true) {
+    const selectList = [baseProjectFields, ...optionalFields].join(', ')
+    const result = await supabase
       .from('projects')
-      .select(projectFallbackSelect)
+      .select(selectList)
       .eq('id', projectId)
       .single()
-    project = fallback.data ? { ...fallback.data, bundle_size: null, bundle_pay_for: null } : null
-    projectErr = fallback.error
+
+    const missingField = optionalFields.find(field => missingColumn(result.error, field))
+    if (missingField) {
+      optionalFields = optionalFields.filter(field => field !== missingField)
+      missingFields.add(missingField)
+      if (optionalFields.length === 0) {
+        project = result.data
+          ? { ...result.data, is_public: true, bundle_size: null, bundle_pay_for: null }
+          : null
+        projectErr = result.error
+        break
+      }
+      continue
+    }
+
+    project = result.data
+      ? {
+          ...result.data,
+          is_public: 'is_public' in result.data ? result.data.is_public ?? true : true,
+          bundle_size: 'bundle_size' in result.data ? result.data.bundle_size ?? null : null,
+          bundle_pay_for: 'bundle_pay_for' in result.data ? result.data.bundle_pay_for ?? null : null,
+        }
+      : null
+    projectErr = result.error
+    break
   }
+
+  const visibilityAvailable = !missingFields.has('is_public')
 
   if (projectErr || !project) {
     return <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">Project not found.</div>
-  }
-
-  let baseItineraryAvailable = true
-  let baseItineraryItems: BaseItineraryItem[] = []
-  const { data: rawItineraryItems, error: itineraryErr } = await supabase
-    .from('project_base_itinerary_items')
-    .select('id, title, amount_cents, sort_order, created_at')
-    .eq('project_id', projectId)
-    .order('sort_order', { ascending: true })
-    .order('created_at', { ascending: true })
-
-  if (itineraryErr) {
-    if (missingTable(itineraryErr, 'project_base_itinerary_items')) {
-      baseItineraryAvailable = false
-      console.warn('[ProjectSettingsTab] project_base_itinerary_items table missing')
-    } else {
-      throw itineraryErr
-    }
-  } else {
-    baseItineraryItems = (rawItineraryItems ?? []) as BaseItineraryItem[]
   }
 
   const totalEur = (Number(project.total_cents ?? 0) / 100).toFixed(2)
@@ -129,6 +125,8 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
           initial={{
             title: project.title ?? '',
             description: project.description ?? '',
+            isPublic: project.is_public === true,
+            visibilityAvailable,
             totalEur,
             totalIsPerPerson: !!project.total_is_per_person,
             bundleSize: project.bundle_size ?? null,
@@ -145,14 +143,6 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
             eventLocationLng: project.event_location_lng == null ? '' : String(project.event_location_lng),
             eventLocationPlaceId: (project.event_location_place_id as string | null) ?? '',
           }}
-        />
-      </section>
-
-      <section className="surface-card p-5 md:p-6 space-y-4">
-        <BaseItineraryEditor
-          projectId={projectId}
-          available={baseItineraryAvailable}
-          items={baseItineraryItems}
         />
       </section>
     </div>

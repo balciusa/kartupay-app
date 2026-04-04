@@ -9,6 +9,8 @@ type ProjectSettingsFormProps = {
   initial: {
     title: string
     description: string
+    isPublic: boolean
+    visibilityAvailable: boolean
     totalEur: string
     totalIsPerPerson: boolean
     bundleSize: number | null
@@ -318,6 +320,48 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
             className="control-textarea min-h-[120px]"
           />
         </div>
+      </div>
+
+      <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold text-slate-900">Visibility</h3>
+          <p className="text-xs text-slate-600">
+            Private projects stay off the main projects page except for you and members who join.
+          </p>
+        </div>
+
+        {initial.visibilityAvailable ? (
+          <div className="control-radio-group space-y-2">
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="radio"
+                name="visibility"
+                value="private"
+                defaultChecked={!initial.isPublic}
+              />
+              <span>
+                <span className="font-medium text-slate-900">Private</span>
+                <span className="block text-xs text-slate-600">Hidden from the public projects list.</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="radio"
+                name="visibility"
+                value="public"
+                defaultChecked={initial.isPublic}
+              />
+              <span>
+                <span className="font-medium text-slate-900">Public</span>
+                <span className="block text-xs text-slate-600">Visible on the main projects page for everyone.</span>
+              </span>
+            </label>
+          </div>
+        ) : (
+          <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            Project visibility is unavailable until the latest database migration is applied.
+          </div>
+        )}
       </div>
 
       <div className="grid gap-3 md:grid-cols-[minmax(220px,1fr)_minmax(0,1.4fr)]">

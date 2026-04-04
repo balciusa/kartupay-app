@@ -9,6 +9,7 @@ export async function createDemoProject() {
     currency: 'EUR',
     total_cents: 60000,
     min_participants: 3,
+    is_public: true,
     created_by: null
   })
   if (error) throw error

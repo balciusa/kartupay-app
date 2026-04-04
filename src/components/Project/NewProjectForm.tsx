@@ -284,6 +284,40 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
         />
       </div>
 
+      <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold text-slate-900">Visibility</h3>
+          <p className="text-xs text-slate-600">
+            Private projects stay off the main projects page except for you and members who join.
+          </p>
+        </div>
+        <div className="control-radio-group space-y-2">
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="radio"
+              name="visibility"
+              value="private"
+              defaultChecked
+            />
+            <span>
+              <span className="font-medium text-slate-900">Private</span>
+              <span className="block text-xs text-slate-600">Hidden from the public projects list.</span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="radio"
+              name="visibility"
+              value="public"
+            />
+            <span>
+              <span className="font-medium text-slate-900">Public</span>
+              <span className="block text-xs text-slate-600">Visible on the main projects page for everyone.</span>
+            </span>
+          </label>
+        </div>
+      </div>
+
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
           <label htmlFor="project_total" className="text-sm font-medium">
