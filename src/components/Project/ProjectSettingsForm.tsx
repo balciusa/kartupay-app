@@ -1,22 +1,29 @@
 'use client'
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, useActionState, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
+import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
+import { FINANCE_HISTORY_ERROR, type ProjectFinanceMode } from '@/lib/projectFinance'
+import type { ProjectDateLocale } from '@/lib/projectDateStrings'
 
 type ProjectSettingsFormProps = {
-  action: (formData: FormData) => void | Promise<void>
+  action: (formData: FormData) => Promise<{ error: string | null }>
+  locale?: ProjectDateLocale
   initial: {
     title: string
     description: string
     isPublic: boolean
     visibilityAvailable: boolean
+    financeMode: ProjectFinanceMode
+    financeModeAvailable: boolean
     totalEur: string
     totalIsPerPerson: boolean
     bundleSize: number | null
     bundlePayFor: number | null
     minParticipants: number | null
     maxParticipants: number | null
+    dateMode: 'fixed' | 'selecting'
     eventStartDate: string
     eventStartTime: string
     eventEndDate: string
@@ -102,7 +109,12 @@ const parseCoordinate = (value: string, axis: 'latitude' | 'longitude') => {
   return { value: parsed }
 }
 
-export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProps) {
+export function ProjectSettingsForm({ action, initial, locale = 'en' }: ProjectSettingsFormProps) {
+  const [saveState, saveAction, isSaving] = useActionState(
+    async (_previousState: { error: string | null }, formData: FormData) => action(formData),
+    { error: null }
+  )
+  const [financeMode, setFinanceMode] = useState<ProjectFinanceMode>(initial.financeMode)
   const [totalIsPerPerson, setTotalIsPerPerson] = useState(initial.totalIsPerPerson)
   const [bundleEnabled, setBundleEnabled] = useState(initial.bundleSize != null && initial.bundlePayFor != null)
   const [bundleSize, setBundleSize] = useState(initial.bundleSize == null ? '' : String(initial.bundleSize))
@@ -129,6 +141,7 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
   const geocoderRef = useRef<google.maps.Geocoder | null>(null)
   const geocodeRequestCounterRef = useRef(0)
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? ''
+  const financeStrings = getProjectFinanceStrings(locale)
 
   const timeOptions = useMemo(() => {
     const baseTimes = Array.from({ length: 48 }, (_, idx) => {
@@ -227,6 +240,7 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
   }
 
   const validatePricing = () => {
+    if (financeMode === 'none') return null
     if (!totalIsPerPerson || !bundleEnabled) return null
     try {
       validateBundlePricingConfig(true, bundleSize, bundlePayFor)
@@ -297,7 +311,7 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
   })()
 
   return (
-    <form action={action} className="space-y-5" onSubmit={onSubmit}>
+    <form action={saveAction} className="space-y-5" onSubmit={onSubmit}>
       <div className="space-y-3">
         <div>
           <label htmlFor="settings-project-title" className="mb-1 block text-sm font-medium text-slate-700">Project title</label>
@@ -364,6 +378,56 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
         )}
       </div>
 
+      <section className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold text-slate-900">{financeStrings.sharedCosts}</h3>
+          <p className="text-xs text-slate-600">{financeStrings.sharedCostsHelp}</p>
+        </div>
+        {initial.financeModeAvailable ? (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className={`min-h-28 cursor-pointer rounded-xl border bg-white p-4 transition-colors ${financeMode === 'none' ? 'border-slate-900 ring-2 ring-slate-900/10' : 'border-slate-200 hover:border-slate-400'}`}>
+                <input type="radio" name="finance_mode" value="none" checked={financeMode === 'none'} onChange={() => setFinanceMode('none')} className="sr-only" />
+                <span className="block text-sm font-semibold text-slate-900">{financeStrings.organizeOnly}</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-600">{financeStrings.organizeOnlyDescription}</span>
+              </label>
+              <label className={`min-h-28 cursor-pointer rounded-xl border bg-white p-4 transition-colors ${financeMode === 'managed' ? 'border-slate-900 ring-2 ring-slate-900/10' : 'border-slate-200 hover:border-slate-400'}`}>
+                <input type="radio" name="finance_mode" value="managed" checked={financeMode === 'managed'} onChange={() => setFinanceMode('managed')} className="sr-only" />
+                <span className="block text-sm font-semibold text-slate-900">{financeStrings.manageSharedCosts}</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-600">{financeStrings.manageSharedCostsDescription}</span>
+              </label>
+            </div>
+            {financeMode !== initial.financeMode && (
+              <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                <input type="checkbox" name="confirm_finance_mode_change" value="true" required className="mt-0.5" />
+                <span>{financeMode === 'managed' ? financeStrings.enableSharedCosts : financeStrings.disableSharedCosts}</span>
+              </label>
+            )}
+          </>
+        ) : (
+          <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            Shared cost management is unavailable until the latest database migration is applied.
+          </div>
+        )}
+      </section>
+
+      {financeMode === 'managed' && <>
+      {initial.financeMode === 'none' && (
+        <div className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-4">
+          <div>
+            <h3 className="text-sm font-semibold text-emerald-950">{financeStrings.paymentRecipient}</h3>
+            <p className="mt-1 text-xs text-emerald-800">{financeStrings.paymentRecipientHelp}</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-[160px_minmax(0,1fr)]">
+            <select name="finance_payment_type" className="control-select" defaultValue="revolut" required>
+              <option value="revolut">Revolut</option>
+              <option value="swedbank">Swedbank</option>
+              <option value="iban">IBAN</option>
+            </select>
+            <input name="finance_payment_value" className="control-input" placeholder={financeStrings.paymentRecipientPlaceholder} required />
+          </div>
+        </div>
+      )}
       <div className="grid gap-3 md:grid-cols-[minmax(220px,1fr)_minmax(0,1.4fr)]">
         <div>
           <label htmlFor="settings-project-total" className="mb-1 block text-sm font-medium text-slate-700">Total (EUR)</label>
@@ -477,6 +541,7 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
           )}
         </div>
       )}
+      </>}
 
       <div className="grid gap-3 md:grid-cols-2">
         <div>
@@ -572,7 +637,11 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
         )}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
+      {initial.dateMode === 'selecting' ? (
+        <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4 text-sm text-indigo-900">
+          The final event date is controlled by Date Finder in Overview while voting is in progress.
+        </div>
+      ) : <div className="grid gap-3 md:grid-cols-2">
         <div>
           <label className="mb-1 block text-sm font-medium text-slate-700">Event starts (optional)</label>
           <div className="grid grid-cols-2 gap-2">
@@ -634,7 +703,7 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
             </select>
           </div>
         </div>
-      </div>
+      </div>}
 
       {dateError && (
         <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -651,9 +720,16 @@ export function ProjectSettingsForm({ action, initial }: ProjectSettingsFormProp
           {pricingError}
         </div>
       )}
+      {saveState.error && (
+        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+          {saveState.error === FINANCE_HISTORY_ERROR ? financeStrings.financeHistoryBlocked : saveState.error}
+        </div>
+      )}
 
       <div className="flex justify-end">
-        <Button className="rounded-full px-5">Save settings</Button>
+        <Button className="rounded-full px-5" disabled={isSaving} aria-busy={isSaving}>
+          {isSaving ? 'Saving...' : 'Save settings'}
+        </Button>
       </div>
     </form>
   )

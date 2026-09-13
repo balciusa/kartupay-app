@@ -4,11 +4,29 @@ import { ProjectsToolbar } from '@/components/Home/ProjectsToolbar'
 import { getProjectStatusUiKey, projectStatusUi } from '@/lib/projectStatusUi'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
+import { headers } from 'next/headers'
+import { resolveProjectDateLocale } from '@/lib/projectDateStrings'
+import { normalizeProjectFinanceMode, type ProjectFinanceMode } from '@/lib/projectFinance'
+import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
 
 type SearchParams = {
   q?: string | string[]
   status?: string | string[]
   sort?: string | string[]
+}
+
+type ProjectListRow = {
+  id: string
+  title: string
+  total_cents: number | null
+  min_participants: number | null
+  status: string | null
+  canceled_at: string | null
+  event_start_at: string | null
+  event_end_at: string | null
+  created_at: string | null
+  is_public?: boolean | null
+  finance_mode?: ProjectFinanceMode | null
 }
 
 const missingColumn = (
@@ -30,10 +48,13 @@ const missingColumn = (
 export default async function Home({
   searchParams,
 }: {
-  searchParams?: SearchParams | Promise<SearchParams>
+  searchParams?: Promise<SearchParams>
 }) {
   const supabase = await getSupabaseServer()
   const uid = await getCurrentUserId()
+  const requestHeaders = await headers()
+  const locale = resolveProjectDateLocale(requestHeaders.get('accept-language'))
+  const financeStrings = getProjectFinanceStrings(locale)
   const resolvedSearchParams = searchParams ? await searchParams : {}
   const getParamValue = (value: string | string[] | undefined) =>
     Array.isArray(value) ? value[0] : value
@@ -96,12 +117,21 @@ export default async function Home({
   }
 
   const baseProjectSelect = 'id, title, total_cents, min_participants, status, canceled_at, event_start_at, event_end_at, created_at'
-  let { data: projects, error } = await buildProjectsQuery(`${baseProjectSelect}, is_public`)
+  const initialProjectsResult = await buildProjectsQuery(`${baseProjectSelect}, is_public, finance_mode`)
+  let projects = initialProjectsResult.data as ProjectListRow[] | null
+  let error = initialProjectsResult.error
   let visibilityAvailable = true
+  if (missingColumn(error, 'finance_mode')) {
+    const fallback = await buildProjectsQuery(`${baseProjectSelect}, is_public`)
+    const fallbackProjects = fallback.data as ProjectListRow[] | null
+    projects = fallbackProjects ? fallbackProjects.map(project => ({ ...project, finance_mode: 'managed' })) : null
+    error = fallback.error
+  }
   if (missingColumn(error, 'is_public')) {
     visibilityAvailable = false
     const fallback = await buildProjectsQuery(baseProjectSelect)
-    projects = fallback.data ? fallback.data.map(project => ({ ...project, is_public: true })) : null
+    const fallbackProjects = fallback.data as ProjectListRow[] | null
+    projects = fallbackProjects ? fallbackProjects.map(project => ({ ...project, is_public: true, finance_mode: 'managed' })) : null
     error = fallback.error
   }
 
@@ -161,10 +191,10 @@ export default async function Home({
         <div className="space-y-1">
           <h1 className="page-title">Projects</h1>
           <p className="page-subtitle">
-            Track budgets, status, and upcoming event windows.
+            Plan participants, dates, decisions, and shared costs when needed.
           </p>
         </div>
-        <NewProjectModal />
+        <NewProjectModal locale={locale} />
       </div>
 
       {pageError && (
@@ -202,6 +232,7 @@ export default async function Home({
             const statusClass = statusMeta.badgeClassName
             const isCanceled = statusKey === 'canceled'
             const isPublic = !visibilityAvailable || p.is_public === true
+            const financeMode = normalizeProjectFinanceMode(p.finance_mode)
             const visibilityClass = isPublic
               ? 'border-sky-200 bg-sky-100 text-sky-700'
               : 'border-slate-200 bg-slate-100 text-slate-700'
@@ -222,6 +253,11 @@ export default async function Home({
                       <span className={`${statusBadgeBase} ${visibilityClass}`}>
                         {isPublic ? 'Public' : 'Private'}
                       </span>
+                      {financeMode === 'none' && (
+                        <span className={`${statusBadgeBase} border-emerald-200 bg-emerald-50 text-emerald-700`}>
+                          {financeStrings.organizeOnly}
+                        </span>
+                      )}
                     </div>
                     <div className="text-sm text-muted-foreground">
                       {formatEventRange(eventStart, eventEnd)}
@@ -233,7 +269,7 @@ export default async function Home({
                     )}
                   </div>
                   <div className="flex flex-col gap-1 text-sm md:text-right">
-                    <div className="text-lg font-semibold">{formatMoney(p.total_cents)}</div>
+                    {financeMode === 'managed' && <div className="text-lg font-semibold">{formatMoney(p.total_cents)}</div>}
                     <div className="text-xs text-muted-foreground">
                       Min participants: {p.min_participants ?? '-'}
                     </div>

@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { NewProjectForm } from '@/components/Project/NewProjectForm'
 import { Button } from '@/components/ui/button'
+import type { ProjectDateLocale } from '@/lib/projectDateStrings'
 
-export function NewProjectModal() {
+export function NewProjectModal({ locale = 'en' }: { locale?: ProjectDateLocale }) {
   const [open, setOpen] = useState(false)
   const modalRef = useRef<HTMLDivElement | null>(null)
 
@@ -76,7 +77,7 @@ export function NewProjectModal() {
               </Button>
             </div>
             <div className="p-5 space-y-3 overflow-y-auto">
-              <NewProjectForm showCancel onCancel={() => setOpen(false)} submitLabel="Create project" />
+              <NewProjectForm showCancel onCancel={() => setOpen(false)} submitLabel="Create project" locale={locale} />
             </div>
           </div>
         </div>

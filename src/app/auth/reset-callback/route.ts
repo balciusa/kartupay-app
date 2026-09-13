@@ -6,7 +6,6 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url)
   const code = url.searchParams.get('code')
   const token = url.searchParams.get('token')
-  const vtype = (url.searchParams.get('type') || 'recovery') as 'magiclink'|'recovery'|'invite'
 
   const cookieStore = await cookies()
   const supabase = createServerClient(
@@ -26,8 +25,8 @@ export async function GET(req: NextRequest) {
         },
         set(name: string, value: string, options: CookieOptions) {
           try {
-            if (typeof (cookieStore as any)?.set === 'function') {
-              ;(cookieStore as any).set({ name, value, ...options })
+            if (typeof cookieStore.set === 'function') {
+              cookieStore.set({ name, value, ...options })
             }
           } catch {
             // no-op in read-only render
@@ -35,8 +34,8 @@ export async function GET(req: NextRequest) {
         },
         remove(name: string, options: CookieOptions) {
           try {
-            if (typeof (cookieStore as any)?.set === 'function') {
-              ;(cookieStore as any).set({ name, value: '', ...options })
+            if (typeof cookieStore.set === 'function') {
+              cookieStore.set({ name, value: '', ...options })
             }
           } catch {
             // no-op in read-only render
@@ -50,7 +49,7 @@ export async function GET(req: NextRequest) {
     if (code) {
       // PKCE flow for password reset
       console.log('[reset-callback] Processing password reset PKCE flow')
-      const { data, error } = await supabase.auth.exchangeCodeForSession(code)
+      const { error } = await supabase.auth.exchangeCodeForSession(code)
       if (error) {
         console.error('[reset-callback] PKCE exchange error:', error)
         return NextResponse.redirect(new URL(`/?error=${encodeURIComponent(error.message)}`, req.url))
@@ -59,8 +58,7 @@ export async function GET(req: NextRequest) {
     } else if (token) {
       // Legacy token flow
       console.log('[reset-callback] Processing password reset token flow')
-      // @ts-ignore
-      const { data, error } = await supabase.auth.verifyOtp({ token_hash: token, type: 'recovery' })
+      const { error } = await supabase.auth.verifyOtp({ token_hash: token, type: 'recovery' })
       if (error) {
         console.error('[reset-callback] Token verification error:', error)
         return NextResponse.redirect(new URL(`/?error=${encodeURIComponent(error.message)}`, req.url))
@@ -70,9 +68,10 @@ export async function GET(req: NextRequest) {
       console.warn('[reset-callback] No code or token found in URL')
       return NextResponse.redirect(new URL('/?error=invalid_reset_link', req.url))
     }
-  } catch (e: any) {
-    console.error('[reset-callback] Unexpected error:', e?.message || e)
-    return NextResponse.redirect(new URL(`/?error=${encodeURIComponent(e?.message || 'reset_error')}`, req.url))
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : error
+    console.error('[reset-callback] Unexpected error:', detail)
+    return NextResponse.redirect(new URL(`/?error=${encodeURIComponent(detail ? String(detail) : 'reset_error')}`, req.url))
   }
 
   // Always redirect to password reset page since this is a dedicated reset callback

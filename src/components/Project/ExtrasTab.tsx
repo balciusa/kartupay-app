@@ -4,6 +4,9 @@ import { useState } from 'react'
 import { createExtra, joinExtra, leaveExtra, updateExtraCollector } from '@/app/project/[id]/actions'
 import { Button } from '@/components/ui/button'
 import { Plus } from 'lucide-react'
+import type { ProjectFinanceMode } from '@/lib/projectFinance'
+import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
+import type { ProjectDateLocale } from '@/lib/projectDateStrings'
 
 type ExtraItem = {
   id: string
@@ -17,6 +20,7 @@ type ExtraItem = {
   member_count: number
   member_labels: string[]
   viewer_joined: boolean
+  viewer_declined: boolean
   viewer_share_cents: number | null
   created_by_label: string
   can_manage: boolean
@@ -36,12 +40,14 @@ function CreateExtraModal({
   projectCanceled,
   projectCollectorLabel,
   collectorOptions,
+  financeMode,
 }: {
   projectId: string
   canInteract: boolean
   projectCanceled?: boolean
   projectCollectorLabel: string
   collectorOptions: CollectorOption[]
+  financeMode: ProjectFinanceMode
 }) {
   const [isOpen, setIsOpen] = useState(false)
   const [collectionMode, setCollectionMode] = useState<'project_collector' | 'dedicated_collector'>('project_collector')
@@ -58,7 +64,7 @@ function CreateExtraModal({
   }
 
   const handleSubmit = async (formData: FormData) => {
-    if (collectionMode === 'dedicated_collector' && !dedicatedCollectorId) {
+    if (financeMode === 'managed' && collectionMode === 'dedicated_collector' && !dedicatedCollectorId) {
       setSubmitError('Select an extra collector')
       return
     }
@@ -96,7 +102,7 @@ function CreateExtraModal({
             <div className="px-5 py-4 border-b flex items-center justify-between">
               <div className="space-y-0.5">
                 <h2 className="text-lg font-semibold">Create extra</h2>
-                <p className="text-sm text-muted-foreground">Create an optional add-on for participants</p>
+                <p className="text-sm text-muted-foreground">Create an optional activity or component for participants</p>
               </div>
               <button
                 type="button"
@@ -133,7 +139,7 @@ function CreateExtraModal({
                 />
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
+              {financeMode === 'managed' && <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <label className="text-sm font-medium">
                     Amount <span className="text-red-500">*</span>
@@ -210,7 +216,7 @@ function CreateExtraModal({
                     </select>
                   )}
                 </div>
-              </div>
+              </div>}
 
               {submitError && (
                 <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -336,6 +342,8 @@ export function ExtrasTab({
   projectCanceled,
   projectCollectorLabel,
   collectorOptions,
+  financeMode,
+  locale = 'en',
 }: {
   projectId: string
   extras: ExtraItem[]
@@ -343,10 +351,13 @@ export function ExtrasTab({
   projectCanceled?: boolean
   projectCollectorLabel: string
   collectorOptions: CollectorOption[]
+  financeMode: ProjectFinanceMode
+  locale?: ProjectDateLocale
 }) {
   const isDisabled = !canInteract || !!projectCanceled
   const totalExtras = extras.length
   const joinedExtras = extras.filter(extra => extra.viewer_joined).length
+  const strings = getProjectFinanceStrings(locale)
 
   return (
     <div className="space-y-4">
@@ -374,6 +385,7 @@ export function ExtrasTab({
             projectCanceled={projectCanceled}
             projectCollectorLabel={projectCollectorLabel}
             collectorOptions={collectorOptions}
+            financeMode={financeMode}
           />
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
@@ -392,7 +404,7 @@ export function ExtrasTab({
         <div className="space-y-3">
           {extras.map(extra => {
             const pricingLabel = extra.amount_is_per_person ? 'Per person' : 'Grand total'
-            const statusLabel = extra.viewer_joined ? 'Joined' : 'Not joined'
+            const statusLabel = extra.viewer_joined ? strings.joined : extra.viewer_declined ? strings.notInterested : strings.notJoined
             const collectorLabel =
               extra.collection_mode === 'dedicated_collector' ? `${extra.collector_label} (Extra)` : extra.collector_label
 
@@ -403,10 +415,10 @@ export function ExtrasTab({
                     <h3 className="text-sm font-semibold text-slate-900">{extra.title}</h3>
                     {extra.description ? <p className="mt-1 text-sm text-muted-foreground">{extra.description}</p> : null}
                   </div>
-                  <div className="text-right">
+                  {financeMode === 'managed' && <div className="text-right">
                     <div className="text-[11px] text-slate-500">{pricingLabel}</div>
                     <div className="text-sm font-semibold text-slate-900">{formatEuro(extra.amount_cents)}</div>
-                  </div>
+                  </div>}
                 </div>
 
                 <div className="grid gap-2 sm:grid-cols-2">
@@ -415,14 +427,14 @@ export function ExtrasTab({
                     <div className="space-y-1">
                       <div className="text-sm text-slate-800">{extra.member_count}</div>
                       <div className="text-xs text-slate-600">
-                        {extra.member_labels.length > 0 ? extra.member_labels.join(', ') : 'No joined participants'}
+                        {extra.member_labels.length > 0 ? extra.member_labels.join(', ') : strings.noJoinedParticipants}
                       </div>
                     </div>
                   </div>
-                  <div className="rounded-md border bg-slate-50 px-3 py-2">
+                  {financeMode === 'managed' && <div className="rounded-md border bg-slate-50 px-3 py-2">
                     <div className="text-[11px] uppercase tracking-wide text-slate-500">Collector</div>
                     <div className="text-sm text-slate-800">{collectorLabel}</div>
-                  </div>
+                  </div>}
                   <div className="rounded-md border bg-slate-50 px-3 py-2">
                     <div className="text-[11px] uppercase tracking-wide text-slate-500">Created by</div>
                     <div className="text-sm text-slate-800">{extra.created_by_label}</div>
@@ -431,7 +443,7 @@ export function ExtrasTab({
                     <div className="text-[11px] uppercase tracking-wide text-slate-500">Your status</div>
                     <div className="text-sm text-slate-800">
                       {statusLabel}
-                      {extra.viewer_joined && extra.viewer_share_cents !== null
+                      {financeMode === 'managed' && extra.viewer_joined && extra.viewer_share_cents !== null
                         ? ` • Share ${formatEuro(extra.viewer_share_cents)}`
                         : ''}
                     </div>
@@ -440,28 +452,41 @@ export function ExtrasTab({
 
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                   <div className="text-xs text-slate-500">
-                    {extra.amount_is_per_person
+                    {financeMode === 'managed' ? (extra.amount_is_per_person
                       ? 'Each joined participant pays this amount.'
-                      : 'Grand total is split among joined participants.'}
+                      : 'Grand total is split among joined participants.') : `${extra.member_count} ${strings.participants}`}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {extra.viewer_joined ? (
+                    {financeMode === 'none' ? (
+                      <>
+                        <form action={joinExtra.bind(null, projectId, extra.id)}>
+                          <Button type="submit" className="rounded-full px-4" disabled={isDisabled || extra.viewer_joined}>
+                            {extra.viewer_joined ? strings.joined : strings.join}
+                          </Button>
+                        </form>
+                        <form action={leaveExtra.bind(null, projectId, extra.id)}>
+                          <Button type="submit" variant={extra.viewer_declined ? 'secondary' : 'outline'} className="rounded-full px-4" disabled={isDisabled || extra.viewer_declined}>
+                            {strings.notInterested}
+                          </Button>
+                        </form>
+                      </>
+                    ) : extra.viewer_joined ? (
                       <form action={leaveExtra.bind(null, projectId, extra.id)}>
                         <Button type="submit" variant="outline" className="rounded-full px-4" disabled={isDisabled}>
-                          Leave extra
+                          {financeMode === 'managed' ? 'Leave extra' : strings.notInterested}
                         </Button>
                       </form>
                     ) : (
                       <form action={joinExtra.bind(null, projectId, extra.id)}>
                         <Button type="submit" className="rounded-full px-4" disabled={isDisabled}>
-                          Join extra
+                          {financeMode === 'managed' ? 'Join extra' : strings.join}
                         </Button>
                       </form>
                     )}
                   </div>
                 </div>
 
-                {extra.can_manage && (
+                {financeMode === 'managed' && extra.can_manage && (
                   <ExtraCollectorManager
                     projectId={projectId}
                     extra={extra}

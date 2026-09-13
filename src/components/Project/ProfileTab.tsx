@@ -3,6 +3,7 @@ import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import SetPasswordForm from '@/app/settings/SetPasswordForm'
 import { Button } from '@/components/ui/button'
+import type { ProjectFinanceMode } from '@/lib/projectFinance'
 
 async function updateDisplayName(projectId: string, formData: FormData) {
   'use server'
@@ -96,7 +97,7 @@ async function setDefaultLink(projectId: string, id: string) {
   revalidatePath(`/project/${projectId}`)
 }
 
-export async function ProfileTab({ projectId }: { projectId: string }) {
+export async function ProfileTab({ projectId, financeMode = 'managed' }: { projectId: string; financeMode?: ProjectFinanceMode }) {
   const uid = await getCurrentUserId()
   if (!uid) {
     return <div className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">Please sign in to manage your profile.</div>
@@ -109,11 +110,13 @@ export async function ProfileTab({ projectId }: { projectId: string }) {
     .eq('id', uid)
     .single()
 
-  const { data: links } = await supabaseAdmin
-    .from('user_payment_options')
-    .select('*')
-    .eq('user_id', uid)
-    .order('priority', { ascending: true })
+  const { data: links } = financeMode === 'managed'
+    ? await supabaseAdmin
+        .from('user_payment_options')
+        .select('*')
+        .eq('user_id', uid)
+        .order('priority', { ascending: true })
+    : { data: [] }
 
   return (
     <div className="space-y-6">
@@ -134,7 +137,7 @@ export async function ProfileTab({ projectId }: { projectId: string }) {
         </p>
       </section>
 
-      <section className="surface-card p-4 space-y-3">
+      {financeMode === 'managed' && <section className="surface-card p-4 space-y-3">
         <h2 className="text-lg font-medium">Payment links</h2>
         <form action={addLink.bind(null, projectId)} className="grid items-center gap-2 md:grid-cols-4">
           <select name="ptype" className="control-select md:col-span-1">
@@ -183,7 +186,7 @@ export async function ProfileTab({ projectId }: { projectId: string }) {
             )
           })}
         </div>
-      </section>
+      </section>}
 
       <section className="surface-card p-4">
         <SetPasswordForm />

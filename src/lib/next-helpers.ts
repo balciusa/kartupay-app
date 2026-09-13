@@ -1,10 +1,10 @@
-export async function readParams<T extends Record<string, any>>(
+export async function readParams<T extends Record<string, unknown>>(
   paramsOrPromise: T | Promise<T>
 ): Promise<T> {
   return await paramsOrPromise
 }
 
-export async function requireParam<T extends Record<string, any>>(
+export async function requireParam<T extends Record<string, unknown>>(
   paramsOrPromise: T | Promise<T>,
   key: string
 ): Promise<string> {

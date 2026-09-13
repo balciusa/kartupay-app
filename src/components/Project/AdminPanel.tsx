@@ -9,6 +9,7 @@ import {
   rejectJoinRequestFromForm,
   setCollector,
 } from '@/app/project/[id]/actions'
+import type { ProjectFinanceMode } from '@/lib/projectFinance'
 
 type JoinRequest = {
   id: string
@@ -53,6 +54,7 @@ export function AdminPanel({
   canCancel,
   openRequestsOnMount = false,
   activityItems,
+  financeMode = 'managed',
 }: {
   projectId: string
   participants: Participant[]
@@ -64,6 +66,7 @@ export function AdminPanel({
   canCancel: boolean
   openRequestsOnMount?: boolean
   activityItems: ActivityLogItem[]
+  financeMode?: ProjectFinanceMode
 }) {
   const [requestsOpen, setRequestsOpen] = useState(!!openRequestsOnMount)
   const [participantsOpen, setParticipantsOpen] = useState(false)
@@ -243,7 +246,7 @@ export function AdminPanel({
                         <div className="space-y-0.5">
                           <div className="font-medium flex items-center gap-2 flex-wrap">
                             <span>{displayName(p)}</span>
-                            {isCollector && (
+                            {financeMode === 'managed' && isCollector && (
                               <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600 text-white">
                                 Collector
                               </span>
@@ -251,7 +254,7 @@ export function AdminPanel({
                           </div>
                         </div>
                         <div className="flex items-center gap-3">
-                          {!isSelf && (
+                          {financeMode === 'managed' && !isSelf && (
                             <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
                               <input
                                 type="radio"
@@ -267,7 +270,7 @@ export function AdminPanel({
                       </div>
                     )
                   })}
-                  <div className="pt-2 border-t flex items-center justify-end gap-2">
+                  {financeMode === 'managed' && <div className="pt-2 border-t flex items-center justify-end gap-2">
                     <button
                       type="button"
                       className="px-3 py-1.5 rounded border text-xs disabled:opacity-50"
@@ -289,7 +292,7 @@ export function AdminPanel({
                     >
                       {assigningCollector ? 'Saving...' : 'Confirm collector'}
                     </button>
-                  </div>
+                  </div>}
                 </div>
               )}
             </div>

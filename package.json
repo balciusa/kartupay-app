@@ -6,7 +6,8 @@
     "dev": "set NEXT_FORCE_WEBPACK=1&& next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --test --experimental-transform-types src/lib/projectDateSelection.test.ts src/lib/projectFinance.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-avatar": "^1.1.11",

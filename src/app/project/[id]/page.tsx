@@ -17,11 +17,17 @@ import { ExtrasTab } from '@/components/Project/ExtrasTab'
 import { LocationLinkMenu } from '@/components/Project/LocationLinkMenu'
 import { ProjectFlowBar } from '@/components/Project/ProjectFlowBar'
 import { BaseItineraryEditor } from '@/components/Project/BaseItineraryEditor'
+import { ProjectDateFinder } from '@/components/Project/ProjectDateFinder'
+import { ProjectParticipationOverview } from '@/components/Project/ProjectParticipationOverview'
 import { getActivityCategory } from '@/lib/activityLog'
 import { buildExtraDueRows, extraDueKey } from '@/lib/extraPayments'
 import { calculateProjectPricing, describeBundlePricing } from '@/lib/projectPricing'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
+import { loadProjectDateFinderData } from '@/lib/projectDateService'
+import { resolveProjectDateLocale } from '@/lib/projectDateStrings'
+import { getProjectReadiness, normalizeProjectFinanceMode, type ProjectFinanceMode } from '@/lib/projectFinance'
+import { headers } from 'next/headers'
 import {
   approveParticipantRefund,
   confirmParticipantRefundReceived,
@@ -106,6 +112,7 @@ type BaseItineraryItemRow = {
   created_at: string
 }
 
+
 type ActivityLogRow = {
   id: string
   project_id: string
@@ -121,6 +128,40 @@ type ActivityLogRow = {
   join_request_id: string | null
   late_transfer_id: string | null
   metadata: Record<string, unknown> | null
+}
+
+type ProjectRow = {
+  [key: string]: unknown
+  id: string
+  title: string
+  description: string | null
+  total_cents: number | null
+  total_is_per_person: boolean | null
+  min_participants: number | null
+  max_participants: number | null
+  status: string | null
+  canceled_at: string | null
+  collector_participant_id: string | null
+  event_start_at: string | null
+  event_end_at: string | null
+  date_mode?: 'fixed' | 'selecting'
+  date_voting_deadline_at?: string | null
+  date_suggestions_close_at?: string | null
+  date_selection_status?: string | null
+  selected_date_option_id?: string | null
+  confirmation_deadline_at?: string | null
+  finance_mode?: ProjectFinanceMode | null
+  is_public?: boolean | null
+  closed_at?: string | null
+  aborted_at?: string | null
+  finalized_at?: string | null
+  bundle_size?: number | null
+  bundle_pay_for?: number | null
+  event_location_label?: string | null
+  event_location_address?: string | null
+  event_location_lat?: number | null
+  event_location_lng?: number | null
+  event_location_place_id?: string | null
 }
 
 type ProjectTabKey =
@@ -196,10 +237,9 @@ export default async function ProjectPage({
   params,
   searchParams,
 }: {
-  params: { id?: string } | Promise<{ id?: string }>
+  params: Promise<{ id?: string }>
   searchParams?:
-    | { id?: string | string[]; tab?: string | string[]; adminModal?: string | string[] }
-    | Promise<{ id?: string | string[]; tab?: string | string[]; adminModal?: string | string[] }>
+    Promise<{ id?: string | string[]; tab?: string | string[]; adminModal?: string | string[] }>
 }) {
   const resolvedParams = await params
   const resolvedSearchParams = searchParams ? await searchParams : undefined
@@ -241,10 +281,17 @@ export default async function ProjectPage({
     'event_location_lat',
     'event_location_lng',
     'event_location_place_id',
+    'date_mode',
+    'date_voting_deadline_at',
+    'date_suggestions_close_at',
+    'date_selection_status',
+    'selected_date_option_id',
+    'confirmation_deadline_at',
+    'finance_mode',
   ] as const
   let optionalFields = [...optionalProjectFields]
   const missingFields = new Set<string>()
-  let project: any = null
+  let project: ProjectRow | null = null
   let projectError: { message?: string } | null = null
 
   while (true) {
@@ -266,22 +313,23 @@ export default async function ProjectPage({
           .select(baseProjectFields)
           .eq('id', projectId)
           .single()
-        project = fallback.data
+        project = fallback.data as ProjectRow | null
         projectError = fallback.error
         break
       }
       continue
     }
 
-    project = data
+    project = data as ProjectRow | null
     projectError = error
     break
   }
 
   if (project && optionalProjectFields.length) {
+    const projectRecord = project as Record<string, unknown>
     for (const field of optionalProjectFields) {
       if (missingFields.has(field) || typeof project[field] === 'undefined') {
-        project[field] = field === 'is_public' ? true : null
+        projectRecord[field] = field === 'is_public' ? true : null
       }
     }
   }
@@ -302,6 +350,9 @@ export default async function ProjectPage({
       </main>
     )
   }
+
+  const financeMode = normalizeProjectFinanceMode(project.finance_mode)
+  const financeManaged = financeMode === 'managed'
 
   const isPendingStatus = project.status === 'pending'
   const isCollectingStatus = project.status === 'collecting'
@@ -356,6 +407,9 @@ export default async function ProjectPage({
       : null
 
   const uid = await getCurrentUserId()
+  const requestHeaders = await headers()
+  const projectDateLocale = resolveProjectDateLocale(requestHeaders.get('accept-language'))
+
   if (project.is_public !== true) {
     if (!uid) {
       return (
@@ -421,6 +475,7 @@ export default async function ProjectPage({
     }
   })()
 
+
   const extrasPromise = (async (): Promise<ExtraRow[]> => {
     const { data, error } = await supabase
       .from('extras')
@@ -442,6 +497,7 @@ export default async function ProjectPage({
   })()
 
   const baseItineraryPromise = (async (): Promise<{ available: boolean; items: BaseItineraryItemRow[] }> => {
+    if (!financeManaged) return { available: false, items: [] }
     const { data, error } = await supabaseAdmin
       .from('project_base_itinerary_items')
       .select('id, project_id, title, amount_cents, sort_order, created_at')
@@ -461,6 +517,28 @@ export default async function ProjectPage({
     return { available: true, items: (data ?? []) as BaseItineraryItemRow[] }
   })()
 
+  const participantsPromise = (async () => {
+    const withAttendance = await supabase
+      .from('participants')
+      .select('id, user_id, role, short_code, joined_at, attendance_status, users(email, display_name)')
+      .eq('project_id', projectId)
+      .is('left_at', null)
+      .order('joined_at', { ascending: true })
+    if (!missingColumn(withAttendance.error, 'attendance_status')) return withAttendance
+    const fallback = await supabase
+      .from('participants')
+      .select('id, user_id, role, short_code, joined_at, users(email, display_name)')
+      .eq('project_id', projectId)
+      .is('left_at', null)
+      .order('joined_at', { ascending: true })
+    return {
+      ...fallback,
+      data: (fallback.data ?? []).map(participant => ({ ...participant, attendance_status: 'confirmed' })),
+    }
+  })()
+
+  const projectDateDataPromise = loadProjectDateFinderData(projectId, uid)
+
   const [
     { data: participants },
     { data: messages },
@@ -468,19 +546,16 @@ export default async function ProjectPage({
     { data: allPayments },
     { data: myJoinRequest }
   ] = await Promise.all([
-    supabase
-      .from('participants')
-      .select('id, user_id, role, short_code, joined_at, users(email, display_name)')
-      .eq('project_id', projectId)
-      .is('left_at', null)
-      .order('joined_at', { ascending: true }),
+    participantsPromise,
     supabase
       .from('messages')
       .select('id, project_id, user_id, author_user_id, parent_id, body, created_at')
       .eq('project_id', projectId)
       .order('created_at', { ascending: true }),
     pollsPromise,
-    supabase.from('payments').select('participant_id, is_counted, created_at'),
+    financeManaged
+      ? supabase.from('payments').select('participant_id, is_counted, created_at')
+      : Promise.resolve({ data: [] as Array<{ participant_id: string; is_counted: boolean; created_at: string }> }),
     supabase
       .from('join_requests')
       .select('status')
@@ -501,6 +576,7 @@ export default async function ProjectPage({
         .select('poll_id, option_id, user_id')
         .in('poll_id', pollIds)
     : { data: [] as Array<{ poll_id: string; option_id: string; user_id: string }> }
+  const projectDateData = await projectDateDataPromise
   const extrasRaw = await extrasPromise
   const { available: baseItineraryAvailable, items: baseItineraryRaw } = await baseItineraryPromise
   const extraIds = extrasRaw.map(extra => extra.id)
@@ -519,7 +595,7 @@ export default async function ProjectPage({
   }
   let extraPaymentsAvailable = true
   let extraPaymentRows: ExtraPaymentRow[] = []
-  if (extraIds.length) {
+  if (financeManaged && extraIds.length) {
     const { data: rawExtraPayments, error: extraPaymentsErr } = await supabaseAdmin
       .from('extra_payments')
       .select(
@@ -539,13 +615,15 @@ export default async function ProjectPage({
   }
   let refundRequestsAvailable = true
   let refundRequestRows: RefundRequestRow[] = []
-  const { data: rawRefundRequests, error: refundRequestsErr } = await supabaseAdmin
-    .from('participant_refund_requests')
-    .select(
-      'id, project_id, participant_id, collector_participant_id, requested_by_participant_id, base_amount_cents, extras_amount_cents, total_amount_cents, status, requested_at, decided_at, decided_by_participant_id, collector_marked_sent_at, participant_confirmed_at, completed_at, rejection_reason, created_at, updated_at'
-    )
-    .eq('project_id', projectId)
-    .order('created_at', { ascending: false })
+  const { data: rawRefundRequests, error: refundRequestsErr } = financeManaged
+    ? await supabaseAdmin
+        .from('participant_refund_requests')
+        .select(
+          'id, project_id, participant_id, collector_participant_id, requested_by_participant_id, base_amount_cents, extras_amount_cents, total_amount_cents, status, requested_at, decided_at, decided_by_participant_id, collector_marked_sent_at, participant_confirmed_at, completed_at, rejection_reason, created_at, updated_at'
+        )
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false })
+    : { data: [] as RefundRequestRow[], error: null }
   if (refundRequestsErr) {
     if (missingTable(refundRequestsErr, 'participant_refund_requests')) {
       refundRequestsAvailable = false
@@ -577,10 +655,12 @@ export default async function ProjectPage({
     }
   }
 
-  const lateTransfersResult = await supabase
-    .from('late_join_transfers')
-    .select('id, project_id, from_participant_id, to_participant_id, expected_cents, received_at, sender_marked_at')
-    .eq('project_id', projectId)
+  const lateTransfersResult = financeManaged
+    ? await supabase
+        .from('late_join_transfers')
+        .select('id, project_id, from_participant_id, to_participant_id, expected_cents, received_at, sender_marked_at')
+        .eq('project_id', projectId)
+    : { data: [] as LateTransferRow[], error: null }
   let lateTransfers: LateTransferRow[] = (lateTransfersResult.data as LateTransferRow[]) ?? []
   if (lateTransfersResult.error) {
     if (missingColumn(lateTransfersResult.error, 'sender_marked_at')) {
@@ -603,16 +683,16 @@ export default async function ProjectPage({
   // Collect participant IDs for this project
   const participantIdsArr = (participants ?? []).map(p => p.id)
   // Fetch payment options that belong to these participant IDs
-  const { data: paymentOptions, error: pmErr } = participantIdsArr.length
+  const { data: paymentOptions, error: pmErr } = financeManaged && participantIdsArr.length
     ? await supabase
         .from('payment_options')
         .select('*')
         .in('participant_id', participantIdsArr)
-    : { data: [], error: null as any }
+    : { data: [], error: null as { message?: string } | null }
   if (pmErr) throw pmErr
 
   let pendingSignalsSet = new Set<string>()
-  if (participantIdsArr.length) {
+  if (financeManaged && participantIdsArr.length) {
     const { data: pendingSignals, error: sigErr } = await supabaseAdmin
       .from('payment_signals')
       .select('participant_id, cleared_at')
@@ -620,7 +700,7 @@ export default async function ProjectPage({
       .is('cleared_at', null)
 
     if (sigErr) {
-      const code = (sigErr as any)?.code
+      const code = sigErr.code
       const isMissingTable =
         code === '42P01' ||
         sigErr.message?.toLowerCase()?.includes('payment_signals')
@@ -685,21 +765,38 @@ export default async function ProjectPage({
     if (p.short_code) return `#${p.short_code}`
     return 'Member'
   }
-  const participantsCount = participantsClean.length
+  const membersCount = participantsClean.length
+  const financialParticipants = projectDateData
+    ? participantsClean.filter(participant => participant.attendance_status === 'confirmed')
+    : participantsClean
+  const participantsCount = financialParticipants.length
+  const awaitingAttendanceCount = participantsClean.filter(participant =>
+    ['pending_date_selection', 'awaiting_confirmation', 'unconfirmed'].includes(String(participant.attendance_status ?? ''))
+  ).length
+  const cannotAttendCount = participantsClean.filter(participant =>
+    ['cannot_attend', 'observer', 'inactive_for_project'].includes(String(participant.attendance_status ?? ''))
+  ).length
   const minParticipants = project.min_participants as number | null
   const maxParticipants = project.max_participants as number | null
   const finalizedAt = (project.finalized_at as string | null) ?? (project.closed_at as string | null) ?? null
   const finalizedAtDate = finalizedAt ? new Date(finalizedAt) : null
   const baseParticipants = finalizedAtDate
-    ? participantsClean.filter(p => !p.joined_at || new Date(p.joined_at) <= finalizedAtDate)
-    : participantsClean
+    ? financialParticipants.filter(p => !p.joined_at || new Date(p.joined_at) <= finalizedAtDate)
+    : financialParticipants
   const baseParticipantIds = new Set(baseParticipants.map(p => p.id))
   const baseParticipantsCount = baseParticipants.length
-  const minParticipantsReached = !minParticipants || participantsCount >= minParticipants
+  const projectReadiness = getProjectReadiness({
+    financeMode: project.finance_mode,
+    confirmedParticipants: participantsCount,
+    minParticipants,
+    managedFinanceReady: false,
+  })
+  const minParticipantsReached = projectReadiness.participationReady
+  const capacityParticipantCount = project.date_mode === 'selecting' ? membersCount : participantsCount
   const canJoinNow =
-    isCollectingStatus &&
+    (financeManaged ? isCollectingStatus : !isFinalized) &&
     !isAborted &&
-    (!maxParticipants || participantsCount < maxParticipants)
+    (!maxParticipants || capacityParticipantCount < maxParticipants)
   const myJoinRequestStatus =
     (myJoinRequest as { status?: string } | null)?.status ?? null
   const participantIds = new Set(participantsClean.map(p => p.id))
@@ -779,11 +876,11 @@ export default async function ProjectPage({
   const perPersonCentsAtFinalize = pricingAtFinalize.perPersonCents
   const totalCents = pricingNow.totalCents
   const participantsNow = participantsCount
+  const dateSelectionBlocksPayments = projectDateData?.dateMode === 'selecting'
   const paymentsOpen = !isPendingStatus
   const viewerPaid = !!(myParticipantId && paidSet.has(myParticipantId))
   const viewerHasPendingSignal = !!(myParticipantId && pendingSignalsSet.has(myParticipantId))
-  const viewerPaidCents = viewerPaid ? perPersonCents : 0
-  const formatEuro = (cents: number) => `€${(cents / 100).toFixed(2)}`
+  const formatEuro = (cents: number) => `?${(cents / 100).toFixed(2)}`
   const bundleLabel = describeBundlePricing(pricingNow.bundleSize, pricingNow.bundlePayFor)
   const scenarios = {
     now: pricingNow.perPersonCents,
@@ -870,7 +967,7 @@ export default async function ProjectPage({
   const collectedCentsDisplay = Math.min(perPersonCentsAtFinalize * basePaidSet.size, pricingAtFinalize.totalCents)
   const lateJoinerIds = new Set(
     finalizedAtDate
-      ? participantsClean
+      ? financialParticipants
           .filter(p => p.joined_at && new Date(p.joined_at) > finalizedAtDate)
           .map(p => p.id)
       : []
@@ -904,7 +1001,10 @@ export default async function ProjectPage({
   const lateOutgoingTransfers = myParticipantId
     ? lateTransfers.filter(t => t.from_participant_id === myParticipantId)
     : []
-  const pendingSignalCount = viewerIsCollector ? pendingSignalsSet.size : 0
+  const financialParticipantIds = new Set(financialParticipants.map(participant => participant.id))
+  const pendingSignalCount = viewerIsCollector
+    ? Array.from(pendingSignalsSet).filter(participantId => financialParticipantIds.has(participantId)).length
+    : 0
   const pendingLateConfirmations = myParticipantId
     ? lateTransfers.filter(t => t.to_participant_id === myParticipantId && t.sender_marked_at && !t.received_at).length
     : 0
@@ -913,6 +1013,7 @@ export default async function ProjectPage({
     !isAborted &&
     minParticipantsReached &&
     !!myParticipantId &&
+    financialParticipantIds.has(myParticipantId) &&
     !!collectorId &&
     !viewerPaid &&
     !viewerHasPendingSignal
@@ -950,6 +1051,9 @@ export default async function ProjectPage({
     const memberIds = activeMembershipIdsByExtra.get(extra.id) ?? []
     const membersCount = memberIds.length
     const viewerJoined = !!(myParticipantId && memberIds.includes(myParticipantId))
+    const viewerDeclined = !!(myParticipantId && (extraMembershipRows ?? []).some(
+      membership => membership.extra_id === extra.id && membership.participant_id === myParticipantId && !!membership.left_at
+    ))
     const memberLabels = memberIds
       .flatMap(memberId => {
         const member = participantsById.get(memberId)
@@ -986,12 +1090,14 @@ export default async function ProjectPage({
       member_count: membersCount,
       member_labels: memberLabels,
       viewer_joined: viewerJoined,
+      viewer_declined: viewerDeclined,
       viewer_share_cents: viewerJoined ? perMemberShare : null,
       created_by_label: createdByLabel,
+      created_at: extra.created_at,
       can_manage: !!uid && (extra.created_by === uid || viewerIsCollector),
     }
   })
-  const activeParticipantIds = new Set(participantsClean.map(p => p.id))
+  const activeParticipantIds = new Set(financialParticipants.map(p => p.id))
   const extraDueRows = buildExtraDueRows({
     extras: extrasRaw.map(extra => ({
       id: extra.id,
@@ -1152,7 +1258,7 @@ export default async function ProjectPage({
   
   // Fallback to user_payment_options if no project-specific options found
   // This handles cases where collector updated their payment options in Settings after joining
-  if (collectorPaymentOptions.length === 0 && collectorParticipant?.user_id) {
+  if (financeManaged && collectorPaymentOptions.length === 0 && collectorParticipant?.user_id) {
     const { data: userPaymentOptions, error: userOptsError } = await supabaseAdmin
       .from('user_payment_options')
       .select('type, label, value, priority, is_active')
@@ -1186,7 +1292,7 @@ export default async function ProjectPage({
     )
   )
   const usersWithActivePaymentOption = new Set<string>()
-  if (participantUserIds.length > 0) {
+  if (financeManaged && participantUserIds.length > 0) {
     const { data: userPaymentRows, error: userPaymentErr } = await supabaseAdmin
       .from('user_payment_options')
       .select('user_id')
@@ -1208,7 +1314,7 @@ export default async function ProjectPage({
     }
   }
   const participantsReadyForPaymentIds = new Set<string>()
-  for (const participant of participantsClean) {
+  for (const participant of financialParticipants) {
     const hasProjectOption = activeProjectPaymentParticipantIds.has(participant.id)
     const hasUserFallback = !!(participant.user_id && usersWithActivePaymentOption.has(participant.user_id))
     if (hasProjectOption || hasUserFallback) {
@@ -1323,6 +1429,7 @@ export default async function ProjectPage({
           for (const participant of missingParticipants ?? []) {
             activityParticipantsById.set(participant.id, {
               ...participant,
+              attendance_status: 'confirmed',
               users: Array.isArray(participant.users) ? participant.users[0] ?? null : participant.users ?? null,
             })
           }
@@ -1453,6 +1560,24 @@ export default async function ProjectPage({
           case 'poll_vote_changed':
             message = `${actorLabel} changed a vote${optionId ? ` (${optionId.slice(0, 6)})` : ''}`
             break
+          case 'date_option_suggested':
+            message = `${actorLabel} suggested a project date`
+            break
+          case 'date_option_removed':
+            message = `${actorLabel} removed a project date option`
+            break
+          case 'date_response_updated':
+            message = `${actorLabel} updated date availability`
+            break
+          case 'project_date_selected':
+            message = `${actorLabel} confirmed the project date`
+            break
+          case 'date_confirmation_updated':
+            message = `${actorLabel} updated attendance confirmation`
+            break
+          case 'date_reminder_sent':
+            message = `${actorLabel} sent a date reminder`
+            break
           case 'extra_created':
             message = `${actorLabel} created extra${extraTitle ? ` \"${extraTitle}\"` : ''}`
             break
@@ -1537,7 +1662,12 @@ export default async function ProjectPage({
             {isClosedStatus ? (
               !isMemberActive && !isAborted ? (
                 <div className="flex items-center gap-2">
-                  <JoinButton projectId={projectId} canJoinNow={canJoinNow} requestStatus={myJoinRequestStatus} />
+                  <JoinButton
+                    projectId={projectId}
+                    canJoinNow={canJoinNow}
+                    requestStatus={myJoinRequestStatus}
+                    locale={projectDateLocale}
+                  />
                 </div>
               ) : null
             ) : isMemberActive && !viewerIsCollector && !isFinalized && !isAborted ? (
@@ -1550,6 +1680,7 @@ export default async function ProjectPage({
                   projectId={projectId}
                   canJoinNow={canJoinNow}
                   requestStatus={myJoinRequestStatus}
+                  locale={projectDateLocale}
                 />
               </div>
             ) : null}
@@ -1563,32 +1694,56 @@ export default async function ProjectPage({
         </div>
       )}
 
-      <ProjectFlowBar
+      {financeManaged && <ProjectFlowBar
         projectId={projectId}
         status={project.status as string | null | undefined}
         isCanceled={isAborted}
         isFinalized={isFinalized}
         canManage={viewerIsCollector}
-        canStartCollecting={isPendingStatus && !isAborted}
+        canStartCollecting={isPendingStatus && !isAborted && !dateSelectionBlocksPayments}
         canFinalize={isCollectingStatus && !isAborted}
         startCollectingBlockedReason={
-          isPendingStatus && !minParticipantsReached ? 'Waiting for minimum participants' : null
+          isPendingStatus && dateSelectionBlocksPayments
+            ? 'Waiting for a confirmed project date'
+            : isPendingStatus && !minParticipantsReached
+              ? 'Waiting for minimum confirmed participants'
+              : null
         }
         collectorBaseShareLabel={formatEuro(perPersonCents)}
-      />
+      />}
 
       <ProjectTabs
         defaultTab={defaultProjectTab}
         counts={{
-          participants: participantsCount,
+          participants: membersCount,
           activity: unreadCount,
           adminPending: viewerIsCollector ? (pendingForOrganizer ?? []).length : 0,
-          paymentsPending: pendingPaymentsCountWithExtras || undefined,
+          paymentsPending: financeManaged ? (pendingPaymentsCountWithExtras || undefined) : undefined,
         }}
         sections={{
           overview: (
             <div className="space-y-6">
-              {isPendingStatus ? (
+              {projectDateData && (
+                <ProjectDateFinder
+                  projectId={projectId}
+                  data={projectDateData}
+                  viewerUserId={uid}
+                  viewerIsParticipant={isMeParticipant}
+                  canManage={viewerIsCollector}
+                  locale={projectDateLocale}
+                />
+              )}
+              {!financeManaged ? (
+                <ProjectParticipationOverview
+                  confirmedCount={participantsCount}
+                  awaitingCount={awaitingAttendanceCount}
+                  cannotAttendCount={cannotAttendCount}
+                  minParticipants={minParticipants}
+                  eventDateLabel={eventStartLocale}
+                  locale={projectDateLocale}
+                  projectReady={projectReadiness.projectReady}
+                />
+              ) : isPendingStatus ? (
                 viewerIsCollector ? (
                   <PendingOverviewCards
                     readinessScore={readinessScore}
@@ -1655,7 +1810,7 @@ export default async function ProjectPage({
               )}
             </div>
           ),
-          profile: <ProfileTab projectId={projectId} />,
+          profile: <ProfileTab projectId={projectId} financeMode={financeMode} />,
           people: (
             <div className="grid gap-4 lg:grid-cols-[minmax(320px,1fr)_minmax(0,1.35fr)]">
               <div className="min-w-0">
@@ -1695,7 +1850,7 @@ export default async function ProjectPage({
               </section>
             </div>
           ),
-          payments: (
+          payments: financeManaged ? (
             <div className="space-y-6">
               <section className="rounded-2xl border border-slate-200/80 bg-gradient-to-br from-white to-slate-100 p-5 shadow-sm md:p-6">
                 <div className="space-y-5">
@@ -2409,7 +2564,7 @@ export default async function ProjectPage({
                                 {formatEuro(Number(refund.extras_amount_cents ?? 0))}
                               </div>
                               <div className="text-[11px] text-slate-500">
-                                Status {refund.status.replaceAll('_', ' ')} · Requested{' '}
+                                Status {refund.status.replaceAll('_', ' ')} � Requested{' '}
                                 {new Date(refund.requested_at).toLocaleString()}
                               </div>
                             </div>
@@ -2466,7 +2621,7 @@ export default async function ProjectPage({
                 </section>
               )}
             </div>
-          ),
+          ) : null,
           voting: (
             <Voting
               projectId={projectId}
@@ -2474,6 +2629,7 @@ export default async function ProjectPage({
               projectCanceled={isAborted}
               canVote={isMemberActive}
               userVotes={userVotes}
+              financeMode={financeMode}
             />
           ),
           extras: (
@@ -2484,6 +2640,8 @@ export default async function ProjectPage({
               projectCanceled={isAborted}
               projectCollectorLabel={collectorLabel}
               collectorOptions={extraCollectorOptions}
+              financeMode={financeMode}
+              locale={projectDateLocale}
             />
           ),
           settings: viewerIsCollector ? <ProjectSettingsTab projectId={projectId} /> : null,
@@ -2499,6 +2657,7 @@ export default async function ProjectPage({
               canCancel={!isAborted && !isFinalized}
               openRequestsOnMount={openRequestsOnLoad}
               activityItems={activityItems}
+              financeMode={financeMode}
             />
           ) : null,
         }}

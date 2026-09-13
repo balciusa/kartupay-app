@@ -33,6 +33,12 @@ export const ACTIVITY_ENTRY_TYPES = [
   'refund_rejected',
   'refund_sent',
   'refund_completed',
+  'date_option_suggested',
+  'date_option_removed',
+  'date_response_updated',
+  'project_date_selected',
+  'date_confirmation_updated',
+  'date_reminder_sent',
 ] as const
 
 export type ActivityEntryType = (typeof ACTIVITY_ENTRY_TYPES)[number]
@@ -72,6 +78,12 @@ const ACTIVITY_CATEGORY_BY_TYPE: Record<ActivityEntryType, ActivityCategory> = {
   refund_rejected: 'payments',
   refund_sent: 'payments',
   refund_completed: 'payments',
+  date_option_suggested: 'voting',
+  date_option_removed: 'voting',
+  date_response_updated: 'voting',
+  project_date_selected: 'project',
+  date_confirmation_updated: 'participants',
+  date_reminder_sent: 'participants',
 }
 
 export const getActivityCategory = (entryType: string): ActivityCategory => {

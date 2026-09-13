@@ -3,6 +3,7 @@ import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { CreatePollModal } from './CreatePollModal'
 import { EditPollPanel } from './EditPollPanel'
+import type { ProjectFinanceMode } from '@/lib/projectFinance'
 
 type PollOption = {
   id: string
@@ -32,12 +33,14 @@ export default function Voting({
   projectCanceled,
   canVote = true,
   userVotes,
+  financeMode = 'managed',
 }: {
   projectId: string
   polls: Poll[]
   projectCanceled?: boolean
   canVote?: boolean
   userVotes?: Record<string, string | null>
+  financeMode?: ProjectFinanceMode
 }) {
   const voteMap = userVotes ?? {}
   return (
@@ -65,6 +68,7 @@ export default function Voting({
           projectId={projectId}
           canVote={canVote}
           projectCanceled={projectCanceled}
+          financeMode={financeMode}
         />
       </div>
 
@@ -83,8 +87,10 @@ export default function Voting({
                   ) : null}
                 </div>
                 <div className="text-xs px-2 py-1 rounded-full border bg-white text-slate-700">
-                  +{(poll.extra_cents / 100).toFixed(2)}{' '}
-                  {poll.extra_is_per_person ? '/ person' : 'grand total'} | {poll.required_votes} votes
+                  {financeMode === 'managed' ? <>
+                    +{(poll.extra_cents / 100).toFixed(2)}{' '}
+                    {poll.extra_is_per_person ? '/ person' : 'grand total'} {' | '}
+                  </> : null}{poll.required_votes} votes
                 </div>
               </div>
 
@@ -122,7 +128,7 @@ export default function Voting({
               {poll.can_edit ? (
                 <details className="border-t pt-3">
                   <summary className="text-sm font-medium cursor-pointer select-none">Edit poll</summary>
-                  <EditPollPanel projectId={projectId} poll={poll} projectCanceled={projectCanceled} />
+                  <EditPollPanel projectId={projectId} poll={poll} projectCanceled={projectCanceled} financeMode={financeMode} />
                 </details>
               ) : null}
             </Card>

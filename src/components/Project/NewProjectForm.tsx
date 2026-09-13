@@ -1,18 +1,26 @@
 'use client'
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { createProject } from '@/app/project/new/actions'
+import { FormEvent, useActionState, useEffect, useMemo, useRef, useState } from 'react'
+import { createProjectWithState } from '@/app/project/new/actions'
 import { Button } from '@/components/ui/button'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
+import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
+import type { ProjectDateLocale } from '@/lib/projectDateStrings'
 
 type NewProjectFormProps = {
   showCancel?: boolean
   onCancel?: () => void
   submitLabel?: string
+  locale?: ProjectDateLocale
+}
+
+type DraftDateOption = {
+  id: string
 }
 
 const EURO = '\u20AC'
 const GOOGLE_MAPS_SCRIPT_ID = 'google-maps-places-sdk'
+const MAX_INITIAL_DATE_OPTIONS = 20
 
 let googleMapsPlacesScriptPromise: Promise<void> | null = null
 
@@ -72,7 +80,11 @@ const parseCoordinate = (value: string, axis: 'latitude' | 'longitude') => {
   return { value: parsed }
 }
 
-export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Create' }: NewProjectFormProps) {
+export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Create', locale = 'en' }: NewProjectFormProps) {
+  const [createState, createAction, isCreating] = useActionState(createProjectWithState, { error: null })
+  const [financeMode, setFinanceMode] = useState<'none' | 'managed'>('none')
+  const [dateMode, setDateMode] = useState<'fixed' | 'selecting'>('fixed')
+  const [dateOptions, setDateOptions] = useState<DraftDateOption[]>([{ id: 'initial-date-option' }])
   const [totalIsPerPerson, setTotalIsPerPerson] = useState(false)
   const [bundleEnabled, setBundleEnabled] = useState(false)
   const [bundleSize, setBundleSize] = useState('')
@@ -92,7 +104,9 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   const autocompleteListenerRef = useRef<google.maps.MapsEventListener | null>(null)
   const geocoderRef = useRef<google.maps.Geocoder | null>(null)
   const geocodeRequestCounterRef = useRef(0)
+  const nextDateOptionIdRef = useRef(1)
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? ''
+  const financeStrings = getProjectFinanceStrings(locale)
 
   const timeOptions = useMemo(
     () => [
@@ -219,6 +233,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   }
 
   const validatePricing = () => {
+    if (financeMode === 'none') return null
     if (!totalIsPerPerson || !bundleEnabled) return null
     try {
       validateBundlePricingConfig(true, bundleSize, bundlePayFor)
@@ -258,7 +273,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   })()
 
   return (
-    <form action={createProject} className="space-y-5" onSubmit={onSubmit}>
+    <form action={createAction} className="space-y-5" onSubmit={onSubmit}>
       <div className="space-y-2">
         <label htmlFor="project_title" className="text-sm font-medium">
           Project title <span className="text-red-500">*</span>
@@ -318,10 +333,50 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
         </div>
       </div>
 
+      <section className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold text-slate-900">{financeStrings.sharedCosts}</h3>
+          <p className="text-xs text-slate-600">{financeStrings.sharedCostsHelp}</p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className={`min-h-28 cursor-pointer rounded-xl border bg-white p-4 transition-colors ${financeMode === 'none' ? 'border-slate-900 ring-2 ring-slate-900/10' : 'border-slate-200 hover:border-slate-400'}`}>
+            <input
+              type="radio"
+              name="finance_mode"
+              value="none"
+              checked={financeMode === 'none'}
+              onChange={() => {
+                setFinanceMode('none')
+                setPricingError(null)
+              }}
+              className="sr-only"
+            />
+            <span className="block text-sm font-semibold text-slate-900">{financeStrings.organizeOnly}</span>
+            <span className="mt-1 block text-xs leading-5 text-slate-600">{financeStrings.organizeOnlyDescription}</span>
+          </label>
+          <label className={`min-h-28 cursor-pointer rounded-xl border bg-white p-4 transition-colors ${financeMode === 'managed' ? 'border-slate-900 ring-2 ring-slate-900/10' : 'border-slate-200 hover:border-slate-400'}`}>
+            <input
+              type="radio"
+              name="finance_mode"
+              value="managed"
+              checked={financeMode === 'managed'}
+              onChange={() => setFinanceMode('managed')}
+              className="sr-only"
+            />
+            <span className="block text-sm font-semibold text-slate-900">{financeStrings.manageSharedCosts}</span>
+            <span className="mt-1 block text-xs leading-5 text-slate-600">{financeStrings.manageSharedCostsDescription}</span>
+          </label>
+        </div>
+      </section>
+
+      {financeMode === 'managed' && <>
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
-          <label htmlFor="project_total" className="text-sm font-medium">
-            Total <span className="text-red-500">*</span>
+          <label htmlFor="project_total" className="block text-sm font-medium">
+            <span>
+              Total <span className="text-red-500">*</span>
+            </span>
+            <span className="block text-xs font-normal text-muted-foreground">(can be changed later)</span>
           </label>
           <div className="relative">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">{EURO}</span>
@@ -368,7 +423,6 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
           </div>
         </div>
       </div>
-
       {totalIsPerPerson && (
         <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
           <div className="space-y-1">
@@ -436,6 +490,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
           )}
         </div>
       )}
+      </>}
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
@@ -459,7 +514,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
             name="max_participants"
             type="number"
             min={1}
-            className="control-input"
+          className="control-input"
           />
         </div>
       </div>
@@ -533,51 +588,130 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
         )}
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="space-y-2">
-          <label className="text-sm font-medium">
-            Event starts <span className="font-normal text-muted-foreground">(optional)</span>
-          </label>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              name="event_start_date"
-              type="date"
-              className="control-input"
-            />
-            <select
-              name="event_start_time"
-              className="control-select"
-            >
-              {timeOptions.map(value => (
-                <option key={value || 'blank'} value={value}>
-                  {value || 'Time'}
-                </option>
-              ))}
-            </select>
-          </div>
+      <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold text-slate-900">Project date</h3>
+          <p className="text-xs text-slate-600">Use a confirmed date, or let project members find the best date together.</p>
         </div>
-        <div className="space-y-2">
-          <label className="text-sm font-medium">
-            Event ends <span className="font-normal text-muted-foreground">(optional)</span>
-          </label>
-          <div className="grid grid-cols-2 gap-2">
+        <div className="control-radio-group space-y-2">
+          <label className="flex items-start gap-2 text-sm">
             <input
-              name="event_end_date"
-              type="date"
-              className="control-input"
+              type="radio"
+              name="date_mode"
+              value="fixed"
+              checked={dateMode === 'fixed'}
+              onChange={() => setDateMode('fixed')}
             />
-            <select
-              name="event_end_time"
-              className="control-select"
-            >
-              {timeOptions.map(value => (
-                <option key={value || 'blank'} value={value}>
-                  {value || 'Time'}
-                </option>
-              ))}
-            </select>
-          </div>
+            <span>
+              <span className="font-medium text-slate-900">Fixed date</span>
+              <span className="block text-xs text-slate-600">The event date is already confirmed.</span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="radio"
+              name="date_mode"
+              value="selecting"
+              checked={dateMode === 'selecting'}
+              onChange={() => setDateMode('selecting')}
+            />
+            <span>
+              <span className="font-medium text-slate-900">Choose together</span>
+              <span className="block text-xs text-slate-600">Members share availability before payments open.</span>
+            </span>
+          </label>
         </div>
+
+        {dateMode === 'fixed' ? (
+          <div className="grid gap-4 pt-1 md:grid-cols-2">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">
+                Event starts <span className="text-red-500">*</span>
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <input name="event_start_date" type="date" className="control-input" required />
+                <select name="event_start_time" className="control-select" required>
+                  {timeOptions.map(value => (
+                    <option key={value || 'blank'} value={value}>{value || 'Time'}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">
+                Event ends <span className="font-normal text-muted-foreground">(optional)</span>
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <input name="event_end_date" type="date" className="control-input" />
+                <select name="event_end_time" className="control-select">
+                  {timeOptions.map(value => (
+                    <option key={value || 'blank'} value={value}>{value || 'Time'}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-5 pt-1">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">
+                Date voting deadline <span className="text-red-500">*</span>
+              </label>
+              <div className="md:max-w-xs">
+                <input name="date_voting_deadline_date" type="date" className="control-input" required />
+              </div>
+              <p className="text-xs text-slate-600">
+                Voting remains open through this date. New suggestions close automatically one day earlier.
+              </p>
+            </div>
+
+            <div className="space-y-3 border-t border-slate-200 pt-4">
+              <div>
+                <h4 className="text-sm font-semibold text-slate-900">Initial date options</h4>
+                <p className="mt-0.5 text-xs text-slate-600">Add one or more dates for members to vote on. Times are not required.</p>
+              </div>
+              {dateOptions.map((option, index) => (
+                <div key={option.id} className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Option {index + 1}</span>
+                    {dateOptions.length > 1 && (
+                      <button
+                        type="button"
+                        className="min-h-9 rounded-full px-3 text-xs font-medium text-red-700 hover:bg-red-50"
+                        onClick={() => setDateOptions(current => current.filter(item => item.id !== option.id))}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="space-y-1 text-sm font-medium text-slate-700">
+                      Date <span className="text-red-500">*</span>
+                      <input name="date_option_start_date" type="date" className="control-input min-h-11" required />
+                    </label>
+                    <label className="space-y-1 text-sm font-medium text-slate-700">
+                      End date <span className="font-normal text-muted-foreground">(optional)</span>
+                      <input name="date_option_end_date" type="date" className="control-input min-h-11" />
+                    </label>
+                  </div>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11 rounded-full"
+                disabled={dateOptions.length >= MAX_INITIAL_DATE_OPTIONS}
+                onClick={() => {
+                  const id = `date-option-${nextDateOptionIdRef.current}`
+                  nextDateOptionIdRef.current += 1
+                  setDateOptions(current => [...current, { id }])
+                }}
+              >
+                + Add another date
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       {locationError && (
@@ -588,6 +722,15 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
       {pricingError && (
         <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
           {pricingError}
+        </div>
+      )}
+      {createState.error && (
+        <div
+          className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700"
+          role="alert"
+          aria-live="assertive"
+        >
+          {createState.error}
         </div>
       )}
 
@@ -602,8 +745,8 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
             Cancel
           </Button>
         )}
-        <Button className="rounded-full px-5" type="submit">
-          {submitLabel}
+        <Button className="rounded-full px-5" type="submit" disabled={isCreating} aria-busy={isCreating}>
+          {isCreating ? 'Creating…' : submitLabel}
         </Button>
       </div>
     </form>

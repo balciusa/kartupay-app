@@ -25,8 +25,8 @@ export async function getSupabaseServer() {
         set(name: string, value: string, options: CookieOptions) {
           // In some RSC contexts set/remove can throw — guard them:
           try {
-            if (typeof (cookieStore as any)?.set === 'function') {
-              ;(cookieStore as any).set({ name, value, ...options })
+            if (typeof cookieStore.set === 'function') {
+              cookieStore.set({ name, value, ...options })
             }
           } catch {
             // no-op in read-only render
@@ -34,8 +34,8 @@ export async function getSupabaseServer() {
         },
         remove(name: string, options: CookieOptions) {
           try {
-            if (typeof (cookieStore as any)?.set === 'function') {
-              ;(cookieStore as any).set({ name, value: '', ...options })
+            if (typeof cookieStore.set === 'function') {
+              cookieStore.set({ name, value: '', ...options })
             }
           } catch {
             // no-op in read-only render

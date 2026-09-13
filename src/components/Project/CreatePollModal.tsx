@@ -4,15 +4,18 @@ import { ClipboardEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { createPoll } from '@/app/project/[id]/actions'
 import { Button } from '@/components/ui/button'
 import { Plus } from 'lucide-react'
+import type { ProjectFinanceMode } from '@/lib/projectFinance'
 
 export function CreatePollModal({
   projectId,
   canVote,
   projectCanceled,
+  financeMode = 'managed',
 }: {
   projectId: string
   canVote: boolean
   projectCanceled?: boolean
+  financeMode?: ProjectFinanceMode
 }) {
   const [isOpen, setIsOpen] = useState(false)
   const [optionRows, setOptionRows] = useState<string[]>(['', ''])
@@ -208,8 +211,8 @@ export function CreatePollModal({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
+              <div className={`grid gap-4 ${financeMode === 'managed' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                {financeMode === 'managed' && <div className="space-y-2">
                   <label htmlFor="create_extra_cost" className="text-sm font-medium">
                     Extra cost
                   </label>
@@ -248,7 +251,7 @@ export function CreatePollModal({
                     </label>
                   </div>
                   <p className="text-xs text-muted-foreground">Optional additional cost if approved</p>
-                </div>
+                </div>}
                 <div className="space-y-2">
                   <label htmlFor="create_required_votes" className="text-sm font-medium">
                     Votes needed

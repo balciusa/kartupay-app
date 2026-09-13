@@ -1,25 +1,29 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react'
+import { useState, useTransition } from 'react'
 import { cancelJoinRequestFromForm, requestJoinFromForm } from '@/app/project/[id]/actions'
 import { useRouter } from 'next/navigation'
+import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
+import type { ProjectDateLocale } from '@/lib/projectDateStrings'
 
 export function JoinButton({
   projectId,
   canJoinNow,
   requestStatus,
+  locale = 'en',
 }: {
   projectId: string
   canJoinNow: boolean
   requestStatus?: string | null
+  locale?: ProjectDateLocale
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
-  const [status, setStatus] = useState<string | null>(requestStatus ?? null)
+  const [localStatus, setLocalStatus] = useState<string | null>(null)
+  const status = localStatus ?? requestStatus ?? null
+  const strings = getProjectFinanceStrings(locale)
 
-  useEffect(() => {
-    setStatus(requestStatus ?? null)
-  }, [requestStatus])
+  const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -35,16 +39,18 @@ export function JoinButton({
         
         if (result?.ok) {
           console.log('[JoinButton] Success! Request created/updated. Refreshing page...')
-          setStatus('pending')
+          setLocalStatus('joined' in result && result.joined ? null : 'pending')
         } else {
-          console.error('[JoinButton] Request failed:', result?.error || result?.reason)
-          alert(`Failed to submit request: ${result?.error || result?.reason || 'Unknown error'}`)
+          const resultError = result && 'error' in result ? result.error : null
+          const resultReason = result && 'reason' in result ? result.reason : null
+          console.error('[JoinButton] Request failed:', resultError || resultReason)
+          alert(`Failed to submit request: ${resultError || resultReason || 'Unknown error'}`)
         }
         
         // Always refresh to show current state
         router.refresh()
-      } catch (error: any) {
-        console.error('[JoinButton] Form submission error:', error)
+      } catch (error: unknown) {
+        console.error('[JoinButton] Form submission error:', errorMessage(error))
         // Still refresh to show current state
         router.refresh()
       }
@@ -64,7 +70,7 @@ export function JoinButton({
           : status === 'pending'
             ? 'Request sent'
             : canJoinNow
-              ? 'Join project'
+              ? strings.joinProject
               : 'Request to join'}
       </button>
       {status === 'pending' && (
@@ -79,13 +85,13 @@ export function JoinButton({
               try {
                 const result = await cancelJoinRequestFromForm(formData)
                 if (result?.ok) {
-                  setStatus('canceled')
+                  setLocalStatus('canceled')
                 } else {
                   alert(`Failed to cancel request: ${result?.error || 'Unknown error'}`)
                 }
                 router.refresh()
-              } catch (error: any) {
-                console.error('[JoinButton] Cancel error:', error)
+              } catch (error: unknown) {
+                console.error('[JoinButton] Cancel error:', errorMessage(error))
                 router.refresh()
               }
             })

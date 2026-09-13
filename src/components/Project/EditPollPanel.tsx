@@ -3,6 +3,7 @@
 import { ClipboardEvent, useMemo, useState } from 'react'
 import { deletePoll, updatePoll } from '@/app/project/[id]/actions'
 import { Button } from '@/components/ui/button'
+import type { ProjectFinanceMode } from '@/lib/projectFinance'
 
 type PollOption = {
   id: string
@@ -24,10 +25,12 @@ export function EditPollPanel({
   projectId,
   poll,
   projectCanceled,
+  financeMode = 'managed',
 }: {
   projectId: string
   poll: Poll
   projectCanceled?: boolean
+  financeMode?: ProjectFinanceMode
 }) {
   const [optionRows, setOptionRows] = useState<string[]>(
     poll.options.length > 0 ? poll.options.map(option => option.label) : ['', '']
@@ -132,8 +135,8 @@ export function EditPollPanel({
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-2">
+        <div className={`grid gap-4 ${financeMode === 'managed' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+          {financeMode === 'managed' && <div className="space-y-2">
             <label className="text-sm font-medium">Extra cost</label>
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">€</span>
@@ -171,7 +174,7 @@ export function EditPollPanel({
               </label>
             </div>
             <p className="text-xs text-muted-foreground">Optional additional cost if approved</p>
-          </div>
+          </div>}
 
           <div className="space-y-2">
             <label className="text-sm font-medium">Votes needed</label>
