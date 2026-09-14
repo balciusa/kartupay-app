@@ -59,7 +59,8 @@ export function EditPollPanel({
     setSubmitError(null)
     formData.set('options', normalizedOptions.join('\n'))
     try {
-      await updatePoll(projectId, poll.id, formData)
+      const result = await updatePoll(projectId, poll.id, formData)
+      if (result?.error) setSubmitError(result.error)
     } catch (error: unknown) {
       const maybeError = error as { message?: string } | null
       setSubmitError(maybeError?.message || 'Failed to update poll')

@@ -7,6 +7,7 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { recordProjectActivity } from '@/lib/activityLog'
 import { calculateProjectPricing, validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getCurrentUserId } from '@/lib/supabaseServer'
+import { getProjectStatusUiKey } from '@/lib/projectStatusUi'
 import { buildExtraDueRows } from '@/lib/extraPayments'
 import {
   applyTimeToDateOption,
@@ -587,6 +588,8 @@ export async function leaveProject(projectId: string) {
   if (meErr) throw meErr
   if (!me) { revalidatePath(`/project/${projectId}`); return { ok: true } }
 
+  await requireSafeParticipantLeave(projectId, me)
+
   const financeMode = await getProjectFinanceMode(projectId)
   const refundSummary = financeMode === 'managed'
     ? await computeParticipantRefundSummary(projectId, me.id)
@@ -722,7 +725,7 @@ async function requireActiveManager(projectId: string, userId: string) {
 async function requireActiveProjectParticipant(projectId: string, userId: string) {
   const { data: me, error: meErr } = await supabaseAdmin
     .from('participants')
-    .select('id, project_id, left_at')
+    .select('id, project_id, role, left_at')
     .eq('project_id', projectId)
     .eq('user_id', userId)
     .is('left_at', null)
@@ -1080,6 +1083,9 @@ export async function confirmParticipantRefundReceived(refundRequestId: string) 
   }
   if (refund.status !== 'sent') throw new Error('Refund is not marked as sent yet')
 
+  // Completing this refund also leaves the project; validate before either write.
+  await requireSafeParticipantLeave(refund.project_id, me)
+
   const actor = await getActiveParticipantContext(refund.project_id, uid)
   const nowIso = new Date().toISOString()
   const { error: updateErr } = await supabaseAdmin
@@ -1347,6 +1353,33 @@ const getLatestParticipantRefundRequest = async (
     throw new Error(error.message ?? 'Failed to load refund request')
   }
   return (data as ParticipantRefundRequestRow | null) ?? null
+}
+
+async function requireSafeParticipantLeave(projectId: string, participant: { id: string; role: string }) {
+  const { data: project, error: projectErr } = await supabaseAdmin
+    .from('projects')
+    .select('collector_participant_id')
+    .eq('id', projectId)
+    .single()
+  if (projectErr) throw projectErr
+  if (!project) throw new Error('Project not found')
+  if (project.collector_participant_id === participant.id) {
+    throw new Error('Assign another collector before leaving the project.')
+  }
+  if (participant.role === 'organizer') {
+    const { data: otherOrganizers, error: organizerErr } = await supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('role', 'organizer')
+      .is('left_at', null)
+      .neq('id', participant.id)
+      .limit(1)
+    if (organizerErr) throw organizerErr
+    if (!otherOrganizers?.length) {
+      throw new Error('Assign another organizer before leaving the project.')
+    }
+  }
 }
 
 const markParticipantLeftWithActivity = async ({
@@ -2915,6 +2948,33 @@ export async function postMessage(projectId: string, body: string, parentId?: st
 
   const parent = parentId?.trim() ? parentId : null
 
+  // Older schemas may not have aborted_at; cancellation status/canceled_at still apply.
+  const projectResult = await supabaseAdmin
+    .from('projects')
+    .select('status, canceled_at, aborted_at')
+    .eq('id', projectId)
+    .single()
+  let project = projectResult.data
+  let projectError = projectResult.error
+  if (missingColumn(projectError, 'aborted_at')) {
+    const fallback = await supabaseAdmin
+      .from('projects')
+      .select('status, canceled_at')
+      .eq('id', projectId)
+      .single()
+    project = fallback.data ? { ...fallback.data, aborted_at: null } : null
+    projectError = fallback.error
+  }
+  if (projectError) throw projectError
+  if (!project) throw new Error('Project not found')
+  if (getProjectStatusUiKey({
+    status: project.status,
+    canceledAt: project.canceled_at,
+    isCanceled: project.aborted_at != null || project.canceled_at != null,
+  }) === 'canceled') {
+    throw new Error('Posting is disabled because this project was canceled.')
+  }
+
   const { error } = await supabaseAdmin
     .from('messages')
     .insert({ project_id: projectId, user_id: uid, author_user_id: uid, body: text, parent_id: parent })
@@ -3619,6 +3679,25 @@ export async function updatePoll(projectId: string, pollId: string, formData: Fo
     .filter(Boolean)
   if (options.length === 0) throw new Error('At least one option is required')
 
+  const { data: currentOptions, error: currentOptionsErr } = await supabaseAdmin
+    .from('poll_options')
+    .select('id, label')
+    .eq('poll_id', pollId)
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true })
+  if (currentOptionsErr) throw currentOptionsErr
+  const { data: votes, error: votesErr } = await supabaseAdmin
+    .from('poll_votes')
+    .select('id')
+    .eq('poll_id', pollId)
+    .limit(1)
+  if (votesErr) throw votesErr
+  const optionsChanged = options.length !== currentOptions?.length ||
+    options.some((label, index) => label !== currentOptions?.[index].label)
+  if (optionsChanged && votes?.length) {
+    return { error: 'Poll options cannot be changed after voting has started.' }
+  }
+
   const updateWithType = await supabaseAdmin
     .from('polls')
     .update({
@@ -3648,16 +3727,19 @@ export async function updatePoll(projectId: string, pollId: string, formData: Fo
     }
   }
 
-  const { error: deleteErr } = await supabaseAdmin
-    .from('poll_options')
-    .delete()
-    .eq('poll_id', pollId)
-  if (deleteErr) throw deleteErr
+  // Metadata-only edits never touch option rows or their vote references.
+  if (optionsChanged) {
+    const { error: deleteErr } = await supabaseAdmin
+      .from('poll_options')
+      .delete()
+      .eq('poll_id', pollId)
+    if (deleteErr) throw deleteErr
 
-  const { error: optionsErr } = await supabaseAdmin
-    .from('poll_options')
-    .insert(options.map(label => ({ poll_id: pollId, label })))
-  if (optionsErr) throw optionsErr
+    const { error: optionsErr } = await supabaseAdmin
+      .from('poll_options')
+      .insert(options.map(label => ({ poll_id: pollId, label })))
+    if (optionsErr) throw optionsErr
+  }
 
   await recordProjectActivity({
     projectId,

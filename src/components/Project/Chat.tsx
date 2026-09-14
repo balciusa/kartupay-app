@@ -17,11 +17,13 @@ export default function Chat({
   messages,
   userDisplayMap = {},
   canRead = true,
+  canPost = true,
 }: {
   projectId: string
   messages: Msg[]
   userDisplayMap?: Record<string, string>
   canRead?: boolean
+  canPost?: boolean
 }) {
   const [pending, start] = useTransition()
   const [text, setText] = useState('')
@@ -70,7 +72,7 @@ export default function Chat({
 
   return (
     <section className="space-y-5">
-      <form
+      {canPost ? <form
         action={formData =>
           start(async () => {
             const body = String(formData.get('body') || '').trim()
@@ -93,7 +95,9 @@ export default function Chat({
             {pending ? 'Posting...' : 'Post'}
           </button>
         </div>
-      </form>
+      </form> : (
+        <p className="text-sm text-muted-foreground">Posting is disabled because this project was canceled.</p>
+      )}
 
       <ul className="divide-y border rounded-xl bg-white">
         {topLevel.map(m => (
@@ -106,7 +110,7 @@ export default function Chat({
               </time>
             </div>
             <div className="whitespace-pre-wrap text-sm text-slate-900">{m.body}</div>
-            <div className="mt-2">
+            {canPost && <div className="mt-2">
               <button
                 type="button"
                 className="text-xs font-medium text-slate-600 hover:text-black"
@@ -117,9 +121,9 @@ export default function Chat({
               >
                 Reply
               </button>
-            </div>
+            </div>}
 
-            {replyOpenId === m.id ? (
+            {canPost && replyOpenId === m.id ? (
               <form
                 className="mt-2 space-y-2"
                 action={() =>

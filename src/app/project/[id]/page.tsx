@@ -569,6 +569,8 @@ export default async function ProjectPage({
         .from('poll_options')
         .select('id, poll_id, label')
         .in('poll_id', pollIds)
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
     : { data: [] as Array<{ id: string; poll_id: string; label: string }> }
   const { data: pollVotes } = pollIds.length
     ? await supabase
@@ -1846,6 +1848,7 @@ export default async function ProjectPage({
                   messages={messages ?? []}
                   userDisplayMap={userDisplayMap}
                   canRead={isMeParticipant}
+                  canPost={!isAborted}
                 />
               </section>
             </div>
@@ -2665,4 +2668,3 @@ export default async function ProjectPage({
     </main>
   )
 }
-
