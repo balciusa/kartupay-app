@@ -30,8 +30,8 @@ export async function GET(req: NextRequest) {
         },
         set(name: string, value: string, options: CookieOptions) {
           try {
-            if (typeof (cookieStore as any)?.set === 'function') {
-              ;(cookieStore as any).set({ name, value, ...options })
+            if (typeof cookieStore.set === 'function') {
+              cookieStore.set({ name, value, ...options })
             }
           } catch {
             // no-op in read-only render
@@ -39,8 +39,8 @@ export async function GET(req: NextRequest) {
         },
         remove(name: string, options: CookieOptions) {
           try {
-            if (typeof (cookieStore as any)?.set === 'function') {
-              ;(cookieStore as any).set({ name, value: '', ...options })
+            if (typeof cookieStore.set === 'function') {
+              cookieStore.set({ name, value: '', ...options })
             }
           } catch {
             // no-op in read-only render
@@ -92,8 +92,7 @@ export async function GET(req: NextRequest) {
     } else if (token) {
       // Legacy token flow (older magic link format)
       console.log('[auth/callback] Processing legacy token flow, type:', vtype)
-      // @ts-ignore - accept token_hash param if available in your version
-      const { data, error } = await supabase.auth.verifyOtp({ token_hash: token, type: vtype })
+      const { error } = await supabase.auth.verifyOtp({ token_hash: token, type: vtype })
       if (error) {
         console.error('[auth/callback] Token verification error:', error)
         return NextResponse.redirect(new URL(`/?error=${encodeURIComponent(error.message)}`, req.url))
@@ -107,9 +106,10 @@ export async function GET(req: NextRequest) {
       console.warn('[auth/callback] No code or token found in URL')
       return NextResponse.redirect(new URL('/?error=invalid_auth_link', req.url))
     }
-  } catch (e: any) {
-    console.error('[auth/callback] Unexpected error:', e?.message || e)
-    return NextResponse.redirect(new URL(`/?error=${encodeURIComponent(e?.message || 'auth_error')}`, req.url))
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : error
+    console.error('[auth/callback] Unexpected error:', detail)
+    return NextResponse.redirect(new URL(`/?error=${encodeURIComponent(detail ? String(detail) : 'auth_error')}`, req.url))
   }
 
   // Redirect to password reset page if this was a password reset, otherwise use redirect param or go home

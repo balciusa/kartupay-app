@@ -6,7 +6,6 @@ import {
   markReceived,
   approveJoinRequestFromForm,
   rejectJoinRequestFromForm,
-  promoteToOrganizerFromForm,
   setCollector,
   selfReportPaid,
   confirmLateJoinReceipt,
@@ -19,7 +18,7 @@ type Participant = {
   role: string
   short_code: string | null
   joined_at: string | null
-  users?: { email: string | null } | null
+  users?: { email: string | null; display_name?: string | null } | null
 }
 
 type PayOption = { label: string | null, value: string, type: string }
@@ -77,8 +76,22 @@ const normalizeRevolutUrl = (raw: string) => {
   return null
 }
 
-const displayName = (p: Participant) =>
-  p.users?.email || (p.short_code ? `#${p.short_code}` : 'Anonymous')
+const maskEmail = (email?: string | null) => {
+  if (!email) return null
+  const [name, domain] = email.split('@')
+  if (!domain) return email
+  const head = name.slice(0, 2)
+  return `${head}***@${domain}`
+}
+
+const displayName = (p: Participant) => {
+  const name = p.users?.display_name ?? null
+  if (name) return name
+  const masked = maskEmail(p.users?.email ?? null)
+  if (masked) return masked
+  if (p.short_code) return `#${p.short_code}`
+  return 'Member'
+}
 
 const formatEuro = (cents: number) => `€${(cents / 100).toFixed(2)}`
 const readableDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : '')
@@ -90,7 +103,6 @@ export function Participants(props: {
   preferred: Array<[string, Pref]>
   allOptions: Array<[string, Array<Opt>]>
   paidSet: Set<string>
-  afterDeadlineSet: Set<string>
   organizerId: string | null
   pendingRequests?: Array<{ id: string; requester_user_id: string; created_at: string; status: string }>
   showPendingRequests?: boolean
@@ -118,7 +130,6 @@ export function Participants(props: {
   const projectCanceled = props.projectCanceled === true
   const pendingSignalsSet = props.pendingSignalsSet ?? new Set<string>()
   const allOptionsMap = useMemo(() => mapFromEntries(props.allOptions ?? []), [props.allOptions])
-  const transfersList = props.transfers ?? []
   const transferAggregates = useMemo(() => {
     type Stats = {
       pendingCount: number
@@ -144,7 +155,7 @@ export function Participants(props: {
     const outgoingStats = new Map<string, Stats>()
     const pairMap = new Map<string, Transfer[]>()
 
-    for (const t of transfersList) {
+    for (const t of props.transfers ?? []) {
       if (!senderMap.has(t.from_participant_id)) senderMap.set(t.from_participant_id, [])
       senderMap.get(t.from_participant_id)!.push(t)
       if (!recipientMap.has(t.to_participant_id)) recipientMap.set(t.to_participant_id, [])
@@ -180,7 +191,7 @@ export function Participants(props: {
     }
 
     return { senderMap, recipientMap, incomingStats, outgoingStats, pairMap }
-  }, [transfersList])
+  }, [props.transfers])
   const lateTransfersBySenderMap = transferAggregates.senderMap
   const lateTransfersByRecipientMap = transferAggregates.recipientMap
   const incomingStatsMap = transferAggregates.incomingStats
@@ -249,18 +260,18 @@ export function Participants(props: {
     !modalLatePending && !modalLateAwaiting ? viewerModalTransfers.find(t => !!t.received_at) ?? null : null
 
   return (
-    <section className="border rounded-xl p-4 space-y-4">
-      <h2 className="text-lg font-semibold">Participants</h2>
+    <section className="border rounded-2xl bg-white p-4 space-y-4">
+      <h2 className="text-base font-semibold text-slate-900">Participants</h2>
 
       {showPendingRequests && isOrganizer && pendingRequests.length > 0 && (
-        <div className="rounded border p-3 space-y-3">
-          <div className="font-medium">Pending join requests</div>
+        <div className="rounded-xl border p-3 space-y-3">
+          <div className="text-sm font-semibold text-slate-900">Pending join requests</div>
           <div className="space-y-2">
             {pendingRequests.map(req => (
               <div key={req.id} className="flex items-center justify-between gap-3 text-sm">
                 <div className="space-y-0.5">
-                  <div className="font-medium">User {req.requester_user_id.slice(0, 6)}</div>
-                  <div className="text-xs opacity-70">
+                  <div className="font-medium text-slate-900">User {req.requester_user_id.slice(0, 6)}</div>
+                  <div className="text-xs text-slate-500">
                     {new Date(req.created_at).toLocaleString('en-US', {
                       year: 'numeric',
                       month: 'numeric',
@@ -298,7 +309,7 @@ export function Participants(props: {
           const name = displayName(p)
           const rowIsCollector = !!(props.collectorId && p.id === props.collectorId)
           const viewerIsCollector = !!(props.collectorId && props.myParticipantId === props.collectorId)
-          const isSelfRow = !!(props.myParticipantId && props.myParticipantId === p.id)
+          const isViewerRow = !!(props.myParticipantId && props.myParticipantId === p.id)
           const amountLabel = formatEuro(props.perPersonCents)
           const senderLateTransfers = lateTransfersBySenderMap.get(p.id) ?? []
           const recipientLateTransfers = lateTransfersByRecipientMap.get(p.id) ?? []
@@ -323,39 +334,40 @@ export function Participants(props: {
             : hasIncomingMarkedAwaiting
               ? 'Reported paid (late)'
               : `Receives ${euros(incomingStats.pendingCents)} from ${incomingStats.pendingCount}`
-          const viewerPairKey = viewerParticipantId ? `${viewerParticipantId}__${p.id}` : null
+          const shouldComputeViewerPair = !!viewerParticipantId && !isViewerRow && isFinalized
+          const viewerPairKey = shouldComputeViewerPair ? `${viewerParticipantId}__${p.id}` : null
           const viewerPairTransfers = viewerPairKey ? pairTransfersMap.get(viewerPairKey) ?? [] : []
           const viewerPairPending = viewerPairTransfers.filter(t => !t.received_at)
           const viewerPairPendingUnmarked = viewerPairPending.filter(t => !t.sender_marked_at)
           const viewerPairPendingMarked = viewerPairPending.filter(t => !!t.sender_marked_at)
           const viewerPairConfirmed = viewerPairTransfers.filter(t => !!t.received_at)
-          const pendingUnmarkedCents = viewerPairPendingUnmarked.reduce((sum, t) => sum + t.expected_cents, 0)
           const pendingMarkedCents = viewerPairPendingMarked.reduce((sum, t) => sum + t.expected_cents, 0)
-          const viewerHasLateLink = !!viewerParticipantId && !isSelfRow && isFinalized && viewerPairTransfers.length > 0
-          const viewerShowsLateOwesChip = viewerHasLateLink && viewerPairPendingUnmarked.length > 0
+          const viewerHasLateLink = shouldComputeViewerPair && viewerPairTransfers.length > 0
           const viewerShowsLateAwaitingChip =
             viewerHasLateLink && viewerPairPendingUnmarked.length === 0 && viewerPairPendingMarked.length > 0
           const viewerShowsLateSettledChip =
             viewerHasLateLink && viewerPairPending.length === 0 && viewerPairConfirmed.length > 0
           const latePayAvailable = viewerHasLateLink && viewerPairPendingUnmarked.length > 0
-          const showStandardPay =
+          const canShowStandardPay =
             !isFinalized &&
             !isLateParticipant &&
-            isSelfRow &&
+            isViewerRow &&
             !viewerIsCollector &&
             !rowIsCollector &&
             !paid &&
             !viewerSettled &&
             !viewerHasPendingSignal &&
             !sent
-          const showPay = showPayments && (isFinalized ? latePayAvailable : showStandardPay)
+          const showPay = showPayments && (isFinalized ? latePayAvailable : canShowStandardPay)
+          const canShowSelfSettledChip =
+            showPayments && !isFinalized && !showPay && viewerSettled && !rowIsCollector && isViewerRow
 
           let statusLabel: string
           let statusClass = 'text-[10px] px-1.5 py-0.5 rounded border font-medium'
           if (rowIsCollector) {
             statusLabel = 'Collector'
             statusClass += ' bg-emerald-600 text-white border-emerald-700'
-          } else if (paid && !isSelfRow && !(viewerIsCollector && !rowIsCollector)) {
+          } else if (paid && !isViewerRow && !(viewerIsCollector && !rowIsCollector)) {
             // Don't show "Settled" in status label for self row or when collector views paid member - it's shown on the right side instead
             statusLabel = 'Settled'
             statusClass += ' bg-emerald-50 text-emerald-700 border-emerald-200'
@@ -373,15 +385,21 @@ export function Participants(props: {
           const markReceivedDisabled = pending || projectCanceled || paid || isLateParticipant
 
           return (
-            <div key={p.id} className="rounded border p-3 space-y-2">
+            <div key={p.id} className="rounded-lg border p-3">
               <div className="flex items-start justify-between gap-4">
                 <div className="space-y-1">
-                  <div className="font-medium flex items-center gap-2">
+                  <div className="font-medium flex items-center gap-2 flex-wrap text-slate-900">
                     <span>{name}</span>
-                    {isSelfRow && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-black text-white">You</span>
+                    {rowIsCollector && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-600 text-white">
+                        Collector
+                      </span>
                     )}
-                    <span className="text-xs uppercase opacity-50">{p.role}</span>
+                    {isLateParticipant && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-200 text-amber-900">
+                        Late joiner
+                      </span>
+                    )}
                     {showPayments && (
                       <span
                         className={statusClass}
@@ -399,34 +417,20 @@ export function Participants(props: {
                         {incomingBadgeText}
                       </span>
                     )}
-                    {showPayments && viewerShowsLateAwaitingChip && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-600 text-white">
-                        Sent {euros(pendingMarkedCents)} (late), awaiting confirmation
-                      </span>
-                    )}
                     {showPayments && viewerShowsLateSettledChip && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-600 text-white">
                         Settled (late)
                       </span>
                     )}
-                    {isOrganizer && p.role === 'member' && !isSelfRow && (
-                      <form action={promoteToOrganizerFromForm} className="inline">
-                        <input type="hidden" name="participantId" value={p.id} />
-                        <button
-                          type="submit"
-                          className="text-xs px-2 py-0.5 rounded border hover:bg-gray-50"
-                          title="Promote to organizer"
-                        >
-                          Promote
-                        </button>
-                      </form>
-                    )}
                   </div>
-                  {rowIsCollector && (
-                    <div className="text-xs text-emerald-600">Collects payments</div>
-                  )}
+                  {rowIsCollector && null}
                 </div>
                 <div className="flex items-center gap-2">
+                  {showPayments && viewerShowsLateAwaitingChip && (
+                    <span className="text-[10px] px-2 py-1 rounded bg-amber-600 text-white">
+                      Sent {euros(pendingMarkedCents)} (late), awaiting confirmation
+                    </span>
+                  )}
                   {showPay && (
                     <button
                       className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
@@ -448,7 +452,7 @@ export function Participants(props: {
                     </button>
                   )}
 
-                  {showPayments && !isFinalized && !showPay && viewerSettled && !rowIsCollector && isSelfRow && (
+                  {canShowSelfSettledChip && (
                     <span className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 border border-green-300">
                       Settled
                     </span>
@@ -502,6 +506,7 @@ export function Participants(props: {
                       const senderName = sender ? displayName(sender) : 'Participant'
                       const settled = !!transfer.received_at
                       const senderMarked = !!transfer.sender_marked_at
+                      const canConfirmIncomingLatePayment = !settled && isViewerRow
                       return (
                         <div
                           key={transfer.id}
@@ -517,7 +522,7 @@ export function Participants(props: {
                                   : `Owes ${formatEuro(transfer.expected_cents)}`}
                             </div>
                           </div>
-                          {!settled && isSelfRow ? (
+                          {canConfirmIncomingLatePayment ? (
                             <button
                               type="button"
                               className="px-3 py-1.5 rounded border bg-white text-xs sm:text-sm disabled:opacity-50"

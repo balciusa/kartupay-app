@@ -14,15 +14,15 @@ export function UserWidget() {
   }
 
   if (loading) {
-    return <div className="text-sm opacity-70">Checking auth...</div>
+    return <div className="text-sm text-muted-foreground">Checking auth...</div>
   }
 
   if (!user) {
     return (
       <div className="flex items-center gap-2">
-        <Link href="/login" className="text-sm font-medium hover:underline">
-          Login
-        </Link>
+        <Button asChild size="sm" variant="outline">
+          <Link href="/login">Log in</Link>
+        </Button>
       </div>
     )
   }
@@ -34,13 +34,10 @@ export function UserWidget() {
       <Avatar className="h-8 w-8 border">
         <AvatarFallback>{initials}</AvatarFallback>
       </Avatar>
-      <div className="text-sm">
-        <div className="font-medium leading-none">{user.email}</div>
-        <div className="text-xs opacity-70">Signed in</div>
+      <div className="max-w-40 text-sm">
+        <div className="truncate font-medium leading-none">{user.email}</div>
+        <div className="text-xs text-muted-foreground">Signed in</div>
       </div>
-      <Link href="/settings" className="text-sm underline">
-        Settings
-      </Link>
       <Button size="sm" variant="outline" onClick={handleLogout}>
         Logout
       </Button>
