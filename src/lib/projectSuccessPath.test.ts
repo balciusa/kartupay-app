@@ -202,3 +202,101 @@ test('UI: rendering is stable with no clock/browser-dependent inference', () => 
   assert.equal(render(selecting()), render(selecting()))
   assert.doesNotMatch(componentSource, /Date\.now|new Date|Math\.random|window\.|useEffect/)
 })
+
+// Evaluate the actual page JSX guard, then render the real Date Finder. Only I/O
+// and unrelated leaf controls are stubbed; no production actions are invoked.
+const pageSource = readFileSync(new URL('../app/project/[id]/page.tsx', import.meta.url), 'utf8')
+const pageAst = ts.createSourceFile('page.tsx', pageSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+let dateFinderExpression = ''
+function findDateFinder(node: ts.Node) {
+  if (ts.isJsxExpression(node) && node.expression?.getText(pageAst).startsWith('projectDateData &&')
+    && node.expression.getText(pageAst).includes('<ProjectDateFinder')) {
+    dateFinderExpression = node.expression.getText(pageAst)
+  }
+  ts.forEachChild(node, findDateFinder)
+}
+findDateFinder(pageAst)
+assert.ok(dateFinderExpression, 'Actual page Date Finder expression must be found')
+const compileFixture = (source: string) => ts.transpileModule(source, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  fileName: 'fixture.tsx',
+}).outputText
+const dateSelection = await import('./projectDateSelection.ts')
+const dateStrings = await import('./projectDateStrings.ts')
+const dateComponentExports: Record<string, React.ComponentType<Record<string, unknown>>> = {}
+const dateRequire = (name: string) => {
+  if (name === 'next/navigation') return { useRouter: () => ({ refresh() {} }) }
+  if (name === '@/app/project/[id]/actions') return new Proxy({}, { get: () => () => { throw new Error('Unexpected action invocation') } })
+  if (name === '@/components/Project/LeaveProjectButton') return { LeaveProjectButton: () => createElement('button', {}, 'Leave project') }
+  if (name === '@/components/ui/button') return { Button: ({ variant, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string }) => { void variant; return createElement('button', props) } }
+  if (name === '@/lib/projectDateSelection') return dateSelection
+  if (name === '@/lib/projectDateStrings') return dateStrings
+  return nodeRequire(name)
+}
+new Function('require', 'exports', compileFixture(readFileSync(new URL('../components/Project/ProjectDateFinder.tsx', import.meta.url), 'utf8')))(dateRequire, dateComponentExports)
+const pageFixture: { render?: (...args: unknown[]) => React.ReactNode } = {}
+new Function('require', 'exports', 'ProjectDateFinder', compileFixture(`
+export function render(projectDateData, isAborted, isFinalized, viewerIsCollector = false) {
+  const projectId = 'fixture', uid = 'user', isMeParticipant = true, projectDateLocale = 'en'
+  return (${dateFinderExpression})
+}`))(nodeRequire, pageFixture, dateComponentExports.ProjectDateFinder)
+const fixedDateFixture = {
+  available: true, dateMode: 'fixed', selectionStatus: 'confirmation_open',
+  votingDeadlineAt: null, suggestionsCloseAt: null, selectedDateOptionId: 'selected',
+  confirmationDeadlineAt: '2099-01-01T00:00:00Z', eventStartAt: '2099-02-01T00:00:00Z', eventEndAt: null,
+  minParticipants: 2, maxParticipants: 10, options: [], respondedCount: 2, memberCount: 3,
+  confirmedCount: 2, awaitingCount: 1, cannotAttendCount: 0, missingResponseNames: [], awaitingNames: ['Member'],
+  viewerAttendanceStatus: 'confirmed', viewerTaskComplete: true, unreadNotificationCount: 0,
+}
+function renderPageDate(status = 'confirmed', finalized = true, canceled = false, manager = false, overrides = {}) {
+  return renderToStaticMarkup(pageFixture.render!({ ...fixedDateFixture, viewerAttendanceStatus: status, ...overrides }, canceled, finalized, manager))
+}
+
+test('P1: active Date Finder still renders its availability path', () => {
+  assert.match(renderPageDate('pending_date_selection', false, false, false, {
+    dateMode: 'selecting', selectionStatus: 'open', selectedDateOptionId: null, viewerTaskComplete: false,
+  }), /Choose dates/)
+})
+test('P1: canceled or aborted page suppresses all Date Finder mutations even when finalized', () => {
+  for (const finalized of [false, true]) assert.equal(renderPageDate('awaiting_confirmation', finalized, true, true), '')
+})
+test('P1: finalized awaiting confirmation keeps the real confirmation controls', () => {
+  const html = renderPageDate('awaiting_confirmation')
+  assert.match(html, /Yes, I will attend/)
+  assert.match(html, /No, I cannot attend/)
+  assert.doesNotMatch(html, /Join this project/)
+})
+for (const status of ['unconfirmed', 'cannot_attend', 'observer']) {
+  test(`P1: finalized ${status} keeps the real late-confirm/rejoin control`, () => {
+    const html = renderPageDate(status)
+    assert.match(html, /Join this project/)
+    assert.doesNotMatch(html, /Yes, I will attend/)
+  })
+}
+test('P1: finalized confirmed participant sees date information without attendance mutation prompts', () => {
+  const html = renderPageDate()
+  assert.match(html, /Project date/)
+  assert.doesNotMatch(html, /Join this project|Yes, I will attend|Add time|Save deadline|Send reminder/)
+})
+test('P1: finalized fixed-date manager cannot reopen voting, suggest/remove/select dates', () => {
+  const html = renderPageDate('confirmed', true, false, true)
+  assert.equal(html, renderPageDate('confirmed', false, false, true))
+  assert.doesNotMatch(html, /Suggest another date|Remove date|Select this date|Choose dates/)
+  // These existing manager actions have no finalization prohibition in the server rules.
+  assert.match(html, /Add time/)
+  assert.match(html, /Save deadline/)
+})
+test('P1: finalized late confirmation still respects existing capacity disablement', () => {
+  assert.match(renderPageDate('observer', true, false, false, { confirmedCount: 10 }), /<button[^>]*disabled=""[^>]*>Join this project/)
+})
+test('P1: finalized Date Finder coexists with non-actionable Success Path', () => {
+  const successHtml = render(context({ isFinalized: true }), manager)
+  assert.match(successHtml, /Project finalized/)
+  assert.doesNotMatch(successHtml, /<a |Next action/)
+  assert.match(renderPageDate('awaiting_confirmation'), /Yes, I will attend/)
+})
+test('P1: normal fixed-date ready Success Path and date information remain unchanged', () => {
+  assert.match(render(), /Project ready/)
+  assert.match(renderPageDate('confirmed', false), /Project date/)
+  assert.equal(derive().nextAction, null)
+})

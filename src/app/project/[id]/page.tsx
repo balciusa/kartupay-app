@@ -1641,7 +1641,7 @@ export default async function ProjectPage({
           overview: (
             <div className="space-y-6">
               <ProjectSuccessOverview model={successPath} projectId={projectId} />
-              {projectDateData && !isAborted && !isFinalized && (
+              {projectDateData && !isAborted && (
                 <div id="project-date-finder" className="scroll-mt-4">
                   <ProjectDateFinder
                     projectId={projectId}
