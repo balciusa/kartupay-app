@@ -1,6 +1,6 @@
+import { deriveProjectSuccessPath } from '@/lib/projectSuccessPath'
+import { ProjectSuccessOverview } from '@/components/Project/ProjectSuccessOverview'
 import { SummaryCards } from '@/components/Project/SummaryCards'
-import { PendingOverviewCards } from '@/components/Project/PendingOverviewCards'
-import { PendingMemberOverview } from '@/components/Project/PendingMemberOverview'
 import { Participants } from '@/components/Project/Participants'
 import Chat from '@/components/Project/Chat'
 import Voting from '@/components/Project/Voting'
@@ -18,7 +18,6 @@ import { LocationLinkMenu } from '@/components/Project/LocationLinkMenu'
 import { ProjectFlowBar } from '@/components/Project/ProjectFlowBar'
 import { BaseItineraryEditor } from '@/components/Project/BaseItineraryEditor'
 import { ProjectDateFinder } from '@/components/Project/ProjectDateFinder'
-import { ProjectParticipationOverview } from '@/components/Project/ProjectParticipationOverview'
 import { getActivityCategory } from '@/lib/activityLog'
 import { buildExtraDueRows, extraDueKey } from '@/lib/extraPayments'
 import { calculateProjectPricing, describeBundlePricing } from '@/lib/projectPricing'
@@ -772,12 +771,6 @@ export default async function ProjectPage({
     ? participantsClean.filter(participant => participant.attendance_status === 'confirmed')
     : participantsClean
   const participantsCount = financialParticipants.length
-  const awaitingAttendanceCount = participantsClean.filter(participant =>
-    ['pending_date_selection', 'awaiting_confirmation', 'unconfirmed'].includes(String(participant.attendance_status ?? ''))
-  ).length
-  const cannotAttendCount = participantsClean.filter(participant =>
-    ['cannot_attend', 'observer', 'inactive_for_project'].includes(String(participant.attendance_status ?? ''))
-  ).length
   const minParticipants = project.min_participants as number | null
   const maxParticipants = project.max_participants as number | null
   const finalizedAt = (project.finalized_at as string | null) ?? (project.closed_at as string | null) ?? null
@@ -889,16 +882,6 @@ export default async function ProjectPage({
     plus1: pricingPlus1.perPersonCents,
     plus2: pricingPlus2.perPersonCents,
   }
-  const minimumScenarioCents =
-    minParticipants && minParticipants > 0
-      ? calculateProjectPricing({
-          totalCents: storedTotalCents,
-          totalIsPerPerson,
-          participantCount: minParticipants,
-          bundleSize: project.bundle_size ?? null,
-          bundlePayFor: project.bundle_pay_for ?? null,
-        }).perPersonCents
-      : scenarios.now
   const baseItineraryItems = baseItineraryRaw.map(item => ({
     ...item,
     amount_cents: Number(item.amount_cents ?? 0),
@@ -931,15 +914,6 @@ export default async function ProjectPage({
       options: optionsByPoll.get(poll.id) ?? [],
       created_by: poll.created_by ?? null,
     }))
-  const resolvedRequiredPollsCount = pollsForVotingBase.reduce((count, poll) => {
-    const requiredVotes = Math.max(1, Number(poll.required_votes ?? 1))
-    const highestVotes = (poll.options ?? []).reduce((maxVotes, option) => {
-      return Math.max(maxVotes, Number(option.votes ?? 0))
-    }, 0)
-    return highestVotes >= requiredVotes ? count + 1 : count
-  }, 0)
-  const unresolvedRequiredPollsCount = Math.max(0, pollsForVotingBase.length - resolvedRequiredPollsCount)
-
   // Find organizer
   const organizer = participantsClean.find(p => p.role === 'organizer')
   const organizerId = myParticipantRole === 'organizer' ? myParticipantId : organizer?.id ?? null
@@ -1281,76 +1255,6 @@ export default async function ProjectPage({
     }))
   }
 
-  const activeProjectPaymentParticipantIds = new Set(
-    (paymentOptions ?? [])
-      .filter(option => option.is_active !== false)
-      .map(option => option.participant_id)
-  )
-  const participantUserIds = Array.from(
-    new Set(
-      participantsClean
-        .map(participant => participant.user_id)
-        .filter((userId): userId is string => typeof userId === 'string' && userId.length > 0)
-    )
-  )
-  const usersWithActivePaymentOption = new Set<string>()
-  if (financeManaged && participantUserIds.length > 0) {
-    const { data: userPaymentRows, error: userPaymentErr } = await supabaseAdmin
-      .from('user_payment_options')
-      .select('user_id')
-      .in('user_id', participantUserIds)
-      .eq('is_active', true)
-
-    if (userPaymentErr) {
-      if (missingTable(userPaymentErr, 'user_payment_options')) {
-        console.warn('[ProjectPage] user_payment_options table missing, skipping user-level payment fallback')
-      } else {
-        console.error('[ProjectPage] Error fetching user payment options:', userPaymentErr)
-      }
-    } else {
-      for (const row of userPaymentRows ?? []) {
-        if (typeof row.user_id === 'string' && row.user_id.length > 0) {
-          usersWithActivePaymentOption.add(row.user_id)
-        }
-      }
-    }
-  }
-  const participantsReadyForPaymentIds = new Set<string>()
-  for (const participant of financialParticipants) {
-    const hasProjectOption = activeProjectPaymentParticipantIds.has(participant.id)
-    const hasUserFallback = !!(participant.user_id && usersWithActivePaymentOption.has(participant.user_id))
-    if (hasProjectOption || hasUserFallback) {
-      participantsReadyForPaymentIds.add(participant.id)
-    }
-  }
-  const participantsWithPaymentCount = participantsReadyForPaymentIds.size
-  const viewerHasPaymentMethod = !!(myParticipantId && participantsReadyForPaymentIds.has(myParticipantId))
-  const participantPaymentCoverageRatio =
-    participantsCount > 0
-      ? Math.max(0, Math.min(1, participantsWithPaymentCount / participantsCount))
-      : 1
-  const hasEventWindow = !!(eventStartLocale || eventEndLocale)
-  const hasEventDetails = hasEventWindow || hasEventLocation
-  const participantTargetRatio =
-    minParticipants && minParticipants > 0
-      ? Math.max(0, Math.min(1, participantsNow / minParticipants))
-      : 1
-  const requiredPollResolutionRatio =
-    pollsForVotingBase.length > 0
-      ? Math.max(0, Math.min(1, resolvedRequiredPollsCount / pollsForVotingBase.length))
-      : 1
-  const readinessScore = Math.round(
-    participantTargetRatio * 45 +
-      participantPaymentCoverageRatio * 30 +
-      requiredPollResolutionRatio * 15 +
-      (hasEventDetails ? 10 : 0)
-  )
-  const pendingRequestsCountForOverview = viewerIsCollector ? (pendingForOrganizer?.length ?? 0) : null
-  const pendingRequestsHref =
-    pendingRequestsCountForOverview && pendingRequestsCountForOverview > 0
-      ? `/project/${projectId}?tab=admin&adminModal=requests`
-      : null
-  
   console.log('[ProjectPage] Manager check:', {
     myParticipantRole,
     myParticipantId,
@@ -1358,6 +1262,35 @@ export default async function ProjectPage({
     organizerFound: organizer?.id,
     isCollector: viewerIsCollector,
     pendingRequestsCount: pendingForOrganizer?.length ?? 0,
+  })
+
+  const successPath = deriveProjectSuccessPath({
+    isCanceled: isAborted,
+    isFinalized,
+    financeMode,
+    confirmedParticipants: projectDateData?.confirmedCount ?? participantsCount,
+    minParticipants,
+    capacityAvailable: !maxParticipants || capacityParticipantCount < maxParticipants,
+    joinsAllowed: !isAborted && !isFinalized,
+    // Existing base settlement indicator; optional Extras never gate readiness.
+    managedFinanceReady: totalCents === 0 || (participantsCount > 0 && effectivePaidCount === participantsCount),
+    date: {
+      selecting: (projectDateData?.dateMode ?? project.date_mode) === 'selecting',
+      votingOpen: projectDateData?.dateMode === 'selecting' && projectDateData.selectionStatus === 'open',
+      hasOptions: !!projectDateData?.options.some(option => option.status === 'active'),
+      awaitingOrganizer: projectDateData?.selectionStatus === 'awaiting_organizer_decision',
+      viewerResponded: projectDateData?.viewerTaskComplete ?? false,
+      viewerNeedsConfirmation: projectDateData?.viewerAttendanceStatus === 'awaiting_confirmation'
+        && projectDateData.selectionStatus === 'confirmation_open',
+      missingResponses: Math.max(0, (projectDateData?.memberCount ?? 0) - (projectDateData?.respondedCount ?? 0)),
+      awaitingAttendance: projectDateData?.awaitingCount ?? 0,
+    },
+  }, {
+    isParticipant: isMeParticipant,
+    canManage: viewerIsCollector,
+    canPay: isMeParticipant && financialParticipantIds.has(myParticipantId ?? '')
+      && paymentsOpen && minParticipantsReached && !dateSelectionBlocksPayments
+      && !viewerPaid && !viewerHasPendingSignal && perPersonCents > 0,
   })
 
   const isMemberActive = isMeParticipant
@@ -1696,24 +1629,6 @@ export default async function ProjectPage({
         </div>
       )}
 
-      {financeManaged && <ProjectFlowBar
-        projectId={projectId}
-        status={project.status as string | null | undefined}
-        isCanceled={isAborted}
-        isFinalized={isFinalized}
-        canManage={viewerIsCollector}
-        canStartCollecting={isPendingStatus && !isAborted && !dateSelectionBlocksPayments}
-        canFinalize={isCollectingStatus && !isAborted}
-        startCollectingBlockedReason={
-          isPendingStatus && dateSelectionBlocksPayments
-            ? 'Waiting for a confirmed project date'
-            : isPendingStatus && !minParticipantsReached
-              ? 'Waiting for minimum confirmed participants'
-              : null
-        }
-        collectorBaseShareLabel={formatEuro(perPersonCents)}
-      />}
-
       <ProjectTabs
         defaultTab={defaultProjectTab}
         counts={{
@@ -1725,63 +1640,20 @@ export default async function ProjectPage({
         sections={{
           overview: (
             <div className="space-y-6">
-              {projectDateData && (
-                <ProjectDateFinder
-                  projectId={projectId}
-                  data={projectDateData}
-                  viewerUserId={uid}
-                  viewerIsParticipant={isMeParticipant}
-                  canManage={viewerIsCollector}
-                  locale={projectDateLocale}
-                />
-              )}
-              {!financeManaged ? (
-                <ProjectParticipationOverview
-                  confirmedCount={participantsCount}
-                  awaitingCount={awaitingAttendanceCount}
-                  cannotAttendCount={cannotAttendCount}
-                  minParticipants={minParticipants}
-                  eventDateLabel={eventStartLocale}
-                  locale={projectDateLocale}
-                  projectReady={projectReadiness.projectReady}
-                />
-              ) : isPendingStatus ? (
-                viewerIsCollector ? (
-                  <PendingOverviewCards
-                    readinessScore={readinessScore}
-                    participantsNow={participantsNow}
-                    participantsWithPaymentCount={participantsWithPaymentCount}
-                    participantsTotalCount={participantsCount}
-                    minParticipants={minParticipants}
-                    maxParticipants={maxParticipants}
-                    pendingRequestsCount={pendingRequestsCountForOverview}
-                    pendingRequestsHref={pendingRequestsHref}
-                    minParticipantsReached={minParticipantsReached}
-                    pollCount={pollsForVotingBase.length}
-                    resolvedPollCount={resolvedRequiredPollsCount}
-                    unresolvedPollCount={unresolvedRequiredPollsCount}
-                    hasEventWindow={hasEventWindow}
-                    hasEventLocation={hasEventLocation}
-                    totalIsPerPerson={totalIsPerPerson}
-                    bundleLabel={bundleLabel}
-                    scenarios={{
-                      now: scenarios.now,
-                      atMinimum: minimumScenarioCents,
-                      plus1: scenarios.plus1,
-                      plus2: scenarios.plus2,
-                    }}
-                  />
-                ) : (
-                  <PendingMemberOverview
+              <ProjectSuccessOverview model={successPath} projectId={projectId} />
+              {projectDateData && !isAborted && !isFinalized && (
+                <div id="project-date-finder" className="scroll-mt-4">
+                  <ProjectDateFinder
                     projectId={projectId}
-                    participantsNow={participantsNow}
-                    minParticipants={minParticipants}
-                    maxParticipants={maxParticipants}
+                    data={projectDateData}
+                    viewerUserId={uid}
                     viewerIsParticipant={isMeParticipant}
-                    viewerHasPaymentMethod={viewerHasPaymentMethod}
+                    canManage={viewerIsCollector}
+                    locale={projectDateLocale}
                   />
-                )
-              ) : (
+                </div>
+              )}
+              {financeManaged && (
                 <SummaryCards
                   totalCents={totalCents}
                   collectedCents={collectedCentsDisplay}
@@ -1855,6 +1727,24 @@ export default async function ProjectPage({
           ),
           payments: financeManaged ? (
             <div className="space-y-6">
+              <ProjectFlowBar
+                projectId={projectId}
+                status={project.status as string | null | undefined}
+                isCanceled={isAborted}
+                isFinalized={isFinalized}
+                canManage={viewerIsCollector}
+                canStartCollecting={isPendingStatus && !isAborted && !dateSelectionBlocksPayments}
+                canFinalize={isCollectingStatus && !isAborted}
+                startCollectingBlockedReason={
+                  isPendingStatus && dateSelectionBlocksPayments
+                    ? 'Waiting for a confirmed project date'
+                    : isPendingStatus && !minParticipantsReached
+                      ? 'Waiting for minimum confirmed participants'
+                      : null
+                }
+                collectorBaseShareLabel={formatEuro(perPersonCents)}
+              />
+
               <section className="rounded-2xl border border-slate-200/80 bg-gradient-to-br from-white to-slate-100 p-5 shadow-sm md:p-6">
                 <div className="space-y-5">
                   <div className="flex flex-wrap items-center gap-3">
