@@ -1,10 +1,11 @@
 'use client'
 
-import { FormEvent, useActionState, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, startTransition, useActionState, useEffect, useMemo, useRef, useState } from 'react'
 import { createProjectWithState } from '@/app/project/new/actions'
 import { Button } from '@/components/ui/button'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
+import { normalizeDateOnlyOption } from '@/lib/projectDateSelection'
 import type { ProjectDateLocale } from '@/lib/projectDateStrings'
 
 type NewProjectFormProps = {
@@ -82,6 +83,9 @@ const parseCoordinate = (value: string, axis: 'latitude' | 'longitude') => {
 
 export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Create', locale = 'en' }: NewProjectFormProps) {
   const [createState, createAction, isCreating] = useActionState(createProjectWithState, { error: null })
+  const formRef = useRef<HTMLFormElement>(null)
+  const [draftError, setDraftError] = useState<{ section: string; message: string } | null>(null)
+  const [showServerError, setShowServerError] = useState(true)
   const [financeMode, setFinanceMode] = useState<'none' | 'managed'>('none')
   const [dateMode, setDateMode] = useState<'fixed' | 'selecting'>('fixed')
   const [dateOptions, setDateOptions] = useState<DraftDateOption[]>([{ id: 'initial-date-option' }])
@@ -243,17 +247,91 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
     }
   }
 
+  const errorSection = (message: string) => {
+    if (/date|time|option|event (start|end)/i.test(message)) return 'date'
+    if (/participants/i.test(message)) return 'participants'
+    if (/total|pricing|bundle|cost|finance|price/i.test(message)) return 'finance'
+    if (/location|coordinate/i.test(message)) return 'location'
+    return 'general'
+  }
+  const visibleError = draftError ?? (showServerError && !isCreating && createState.error
+    ? { section: errorSection(createState.error), message: createState.error }
+    : null)
+
+  const errorMessage = visibleError?.message
+  const errorArea = visibleError?.section
+  useEffect(() => {
+    if (!errorMessage) return
+    const alert = formRef.current?.querySelector<HTMLElement>('[data-creation-error]')
+    alert?.focus()
+  }, [errorMessage, errorArea, isCreating])
+
+  const renderError = (section: string) => visibleError?.section === section ? (
+    <div data-creation-error tabIndex={-1} role="alert"
+      className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+      {visibleError.message}
+    </div>
+  ) : null
+
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
-    const validationError = validateLocation()
-    const pricingValidationError = validatePricing()
-    if (!validationError && !pricingValidationError) {
-      setLocationError(null)
-      setPricingError(null)
+    // A fulfilled React form action resets uncontrolled inputs, even when its
+    // result contains an error. Dispatch explicitly so the DOM remains the draft.
+    event.preventDefault()
+    if (isCreating) return
+    const data = new FormData(event.currentTarget)
+    setShowServerError(false)
+    setDraftError(null)
+    setLocationError(null)
+    setPricingError(null)
+    const fail = (section: string, message: string) => setDraftError({ section, message })
+    const value = (name: string) => String(data.get(name) ?? '')
+    const min = value('min_participants')
+    const max = value('max_participants')
+    if (min && max && Number(max) < Number(min)) {
+      fail('participants', 'Max participants must be greater than or equal to min participants')
       return
     }
-    event.preventDefault()
-    setLocationError(validationError ?? null)
-    setPricingError(pricingValidationError)
+    const location = validateLocation()
+    const pricing = validatePricing()
+    if (pricing) { fail('finance', pricing); return }
+    if (location) { fail('location', location); return }
+    if (value('date_mode') === 'fixed') {
+      if (!value('event_start_date') || !value('event_start_time')) {
+        fail('date', 'A fixed project needs a confirmed start date and time')
+        return
+      }
+      if (value('event_end_time') && !value('event_end_date')) {
+        fail('date', 'Event end time requires an end date')
+        return
+      }
+      if (value('event_end_date') &&
+        new Date(`${value('event_end_date')}T${value('event_end_time') || '17:00'}`) <
+        new Date(`${value('event_start_date')}T${value('event_start_time')}`)) {
+        fail('date', 'Event end must be after event start')
+        return
+      }
+    } else if (value('date_mode') === 'selecting') {
+      if (!value('date_voting_deadline_date')) {
+        fail('date', 'Choose a date voting deadline')
+        return
+      }
+      const starts = data.getAll('date_option_start_date')
+      const ends = data.getAll('date_option_end_date')
+      if (!starts.length) { fail('date', 'Add at least one date option'); return }
+      try {
+        const options = starts.map((start, index) => normalizeDateOnlyOption(String(start), String(ends[index] ?? '')))
+        const unique = new Set(options.map(option => `${option.startsAt}:${option.endsAt ?? ''}`))
+        if (unique.size !== options.length) throw new Error('The same date option was added more than once')
+      } catch (error) {
+        fail('date', error instanceof Error ? error.message : 'Check the initial date options')
+        return
+      }
+    } else {
+      fail('date', 'Choose how the project date will be decided.')
+      return
+    }
+    setShowServerError(true)
+    startTransition(() => createAction(data))
   }
 
   const clearLocation = () => {
@@ -273,7 +351,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   })()
 
   return (
-    <form action={createAction} className="space-y-5" onSubmit={onSubmit}>
+    <form ref={formRef} className="space-y-5" onSubmit={onSubmit}>
       <div className="space-y-2">
         <label htmlFor="project_title" className="text-sm font-medium">
           Project title <span className="text-red-500">*</span>
@@ -336,6 +414,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
       <section className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
         <div className="space-y-1">
           <h3 className="text-sm font-semibold text-slate-900">{financeStrings.sharedCosts}</h3>
+          {renderError('finance')}
           <p className="text-xs text-slate-600">{financeStrings.sharedCostsHelp}</p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -494,6 +573,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
+          {renderError('participants')}
           <label htmlFor="project_min_participants" className="text-sm font-medium">
             Min participants
           </label>
@@ -523,6 +603,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="space-y-0.5">
             <h3 className="text-sm font-semibold text-slate-900">Event location</h3>
+            {renderError('location')}
             <p className="text-xs text-slate-600">Optional. Members can open Google Maps, Waze, or Apple Maps.</p>
           </div>
           {(locationAddress || locationLabel) && (
@@ -591,6 +672,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
       <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
         <div className="space-y-1">
           <h3 className="text-sm font-semibold text-slate-900">Project date</h3>
+          {renderError('date')}
           <p className="text-xs text-slate-600">Use a confirmed date, or let project members find the best date together.</p>
         </div>
         <div className="control-radio-group space-y-2">
@@ -724,15 +806,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
           {pricingError}
         </div>
       )}
-      {createState.error && (
-        <div
-          className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700"
-          role="alert"
-          aria-live="assertive"
-        >
-          {createState.error}
-        </div>
-      )}
+      {renderError('general')}
 
       <div className="flex items-center justify-end gap-3 pt-2">
         {showCancel && (
