@@ -87,6 +87,11 @@ export async function createProject(formData: FormData) {
     throw new Error('You must be signed in')
   }
 
+  const submittedDateMode = formData.get('date_mode')
+  if (submittedDateMode !== 'fixed' && submittedDateMode !== 'selecting') {
+    throw new Error('Choose how the project date will be decided.')
+  }
+
   const minParticipantsValue = formData.get('min_participants')
   const maxParticipantsValue = formData.get('max_participants')
 
@@ -101,7 +106,7 @@ export async function createProject(formData: FormData) {
     bundle_pay_for: (formData.get('bundle_pay_for') as string) ?? null,
     min_participants: typeof minParticipantsValue === 'string' ? minParticipantsValue : null,
     max_participants: typeof maxParticipantsValue === 'string' ? maxParticipantsValue : null,
-    date_mode: (formData.get('date_mode') as string) ?? 'fixed',
+    date_mode: submittedDateMode,
     date_voting_deadline_date: (formData.get('date_voting_deadline_date') as string) ?? null,
     event_start_date: (formData.get('event_start_date') as string) ?? null,
     event_start_time: (formData.get('event_start_time') as string) ?? null,
@@ -171,9 +176,9 @@ export async function createProject(formData: FormData) {
   const { bundleSize, bundlePayFor } = finance_mode === 'managed'
     ? validateBundlePricingConfig(totalIsPerPerson, bundle_size, bundle_pay_for)
     : { bundleSize: null, bundlePayFor: null }
-  const eventStartAt = parseEventDateTime(event_start_date, event_start_time, '09:00')
-  const eventEndAt = parseEventDateTime(event_end_date, event_end_time, '17:00')
-  if (date_mode === 'fixed' && !eventStartAt) {
+  const eventStartAt = date_mode === 'fixed' ? parseEventDateTime(event_start_date, event_start_time, '09:00') : null
+  const eventEndAt = date_mode === 'fixed' ? parseEventDateTime(event_end_date, event_end_time, '17:00') : null
+  if (date_mode === 'fixed' && (!eventStartAt || !event_start_time?.trim())) {
     throw new Error('A fixed project needs a confirmed start date and time')
   }
   if (eventStartAt && eventEndAt && new Date(eventEndAt) < new Date(eventStartAt)) {
