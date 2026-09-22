@@ -7,6 +7,8 @@ import { createServer } from 'node:http'
 import { spawn, execFileSync } from 'node:child_process'
 import test from 'node:test'
 import ts from 'typescript'
+import { createElement } from 'react'
+import { renderToString } from 'react-dom/server'
 
 const require = createRequire(import.meta.url)
 const root = resolve(import.meta.dirname, '../..')
@@ -82,6 +84,56 @@ test('server independently validates modes, participants, dates, deadline and du
     await assert.rejects(f.actions.createProjectWithState({ error: null }, data), (e: unknown) => String((e as { digest: string }).digest).includes('NEXT_REDIRECT;replace;/project/test-projects;'))
     assert.equal(f.writes[0].values.date_mode, mode)
   }
+})
+
+test('server-rendered form retains POST action metadata and the bound creation redirect path', async () => {
+  const f = fixture()
+  type Action = (...args: unknown[]) => unknown
+  const registered = new Map<string, Action>()
+  // Model the framework's server-reference metadata/bind contract. React itself
+  // renders the real component/useActionState; no client handler is installed.
+  const reference = (action: Action): Action => Object.assign(action, {
+    $$FORM_ACTION: () => {
+      const name = '$ACTION_ID_test-create-project'
+      registered.set(name, action)
+      return { name, action: '/project/new', method: 'POST', encType: 'multipart/form-data', data: new FormData() }
+    },
+    bind: (self: unknown, ...args: unknown[]) => reference(Function.prototype.bind.call(action, self, ...args)),
+  })
+  const modules: Record<string, unknown> = {
+    '@/app/project/new/actions': { createProjectWithState: reference((state, data) =>
+      f.actions.createProjectWithState(state as { error: string | null }, data as FormData)) },
+    '@/components/ui/button': { Button: ({ variant: _variant, ...props }: Record<string, unknown>) => {
+      void _variant
+      return createElement('button', props)
+    } },
+  }
+  const load = (name: string): unknown => {
+    if (modules[name]) return modules[name]
+    if (!name.startsWith('@/')) return require(name)
+    const exports = {}
+    new Function('require', 'exports', compile(`src/${name.slice(2)}${name.endsWith('NewProjectForm') ? '.tsx' : '.ts'}`))(load, exports)
+    return exports
+  }
+  const { NewProjectForm } = load('@/components/Project/NewProjectForm') as typeof import('../components/Project/NewProjectForm')
+  const html = renderToString(createElement(NewProjectForm))
+  const tag = html.match(/<form\b[^>]*>/)?.[0] ?? ''
+  assert.match(tag, /action="\/project\/new"/)
+  assert.match(tag, /method="POST"/)
+  assert.match(tag, /encType="multipart\/form-data"/)
+  assert.match(html, /name="\$ACTION_KEY"/)
+  const marker = html.match(/name="(\$ACTION_ID_[^"]+)"/)?.[1]
+  assert.ok(marker, 'SSR must emit the action routing field, not an ordinary GET form')
+  const action = registered.get(marker)
+  assert.ok(action, 'Rendered routing field must resolve to the useActionState-bound action')
+  // Submit the initial SSR fixed-mode shape through that registered action.
+  const data = form('fixed')
+  data.set('event_start_date', '2099-06-01')
+  data.set('event_start_time', '10:00')
+  await assert.rejects(async () => action(data), (e: unknown) =>
+    String((e as { digest: string }).digest).includes('NEXT_REDIRECT;replace;/project/test-projects;'))
+  assert.equal(f.writes[0].values.title, 'Weekend trip')
+  assert.equal(f.writes[0].values.date_mode, 'fixed')
 })
 
 // Bundle the actual component and installed React without adding a test dependency.

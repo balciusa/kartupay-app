@@ -351,7 +351,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   })()
 
   return (
-    <form ref={formRef} className="space-y-5" onSubmit={onSubmit}>
+    <form ref={formRef} action={createAction} className="space-y-5" onSubmit={onSubmit}>
       <div className="space-y-2">
         <label htmlFor="project_title" className="text-sm font-medium">
           Project title <span className="text-red-500">*</span>
