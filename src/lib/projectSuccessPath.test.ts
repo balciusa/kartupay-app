@@ -6,6 +6,8 @@ import ts from 'typescript'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { deriveProjectSuccessPath, type SuccessContext, type SuccessViewer } from './projectSuccessPath.ts'
+import * as successStrings from './projectSuccessOverviewStrings.ts'
+import type { ProjectDateLocale } from './projectDateStrings.ts'
 import { countConfirmedParticipants } from './projectDateSelection.ts'
 
 const viewer: SuccessViewer = { isParticipant: true, canManage: false, canPay: false }
@@ -167,9 +169,9 @@ const code = ts.transpileModule(componentSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
   fileName: 'ProjectSuccessOverview.tsx',
 }).outputText
-const moduleObject = { exports: {} as { ProjectSuccessOverview: React.ComponentType<{ model: ReturnType<typeof derive>; projectId: string }> } }
-new Function('require', 'module', 'exports', code)(nodeRequire, moduleObject, moduleObject.exports)
-const render = (input = context(), actor = viewer) => renderToStaticMarkup(createElement(moduleObject.exports.ProjectSuccessOverview, { model: derive(input, actor), projectId: 'fixture' }))
+const moduleObject = { exports: {} as { ProjectSuccessOverview: React.ComponentType<{ model: ReturnType<typeof derive>; projectId: string; locale?: ProjectDateLocale }> } }
+new Function('require', 'module', 'exports', code)((name: string) => name === '@/lib/projectSuccessOverviewStrings' ? successStrings : nodeRequire(name), moduleObject, moduleObject.exports)
+const render = (input = context(), actor = viewer, locale: ProjectDateLocale = 'en') => renderToStaticMarkup(createElement(moduleObject.exports.ProjectSuccessOverview, { model: derive(input, actor), projectId: 'fixture', locale }))
 
 test('UI: relevant stages, skipped stages, ready positive state and no fake CTA', () => {
   const html = render()
@@ -401,4 +403,132 @@ test('Overview: unique finance and organizer-decision blockers stay visible', ()
   const tied = render(selecting({ votingOpen: false, awaitingOrganizer: true, viewerResponded: true }))
   assert.match(tied, /Waiting for the organizer to choose the final date/)
   assert.doesNotMatch(tied, /Still needed/)
+})
+
+// Exercise both actual page component expressions, including locale propagation.
+let successOverviewExpression = ''
+function findSuccessOverview(node: ts.Node) {
+  if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(pageAst) === 'ProjectSuccessOverview') {
+    successOverviewExpression = node.getText(pageAst)
+  }
+  ts.forEachChild(node, findSuccessOverview)
+}
+findSuccessOverview(pageAst)
+assert.ok(successOverviewExpression)
+const overviewFixture: { render?: (...args: unknown[]) => React.ReactNode } = {}
+new Function('require', 'exports', 'ProjectSuccessOverview', 'ProjectDateFinder', compileFixture(`
+export function render(successPath, projectDateData, projectDateLocale, viewerIsCollector = true) {
+  const projectId = 'fixture', uid = 'user', isMeParticipant = true, isAborted = false
+  return <>{${successOverviewExpression}}{${dateFinderExpression}}</>
+}`))(nodeRequire, overviewFixture, moduleObject.exports.ProjectSuccessOverview, dateComponentExports.ProjectDateFinder)
+
+for (const locale of ['en', 'lt'] as const) {
+  test(`Localization: actual ${locale} Overview has one localized date CTA and no duplicate task`, () => {
+    const model = derive({ ...selecting(), confirmedParticipants: 0, minParticipants: 2 }, manager)
+    const html = renderToStaticMarkup(overviewFixture.render!(model, selectingData(), locale))
+    const strings = dateStrings.getProjectDateStrings(locale)
+    assert.equal((html.match(new RegExp(`>${strings.chooseDates}</a>`, 'g')) ?? []).length, 1)
+    assert.match(html, /href="#date-availability"/)
+    assert.doesNotMatch(html, new RegExp(strings.priorityTask))
+    if (locale === 'lt') {
+      assert.match(html, /Projekto būsena/)
+      assert.doesNotMatch(html, /Choose your available dates|Your response helps|>Choose dates<|Project status|Needs your attention|Upcoming|Current/)
+    } else {
+      assert.match(html, /Choose your available dates/)
+    }
+  })
+}
+
+for (const locale of ['en', 'lt'] as const) {
+  test(`Localization: ${locale} standalone Date Finder keeps its localized task and one CTA`, () => {
+    const strings = dateStrings.getProjectDateStrings(locale)
+    const html = renderDate(selectingData(), { locale })
+    assert.match(html, new RegExp(strings.priorityTask))
+    assert.match(html, new RegExp(strings.chooseDatesHelp))
+    assert.equal((html.match(new RegExp(`>${strings.chooseDates}</a>`, 'g')) ?? []).length, 1)
+    assert.match(html, /href="#date-availability"/)
+    if (locale === 'lt') assert.doesNotMatch(html, /Choose dates|Priority task/)
+  })
+
+  test(`Localization: ${locale} progress, health and readiness context stay consistent`, () => {
+    const strings = successStrings.getProjectSuccessOverviewStrings(locale)
+    const html = render({ ...selecting(), confirmedParticipants: 0, minParticipants: 2, financeMode: 'managed' }, manager, locale)
+    for (const text of [strings.projectStatus, strings.region, strings.relevantStages, strings.health.needs_attention,
+      strings.stageStates.current, strings.stageStates.upcoming, strings.stages.date, strings.stages.participants,
+      strings.stages.finance, strings.stages.ready, strings.participantMinimum(0, 2), strings.details.finance]) {
+      assert.ok(html.includes(text), text)
+    }
+    assert.match(html, new RegExp(`lang="${locale}"`))
+    const ready = render(context(), viewer, locale)
+    for (const text of [strings.headings.ready, strings.details.ready, strings.stageStates.complete]) assert.ok(ready.includes(text))
+    if (locale === 'lt') assert.doesNotMatch(html + ready, /Project status|Needs your attention|Base contributions|participants confirmed|Complete|Upcoming/)
+  })
+
+  test(`Localization: ${locale} terminal states retain localized labels and no actions`, () => {
+    const strings = successStrings.getProjectSuccessOverviewStrings(locale)
+    for (const terminal of ['canceled', 'finalized'] as const) {
+      const html = render({ ...selecting(), isCanceled: terminal === 'canceled', isFinalized: terminal === 'finalized' }, manager, locale)
+      assert.ok(html.includes(strings.health[terminal]))
+      assert.ok(html.includes(strings.headings[terminal]))
+      assert.ok(html.includes(strings.details[terminal]))
+      assert.doesNotMatch(html, /<a /)
+      if (locale === 'lt') assert.doesNotMatch(html, /Project canceled|Project finalized|This project was canceled|participant list/)
+    }
+  })
+
+  test(`Localization: ${locale} action variants retain their stable destinations`, () => {
+    const strings = successStrings.getProjectSuccessOverviewStrings(locale)
+    const scenarios = [
+      { input: context({ date: { ...context().date, viewerNeedsConfirmation: true } }), actor: viewer, action: 'confirm_attendance', target: '#project-date-finder' },
+      { input: selecting({ votingOpen: false, awaitingOrganizer: true }), actor: manager, action: 'resolve_date', target: '#project-date-finder' },
+      { input: context({ confirmedParticipants: 0 }), actor: manager, action: 'invite_people', target: '/project/fixture?tab=people' },
+      { input: context({ financeMode: 'managed' }), actor: manager, action: 'review_finance', target: '/project/fixture?tab=payments' },
+      { input: context({ financeMode: 'managed' }), actor: { ...viewer, canPay: true }, action: 'review_payment', target: '/project/fixture?tab=payments' },
+    ] as const
+    for (const { input, actor, action, target } of scenarios) {
+      const html = render(input, actor, locale)
+      assert.equal(derive(input, actor).nextAction, action)
+      for (const text of Object.values(strings.actions[action])) assert.ok(html.includes(text), text)
+      assert.ok(html.includes(`href="${target}"`))
+      if (locale === 'lt') for (const text of Object.values(successStrings.getProjectSuccessOverviewStrings('en').actions[action])) assert.ok(!html.includes(text))
+    }
+  })
+
+  test(`Localization: ${locale} waiting and no-minimum states include localized numeric context`, () => {
+    const strings = successStrings.getProjectSuccessOverviewStrings(locale)
+    const dateWaiting = render(selecting({ viewerResponded: true }), viewer, locale)
+    for (const text of [strings.headings.waiting, strings.details.date, strings.waitingPeople(3), strings.waitingDates(3)]) assert.ok(dateWaiting.includes(text))
+    const attendanceWaiting = render(context({ confirmedParticipants: 0, date: { ...context().date, awaitingAttendance: 2 } }), viewer, locale)
+    assert.ok(attendanceWaiting.includes(strings.waitingParticipants(6)))
+    assert.ok(attendanceWaiting.includes(strings.waitingAttendance(2)))
+    const tieWaiting = render(selecting({ votingOpen: false, awaitingOrganizer: true }), viewer, locale)
+    assert.ok(tieWaiting.includes(strings.details.date_tie))
+    for (const count of [0, 1, 2, 10, 11, 21]) {
+      assert.ok(render(context({ minParticipants: null, confirmedParticipants: count }), viewer, locale).includes(strings.participantNoMinimum(count)))
+    }
+  })
+}
+
+test('Localization: dateActionShown remains a comparison of stable action ID, never display copy', () => {
+  let decision: ts.Expression | undefined
+  const visit = (node: ts.Node) => {
+    if (ts.isJsxAttribute(node) && node.name.getText(pageAst) === 'dateActionShown' && node.initializer && ts.isJsxExpression(node.initializer)) decision = node.initializer.expression
+    ts.forEachChild(node, visit)
+  }
+  visit(pageAst)
+  assert.ok(decision && ts.isBinaryExpression(decision))
+  assert.equal(decision.operatorToken.kind, ts.SyntaxKind.EqualsEqualsEqualsToken)
+  assert.equal(decision.left.getText(pageAst), 'successPath.nextAction')
+  assert.ok(ts.isStringLiteral(decision.right))
+  assert.equal(decision.right.text, 'choose_dates')
+})
+
+test('Localization: all Success Overview JSX text and accessible labels come from copy', () => {
+  const ast = ts.createSourceFile('overview.tsx', componentSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const visit = (node: ts.Node) => {
+    if (ts.isJsxText(node)) assert.equal(node.getText(ast).trim(), '')
+    if (ts.isJsxAttribute(node) && node.name.getText(ast) === 'aria-label') assert.ok(node.initializer && ts.isJsxExpression(node.initializer))
+    ts.forEachChild(node, visit)
+  }
+  visit(ast)
 })
