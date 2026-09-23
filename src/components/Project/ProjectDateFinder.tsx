@@ -1,6 +1,6 @@
 'use client'
 
-import { FormEvent, useMemo, useRef, useState } from 'react'
+import { FormEvent, useMemo, useState } from 'react'
 import { CalendarDays, Check, Clock3, Plus, Star, Trash2, Users } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import {
@@ -144,6 +144,7 @@ export function ProjectDateFinder({
   viewerIsParticipant,
   canManage,
   locale,
+  dateActionShown = false,
 }: {
   projectId: string
   data: ProjectDateFinderData
@@ -151,10 +152,11 @@ export function ProjectDateFinder({
   viewerIsParticipant: boolean
   canManage: boolean
   locale: ProjectDateLocale
+  /** True only when the visible Success Path already shows the personal date action. */
+  dateActionShown?: boolean
 }) {
   const strings = getProjectDateStrings(locale)
   const router = useRouter()
-  const optionsRef = useRef<HTMLDivElement | null>(null)
   const [suggesting, setSuggesting] = useState(false)
   const [editingTime, setEditingTime] = useState(false)
   const [pendingKey, setPendingKey] = useState<string | null>(null)
@@ -168,6 +170,11 @@ export function ProjectDateFinder({
     [data.options, tiedDecision]
   )
   const selectedOption = data.options.find(option => option.id === data.selectedDateOptionId)
+  const activeOptions = data.options.filter(option => option.status === 'active')
+  const hasAvailabilityResponses = activeOptions.some(option =>
+    option.availableCount + option.maybeCount + option.unavailableCount > 0
+  )
+  const showBestOption = activeOptions.length >= 2 && hasAvailabilityResponses
 
   const run = async (key: string, action: () => Promise<unknown>) => {
     setPendingKey(key)
@@ -378,12 +385,11 @@ export function ProjectDateFinder({
   }
 
   return (
-    <section className="rounded-2xl border border-indigo-200 bg-white p-4 shadow-sm md:p-5">
+    <section className="rounded-2xl border border-slate-200 bg-white p-4 md:p-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-sm font-medium text-indigo-700"><CalendarDays className="h-4 w-4" /> {strings.projectDate}</div>
           <h2 className="text-xl font-semibold text-slate-900">{strings.chooseProjectDate}</h2>
-          <p className="text-sm text-slate-600">{strings.votingInProgress}</p>
           {data.unreadNotificationCount > 0 && (
             <span className="inline-flex rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-800">
               {strings.notifications}: {data.unreadNotificationCount}
@@ -396,12 +402,12 @@ export function ProjectDateFinder({
         </div>
       </div>
 
-      {viewerIsParticipant && !data.viewerTaskComplete && votingOpen && (
+      {!dateActionShown && viewerIsParticipant && !data.viewerTaskComplete && votingOpen && (
         <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
           <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">{strings.priorityTask}</div>
           <h3 className="mt-1 font-semibold text-slate-900">{strings.chooseDates}</h3>
           <p className="mt-1 text-sm text-slate-700">{strings.projectDateUndecided} {strings.chooseDatesHelp}</p>
-          <Button className="mt-3 min-h-11 rounded-full" onClick={() => optionsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>{strings.chooseDates}</Button>
+          <Button asChild className="mt-3 min-h-11 rounded-full"><a href="#date-availability">{strings.chooseDates}</a></Button>
         </div>
       )}
 
@@ -412,26 +418,29 @@ export function ProjectDateFinder({
         </div>
       )}
 
-      <div ref={optionsRef} className="mt-5 space-y-3 scroll-mt-24">
+      <div id="date-availability" role="region" aria-label={strings.chooseDatesHelp} tabIndex={-1}
+        className="mt-5 space-y-3 scroll-mt-24 rounded-xl target:outline-2 target:outline-offset-4 target:outline-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-400">
         {visibleOptions.length === 0 ? (
           <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">{strings.noDateOptions}</div>
         ) : visibleOptions.map(option => {
           const canRemove = canManage || (option.created_by_user_id === viewerUserId && option.otherResponseCount === 0)
+          const isBest = showBestOption && option.isCurrentlyBest
+          const hasResponses = option.availableCount + option.maybeCount + option.unavailableCount > 0
           return (
-            <article key={option.id} className={`rounded-xl border p-4 ${option.isCurrentlyBest ? 'border-emerald-300 bg-emerald-50/40' : option.isTied ? 'border-amber-300 bg-amber-50/40' : 'border-slate-200 bg-slate-50/60'}`}>
+            <article key={option.id} aria-label={formatDateOption(option, locale)} className={`rounded-xl p-3 sm:p-4 ${isBest ? 'bg-emerald-50/60' : option.isTied && hasAvailabilityResponses ? 'bg-amber-50/40' : 'bg-slate-50/80'}`}>
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="font-semibold text-slate-900">{formatDateOption(option, locale)}</h3>
-                    {option.isCurrentlyBest && <span className="rounded-full border border-emerald-300 bg-white px-2.5 py-1 text-xs font-medium text-emerald-800">{strings.currentlyBest}</span>}
+                    {isBest && <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800">{strings.currentlyBest}</span>}
                   </div>
                   <p className="mt-1 text-xs text-slate-500">{strings.suggestedBy} {option.suggestedBy}</p>
-                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                  {hasResponses && <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
                     <span className="text-emerald-700"><strong>{option.availableCount}</strong> {strings.available.toLowerCase()}</span>
                     <span className="text-amber-700"><strong>{option.maybeCount}</strong> {strings.maybe.toLowerCase()}</span>
                     <span className="text-red-700"><strong>{option.unavailableCount}</strong> {strings.unavailable.toLowerCase()}</span>
                     <span className="text-indigo-700"><strong>{option.preferredCount}</strong> {strings.preferred.toLowerCase()}</span>
-                  </div>
+                  </div>}
                 </div>
                 {canRemove && votingOpen && (
                   <Button type="button" variant="outline" className="min-h-11 rounded-full text-red-700" disabled={!!pendingKey} onClick={() => {
@@ -448,6 +457,7 @@ export function ProjectDateFinder({
                       type="button"
                       variant="outline"
                       disabled={!!pendingKey}
+                      aria-pressed={option.viewerAvailability === status}
                       className={`min-h-11 rounded-full ${option.viewerAvailability === status ? selectedStatusClasses[status] : statusClasses[status]}`}
                       onClick={() => void respond(option, status)}
                     >
@@ -459,6 +469,7 @@ export function ProjectDateFinder({
                     type="button"
                     variant="outline"
                     disabled={!!pendingKey || option.viewerAvailability !== 'available'}
+                    aria-pressed={option.viewerPreferred}
                     className={`min-h-11 rounded-full ${option.viewerPreferred ? 'border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700' : 'border-indigo-300 text-indigo-700'}`}
                     onClick={() => void run(`preferred-${option.id}`, () => setProjectDateResponse(projectId, option.id, 'available', !option.viewerPreferred))}
                   >
@@ -482,13 +493,12 @@ export function ProjectDateFinder({
       {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} onDone={() => setSuggesting(false)} /></div>}
       {!suggestionsOpen && votingOpen && <p className="mt-4 text-sm text-slate-600">{strings.suggestionsClosed}</p>}
 
-      {canManage && votingOpen && (
-        <div className="mt-5 rounded-xl border border-slate-200 p-4">
+      {canManage && votingOpen && data.missingResponseNames.length > 0 && (
+        <div className="mt-5 border-t border-slate-100 pt-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 className="font-semibold text-slate-900">{strings.dateVoting}</h3>
-              <p className="mt-1 text-sm text-slate-600">{data.respondedCount} / {data.memberCount} {strings.responded}</p>
-              {data.missingResponseNames.length > 0 && <p className="mt-2 text-sm text-slate-600"><span className="font-medium">{strings.missingResponses}:</span> {data.missingResponseNames.join(', ')}</p>}
+              <h3 className="text-sm font-medium text-slate-700">{strings.missingResponses}: {data.missingResponseNames.length}</h3>
+              <p className="mt-1 break-words text-sm text-slate-600">{data.missingResponseNames.join(', ')}</p>
             </div>
             {data.missingResponseNames.length > 0 && <Button variant="outline" className="min-h-11 rounded-full" disabled={!!pendingKey} onClick={() => void run('voting-reminder', () => sendProjectDateReminders(projectId, 'voting'))}>{strings.sendReminder}</Button>}
           </div>

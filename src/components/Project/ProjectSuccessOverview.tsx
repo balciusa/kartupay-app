@@ -1,7 +1,7 @@
 import type { ProjectSuccessPath, SuccessAction } from '@/lib/projectSuccessPath'
 
 const actions: Record<SuccessAction, { title: string; detail: string; label: string; destination: string }> = {
-  choose_dates: { title: 'Choose your available dates', detail: 'Your response helps the group choose a date.', label: 'Choose dates', destination: '#project-date-finder' },
+  choose_dates: { title: 'Choose your available dates', detail: 'Your response helps the group choose a date.', label: 'Choose dates', destination: '#date-availability' },
   confirm_attendance: { title: 'Confirm your attendance', detail: 'The final date is selected. Let the group know if you can attend.', label: 'Confirm attendance', destination: '#project-date-finder' },
   resolve_date: { title: 'Choose the final date', detail: 'Date Finder has an exact tie that needs your decision.', label: 'Choose final date', destination: '#project-date-finder' },
   invite_people: { title: 'Invite more people', detail: 'Share the project link with people you would like to join.', label: 'Review participants', destination: '?tab=people' },
@@ -19,35 +19,37 @@ export function ProjectSuccessOverview({ model, projectId }: { model: ProjectSuc
     : `${model.confirmedParticipants} participants confirmed. No minimum configured.`
   const heading = model.stage === 'canceled' ? 'Project canceled'
     : model.stage === 'finalized' ? 'Project finalized'
-    : action ? 'Next action' : model.ready ? 'Project ready' : 'Waiting on the group'
+    : model.ready ? 'Project ready' : 'Waiting on the group'
   const details: Record<ProjectSuccessPath['blockers'][number]['type'], string> = {
     date: 'Final date not selected.', date_tie: 'Date Finder needs an organizer decision.',
     participants: participantDetail, finance: 'Base contributions are not yet settled.',
   }
+  // Date progress and the participant count already explain these blockers.
+  // Keep specific tie/finance context unless the current action explains it.
+  const supportingBlockers = model.blockers.filter(blocker =>
+    blocker.type === 'date_tie' ? !!action && model.nextAction !== 'resolve_date'
+      : blocker.type === 'finance' && model.nextAction !== 'review_finance' && model.nextAction !== 'review_payment'
+  )
 
   return (
-    <section className="space-y-4" aria-label="Project success path">
-      <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 md:p-5">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold text-slate-900">Project progress</h2>
-          <span className="text-sm text-slate-600">{healthLabels[model.health]}</span>
-        </div>
-        {model.visibleStages.length > 0 && (
-          <ol className="mt-4 flex flex-wrap gap-3" aria-label="Relevant project stages">
-            {model.visibleStages.map(stage => (
-              <li key={stage.id} aria-current={stage.state === 'current' ? 'step' : undefined}
-                className={`rounded-xl border px-4 py-2 text-sm ${stage.state === 'complete' ? 'border-emerald-200 bg-emerald-50' : stage.state === 'current' ? 'border-indigo-200 bg-indigo-50' : 'border-slate-200 bg-white'}`}>
-                <span className="font-medium text-slate-900">{labels[stage.id]}</span>
-                <span className="ml-2 text-xs text-slate-600">{stage.state === 'complete' ? 'Complete' : stage.state === 'current' ? 'Current' : 'Upcoming'}</span>
-              </li>
-            ))}
-          </ol>
-        )}
-        {!terminal && <p className="mt-3 text-sm text-slate-600">{participantDetail}</p>}
+    <section className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 md:p-5" aria-label="Project success path">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold text-slate-900">Project status</h2>
+        <span className="text-sm text-slate-600">{healthLabels[model.health]}</span>
       </div>
-
-      <div className={`rounded-2xl border p-4 shadow-sm md:p-5 ${model.ready && !action ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-white'}`}>
-        <h2 className="text-sm font-semibold text-slate-600">{heading}</h2>
+      {model.visibleStages.length > 0 && (
+        <ol className="mt-3 flex flex-wrap gap-x-4 gap-y-2" aria-label="Relevant project stages">
+          {model.visibleStages.map(stage => (
+            <li key={stage.id} aria-current={stage.state === 'current' ? 'step' : undefined}
+              className="flex items-center gap-1.5 text-sm">
+              <span className="font-medium text-slate-900">{labels[stage.id]}</span>
+              <span className={`rounded-md px-1.5 py-0.5 text-xs ${stage.state === 'complete' ? 'bg-emerald-100 text-emerald-800' : stage.state === 'current' ? 'bg-indigo-100 text-indigo-800' : 'text-slate-500'}`}>{stage.state === 'complete' ? 'Complete' : stage.state === 'current' ? 'Current' : 'Upcoming'}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+      <div className="mt-4 border-t border-slate-200/80 pt-4">
+        {!action && <h3 className="text-sm font-semibold text-slate-700">{heading}</h3>}
         {action ? (
           <>
             <h3 className="mt-1 text-lg font-semibold text-slate-900">{action.title}</h3>
@@ -69,21 +71,15 @@ export function ProjectSuccessOverview({ model, projectId }: { model: ProjectSuc
               : 'You have no required action right now. The group is still working toward readiness.'}
           </p>
         )}
-        {!terminal && (model.waitingOn.dates > 0 || model.waitingOn.attendance > 0) && (
+        {!terminal && <p className="mt-3 text-sm text-slate-600">{participantDetail}</p>}
+        {!terminal && !action && (model.waitingOn.dates > 0 || model.waitingOn.attendance > 0) && (
           <p className="mt-3 text-sm text-slate-600">
             Waiting on {model.waitingOn.dates + model.waitingOn.attendance} people:
             {model.waitingOn.dates > 0 ? ` ${model.waitingOn.dates} to choose dates.` : ''}
             {model.waitingOn.attendance > 0 ? ` ${model.waitingOn.attendance} to confirm attendance.` : ''}
           </p>
         )}
-        {model.blockers.length > 0 && (
-          <div className="mt-4 border-t border-slate-100 pt-3">
-            <h3 className="text-sm font-medium text-slate-700">Still needed</h3>
-            <ul className="mt-1 list-inside list-disc space-y-1 text-sm text-slate-600">
-              {model.blockers.map(blocker => <li key={blocker.type}>{details[blocker.type]}</li>)}
-            </ul>
-          </div>
-        )}
+        {supportingBlockers.map(blocker => <p key={blocker.type} className="mt-2 text-sm text-slate-600">{details[blocker.type]}</p>)}
       </div>
     </section>
   )

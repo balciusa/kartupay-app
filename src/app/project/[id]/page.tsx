@@ -1650,6 +1650,7 @@ export default async function ProjectPage({
                     viewerIsParticipant={isMeParticipant}
                     canManage={viewerIsCollector}
                     locale={projectDateLocale}
+                    dateActionShown={successPath.nextAction === 'choose_dates'}
                   />
                 </div>
               )}

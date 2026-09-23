@@ -179,8 +179,8 @@ test('UI: relevant stages, skipped stages, ready positive state and no fake CTA'
 test('UI: exactly one next action and Date Finder anchor', () => {
   const html = render({ ...selecting(), confirmedParticipants: 2 }, manager)
   assert.equal((html.match(/<a /g) ?? []).length, 1)
-  assert.equal((html.match(/>Next action</g) ?? []).length, 1)
-  assert.ok(html.includes('href="#project-date-finder"'))
+  assert.equal((html.match(/>Project status</g) ?? []).length, 1)
+  assert.ok(html.includes('href="#date-availability"'))
   assert.ok(html.includes('aria-current="step"'))
 })
 test('UI: participant action uses existing Collab tab route', () => assert.ok(render(context({ confirmedParticipants: 2 }), manager).includes('href="/project/fixture?tab=people"')))
@@ -228,7 +228,7 @@ const dateRequire = (name: string) => {
   if (name === 'next/navigation') return { useRouter: () => ({ refresh() {} }) }
   if (name === '@/app/project/[id]/actions') return new Proxy({}, { get: () => () => { throw new Error('Unexpected action invocation') } })
   if (name === '@/components/Project/LeaveProjectButton') return { LeaveProjectButton: () => createElement('button', {}, 'Leave project') }
-  if (name === '@/components/ui/button') return { Button: ({ variant, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string }) => { void variant; return createElement('button', props) } }
+  if (name === '@/components/ui/button') return { Button: ({ variant, asChild, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; asChild?: boolean }) => { void variant; return asChild ? children : createElement('button', props, children) } }
   if (name === '@/lib/projectDateSelection') return dateSelection
   if (name === '@/lib/projectDateStrings') return dateStrings
   return nodeRequire(name)
@@ -236,7 +236,7 @@ const dateRequire = (name: string) => {
 new Function('require', 'exports', compileFixture(readFileSync(new URL('../components/Project/ProjectDateFinder.tsx', import.meta.url), 'utf8')))(dateRequire, dateComponentExports)
 const pageFixture: { render?: (...args: unknown[]) => React.ReactNode } = {}
 new Function('require', 'exports', 'ProjectDateFinder', compileFixture(`
-export function render(projectDateData, isAborted, isFinalized, viewerIsCollector = false) {
+export function render(projectDateData, isAborted, isFinalized, viewerIsCollector = false, successPath = { nextAction: null }) {
   const projectId = 'fixture', uid = 'user', isMeParticipant = true, projectDateLocale = 'en'
   return (${dateFinderExpression})
 }`))(nodeRequire, pageFixture, dateComponentExports.ProjectDateFinder)
@@ -299,4 +299,106 @@ test('P1: normal fixed-date ready Success Path and date information remain uncha
   assert.match(render(), /Project ready/)
   assert.match(renderPageDate('confirmed', false), /Project date/)
   assert.equal(derive().nextAction, null)
+})
+
+// Overview presentation regression cases use the real page wiring and components.
+const dateOption = (id = 'date-a', changes = {}) => ({
+  id, starts_at: '2099-02-01T00:00:00.000Z', ends_at: null, status: 'active' as const,
+  created_by_user_id: 'organizer', created_at: '2098-01-01T00:00:00.000Z', source: 'organizer',
+  suggestedBy: 'Organizer', availableCount: 0, maybeCount: 0, unavailableCount: 0, preferredCount: 0,
+  viewerAvailability: null, viewerPreferred: false, isCurrentlyBest: true, isTied: false, otherResponseCount: 0,
+  ...changes,
+})
+const selectingData = (changes = {}) => ({
+  ...fixedDateFixture, dateMode: 'selecting', selectionStatus: 'open', selectedDateOptionId: null,
+  viewerAttendanceStatus: 'pending_date_selection', viewerTaskComplete: false,
+  confirmedCount: 0, respondedCount: 0, memberCount: 2, missingResponseNames: ['Arvydas'],
+  options: [dateOption()], votingDeadlineAt: '2099-01-01T00:00:00.000Z',
+  suggestionsCloseAt: '2098-12-01T00:00:00.000Z', ...changes,
+})
+const renderDate = (data = selectingData(), props = {}) => renderToStaticMarkup(createElement(dateComponentExports.ProjectDateFinder, {
+  projectId: 'fixture', data, viewerUserId: 'user', viewerIsParticipant: true, canManage: true, locale: 'en', ...props,
+}))
+
+test('Overview: actual page suppresses duplicate priority task when Success Path shows date action', () => {
+  const model = derive({ ...selecting(), confirmedParticipants: 0, minParticipants: 2 }, manager)
+  const html = renderToStaticMarkup(createElement(moduleObject.exports.ProjectSuccessOverview, { model, projectId: 'fixture' }))
+    + renderToStaticMarkup(pageFixture.render!(selectingData(), false, false, true, model))
+  assert.equal((html.match(/>Choose dates<\/a>/g) ?? []).length, 1)
+  assert.match(html, /Choose your available dates/)
+  assert.doesNotMatch(html, /Priority task|Still needed|Final date not selected/)
+  assert.equal((html.match(/0 of 2 required participants confirmed/g) ?? []).length, 1)
+  assert.match(html, /href="#date-availability"/)
+  assert.match(html, /id="date-availability" role="region" aria-label="Choose the dates when you can participate\." tabindex="-1"/)
+  assert.match(html, /id="date-availability"[\s\S]*<article[\s\S]*>Available<\/button>/)
+})
+
+test('Overview: absent Success Path preserves Date Finder fallback task and direct controls anchor', () => {
+  const html = renderDate()
+  assert.match(html, /Priority task/)
+  assert.equal((html.match(/>Choose dates<\/a>/g) ?? []).length, 1)
+  assert.match(html, /href="#date-availability"/)
+  assert.doesNotMatch(renderDate(selectingData({ viewerTaskComplete: true })), /Priority task/)
+  assert.doesNotMatch(renderDate(selectingData(), { viewerIsParticipant: false }), /Priority task/)
+})
+
+test('Overview: unrelated Success Path action does not suppress necessary Date Finder messaging', () => {
+  assert.match(renderToStaticMarkup(pageFixture.render!(selectingData(), false, false, true, { nextAction: 'invite_people' })), /Priority task/)
+})
+
+test('Date options: one option with zero or nonzero responses never claims to be best', () => {
+  assert.doesNotMatch(renderDate(), /Currently best option|<strong>0<\/strong>/)
+  assert.doesNotMatch(renderDate(selectingData({ options: [dateOption('a', { availableCount: 1 })] })), /Currently best option/)
+})
+
+test('Date options: multiple zero-response options hide badges and empty tallies', () => {
+  const html = renderDate(selectingData({ options: [dateOption(), dateOption('b', { isCurrentlyBest: false })] }))
+  assert.doesNotMatch(html, /Currently best option|<strong>0<\/strong>/)
+})
+
+test('Date options: best badge follows existing ranking, including partial ballots', () => {
+  const options = [dateOption(), dateOption('b', { starts_at: '2099-02-02T00:00:00.000Z' })]
+  const ranking = dateSelection.rankDateOptions(options, [
+    { date_option_id: 'date-a', user_id: 'member', availability: 'available', is_preferred: true },
+  ], ['member', 'user'])
+  assert.equal(ranking.kind, 'winner')
+  const rankedOptions = options.map(option => ({ ...option, ...ranking.tallies.find(tally => tally.id === option.id), isCurrentlyBest: ranking.winnerId === option.id }))
+  const before = structuredClone(rankedOptions)
+  const html = renderDate(selectingData({ options: rankedOptions, respondedCount: 0 }))
+  assert.equal((html.match(/Currently best option/g) ?? []).length, 1)
+  assert.match(html, /<strong>1<\/strong> available/)
+  assert.match(html, /<strong>1<\/strong> preferred/)
+  assert.match(html, /<strong>0<\/strong> maybe/)
+  assert.deepEqual(rankedOptions, before)
+  assert.doesNotMatch(renderDate(selectingData({ options: rankedOptions.map(option => ({ ...option, isCurrentlyBest: false })) })), /Currently best option/)
+})
+
+test('Date options: removed options cannot satisfy comparison or response signal', () => {
+  assert.doesNotMatch(renderDate(selectingData({ options: [dateOption(), dateOption('removed', { status: 'removed', availableCount: 2 })] })), /Currently best option/)
+})
+
+test('Date options: responses show existing complete breakdown and selected semantics', () => {
+  const html = renderDate(selectingData({ options: [dateOption('a', {
+    availableCount: 2, maybeCount: 3, unavailableCount: 1, preferredCount: 1,
+    viewerAvailability: 'available', viewerPreferred: true,
+  })] }))
+  for (const count of ['2</strong> available', '3</strong> maybe', '1</strong> unavailable', '1</strong> preferred']) assert.ok(html.includes(count))
+  assert.equal((html.match(/aria-pressed="true"/g) ?? []).length, 2)
+})
+
+test('Waiting area: organizer reminder remains, participant and closed voting cannot gain it', () => {
+  assert.match(renderDate(), /Missing responses: 1/)
+  assert.match(renderDate(), /Arvydas/)
+  assert.match(renderDate(), />Send reminder<\/button>/)
+  assert.doesNotMatch(renderDate(selectingData(), { canManage: false }), /Send reminder/)
+  assert.doesNotMatch(renderDate(selectingData({ missingResponseNames: [] })), /Send reminder|Date voting/)
+  assert.doesNotMatch(renderDate(selectingData({ selectionStatus: 'awaiting_organizer_decision' })), /Send reminder|Priority task/)
+})
+
+test('Overview: unique finance and organizer-decision blockers stay visible', () => {
+  const html = render({ ...selecting(), financeMode: 'managed', confirmedParticipants: 0 }, manager)
+  assert.match(html, /Base contributions are not yet settled/)
+  const tied = render(selecting({ votingOpen: false, awaitingOrganizer: true, viewerResponded: true }))
+  assert.match(tied, /Waiting for the organizer to choose the final date/)
+  assert.doesNotMatch(tied, /Still needed/)
 })
