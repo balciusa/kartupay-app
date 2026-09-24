@@ -82,7 +82,7 @@ export function deriveProjectSuccessPath(context: SuccessContext, viewer: Succes
     nextAction = 'confirm_attendance'
   } else if (!dateReady && context.date.awaitingOrganizer && viewer.canManage) {
     nextAction = 'resolve_date'
-  } else if (!readiness.participationReady && viewer.canManage && context.capacityAvailable && context.joinsAllowed) {
+  } else if (dateReady && !readiness.participationReady && viewer.canManage && context.capacityAvailable && context.joinsAllowed) {
     nextAction = 'invite_people'
   } else if (!readiness.financeReady && dateReady && readiness.participationReady) {
     if (viewer.canPay) nextAction = 'review_payment'

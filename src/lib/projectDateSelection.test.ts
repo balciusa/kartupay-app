@@ -8,6 +8,7 @@ import {
   canRemoveDateOption,
   confirmationStatusAfterDeadline,
   dateAvailabilityTaskForParticipant,
+  deriveProjectDatePresentationState,
   financeReadiness,
   isDuplicateDateOption,
   isDateOnlyOption,
@@ -182,4 +183,23 @@ test('19. selected-date time validation rejects invalid ranges', () => {
     endTime: '18:00',
     timezoneOffsetMinutes: -120,
   }), /End time must be after/)
+})
+
+test('20. Date Finder presentation state follows persisted lifecycle and response completion', () => {
+  const base = {
+    dateMode: 'selecting' as const,
+    selectionStatus: 'open' as const,
+    selectedDateOptionId: null,
+    respondedCount: 1,
+    memberCount: 2,
+  }
+  assert.equal(deriveProjectDatePresentationState(base), 'collecting_responses')
+  assert.equal(deriveProjectDatePresentationState({ ...base, respondedCount: 2 }), 'all_responded')
+  assert.equal(deriveProjectDatePresentationState({ ...base, selectionStatus: 'awaiting_organizer_decision' }), 'organizer_decision_required')
+  assert.equal(deriveProjectDatePresentationState({
+    ...base,
+    dateMode: 'fixed',
+    selectionStatus: 'confirmation_open',
+    selectedDateOptionId: 'a',
+  }), 'final_date_confirmed')
 })
