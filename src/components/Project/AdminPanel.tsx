@@ -51,6 +51,7 @@ export function AdminPanel({
   pendingRequests,
   pendingCount,
   canManage,
+  canManageJoinRequests,
   canCancel,
   openRequestsOnMount = false,
   activityItems,
@@ -63,6 +64,7 @@ export function AdminPanel({
   pendingRequests: JoinRequest[]
   pendingCount: number
   canManage: boolean
+  canManageJoinRequests: boolean
   canCancel: boolean
   openRequestsOnMount?: boolean
   activityItems: ActivityLogItem[]
@@ -173,7 +175,7 @@ export function AdminPanel({
           <button
             type="button"
             className="w-full px-4 py-2 rounded-full border text-sm text-center disabled:opacity-50 flex items-center justify-center gap-2 bg-white hover:bg-slate-50"
-            disabled={!canManage}
+            disabled={!canManageJoinRequests}
             onClick={() => setRequestsOpen(true)}
           >
             <span>Manage requests</span>
@@ -321,8 +323,8 @@ export function AdminPanel({
               </button>
             </div>
             <div className="p-4 space-y-3 overflow-y-auto">
-              {!canManage ? (
-                <div className="text-sm opacity-70">Collector-only tools live here.</div>
+              {!canManageJoinRequests ? (
+                <div className="text-sm opacity-70">You do not have permission to manage join requests.</div>
               ) : pendingRequests.length === 0 ? (
                 <div className="text-sm opacity-70">No pending join requests.</div>
               ) : (

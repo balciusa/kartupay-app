@@ -8,6 +8,7 @@ import { recordProjectActivity } from '@/lib/activityLog'
 import { calculateProjectPricing, validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getCurrentUserId } from '@/lib/supabaseServer'
 import { getProjectStatusUiKey } from '@/lib/projectStatusUi'
+import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { buildExtraDueRows } from '@/lib/extraPayments'
 import {
   applyTimeToDateOption,
@@ -720,6 +721,35 @@ async function requireActiveManager(projectId: string, userId: string) {
   if (meErr) throw meErr
   if (!me?.length) throw new Error('Not authorized')
   return me[0]
+}
+
+async function requireActiveJoinRequestManager(projectId: string, userId: string) {
+  const { data: project, error: projectErr } = await supabaseAdmin
+    .from('projects')
+    .select('collector_participant_id')
+    .eq('id', projectId)
+    .maybeSingle()
+  if (projectErr) throw projectErr
+  if (!project) throw new Error('Project not found')
+
+  const { data: participant, error: participantErr } = await supabaseAdmin
+    .from('participants')
+    .select('id, role')
+    .eq('project_id', projectId)
+    .eq('user_id', userId)
+    .is('left_at', null)
+    .maybeSingle()
+  if (participantErr) throw participantErr
+
+  if (!canManageProjectJoinRequests({
+    participantId: participant?.id,
+    participantRole: participant?.role,
+    collectorParticipantId: project.collector_participant_id,
+  })) {
+    throw new Error('Not authorized')
+  }
+
+  return participant
 }
 
 async function requireActiveProjectParticipant(projectId: string, userId: string) {
@@ -1977,7 +2007,7 @@ export async function approveJoinRequest(requestId: string) {
     .single()
   if (reqErr || !req) throw new Error('Join request not found')
 
-  await requireActiveManager(req.project_id, managerId)
+  await requireActiveJoinRequestManager(req.project_id, managerId)
   const { actorUserId, actorParticipantId } = await getActiveParticipantContext(req.project_id, managerId)
 
   if (req.status !== 'pending') {
@@ -2190,7 +2220,7 @@ export async function rejectJoinRequest(requestId: string) {
     .single()
   if (reqErr || !req) throw new Error('Join request not found')
 
-  await requireActiveManager(req.project_id, managerId)
+  await requireActiveJoinRequestManager(req.project_id, managerId)
   const { actorUserId, actorParticipantId } = await getActiveParticipantContext(req.project_id, managerId)
 
   if (req.status !== 'pending') {

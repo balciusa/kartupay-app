@@ -6,6 +6,7 @@ import ts from 'typescript'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import * as finance from './projectFinance.ts'
+import * as joinRequests from './projectJoinRequests.ts'
 import * as statusUi from './projectStatusUi.ts'
 
 type Row = Record<string, unknown>
@@ -21,6 +22,7 @@ function compile(relativePath: string) {
 }
 const actionCode = compile('../app/project/[id]/actions.ts')
 const chatCode = compile('../components/Project/Chat.tsx')
+const adminPanelCode = compile('../components/Project/AdminPanel.tsx')
 
 function fixture() {
   const tables: Tables = {
@@ -92,6 +94,7 @@ function fixture() {
     '@/lib/supabaseServer': { getCurrentUserId: async () => 'user' },
     '@/lib/activityLog': { recordProjectActivity: async () => {} },
     '@/lib/projectFinance': finance,
+    '@/lib/projectJoinRequests': joinRequests,
     '@/lib/projectStatusUi': statusUi,
     'next/cache': { revalidatePath: () => {} },
     'next/navigation': { redirect: () => { throw new Error('NEXT_REDIRECT') } },
@@ -99,6 +102,20 @@ function fixture() {
   const exports = {}
   new Function('require', 'exports', actionCode)((name: string) => modules[name] ?? {}, exports)
   return { tables, writes, failures, actions: exports as typeof import('../app/project/[id]/actions') }
+}
+
+function pendingJoinFixture(role: string, collectorParticipantId = 'collector') {
+  const f = fixture()
+  f.tables.projects[0].collector_participant_id = collectorParticipantId
+  f.tables.participants[0].role = role
+  f.tables.join_requests = [{
+    id: 'request',
+    project_id: 'project',
+    requester_user_id: 'requester',
+    status: 'pending',
+    created_at: '2026-09-24T10:00:00.000Z',
+  }]
+  return f
 }
 
 function pollForm(options = 'A\nB') {
@@ -183,6 +200,73 @@ test('non-collector organizer can leave when another active organizer remains', 
   await assert.rejects(f.actions.leaveProject('project'), /NEXT_REDIRECT/)
   assert.equal(typeof f.tables.participants[0].left_at, 'string')
   assert.equal(f.tables.participants[1].left_at, null)
+})
+
+test('non-collector organizer can reject a pending join request', async () => {
+  const f = pendingJoinFixture('organizer')
+
+  await assert.rejects(f.actions.rejectJoinRequest('request'), /NEXT_REDIRECT/)
+
+  assert.equal(f.tables.join_requests[0].status, 'rejected')
+  assert.deepEqual(f.writes, ['join_requests:update'])
+})
+
+test('assigned collector can still reject a pending join request', async () => {
+  const f = pendingJoinFixture('member', 'me')
+
+  await assert.rejects(f.actions.rejectJoinRequest('request'), /NEXT_REDIRECT/)
+
+  assert.equal(f.tables.join_requests[0].status, 'rejected')
+})
+
+test('ordinary participant cannot manage a pending join request', async () => {
+  const f = pendingJoinFixture('member')
+
+  await assert.rejects(f.actions.rejectJoinRequest('request'), /Not authorized/)
+
+  assert.equal(f.tables.join_requests[0].status, 'pending')
+  assert.deepEqual(f.writes, [])
+})
+
+test('organizer join-request panel shows its notification count and approval controls', () => {
+  const modules: Record<string, unknown> = {
+    'next/navigation': { useRouter: () => ({ refresh() {} }) },
+    '@/components/Project/ActivityLogTab': { ActivityLogTab: () => null },
+    '@/app/project/[id]/actions': {
+      abortProject: async () => {},
+      approveJoinRequestFromForm: async () => {},
+      rejectJoinRequestFromForm: async () => {},
+      setCollector: async () => {},
+    },
+  }
+  const exports = {} as { AdminPanel: typeof import('../components/Project/AdminPanel').AdminPanel }
+  new Function('require', 'exports', adminPanelCode)((name: string) => modules[name] ?? nodeRequire(name), exports)
+
+  const html = renderToStaticMarkup(createElement(exports.AdminPanel, {
+    projectId: 'project',
+    participants: [{ id: 'me', user_id: 'user', role: 'organizer', short_code: null }],
+    collectorId: 'collector',
+    myParticipantId: 'me',
+    pendingRequests: [{
+      id: 'request',
+      requester_user_id: 'requester',
+      created_at: '2026-09-24T10:00:00.000Z',
+      status: 'pending',
+    }],
+    pendingCount: 1,
+    canManage: false,
+    canManageJoinRequests: true,
+    canCancel: false,
+    openRequestsOnMount: true,
+    activityItems: [],
+    financeMode: 'managed',
+  }))
+
+  assert.match(html, /Manage requests/)
+  assert.match(html, />1<\/span>/)
+  assert.match(html, />Approve<\/button>/)
+  assert.match(html, />Reject<\/button>/)
+  assert.doesNotMatch(html, /permission to manage join requests/)
 })
 
 for (const role of ['collector', 'organizer']) {

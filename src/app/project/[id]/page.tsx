@@ -25,6 +25,7 @@ import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { loadProjectDateFinderData } from '@/lib/projectDateService'
 import { resolveProjectDateLocale } from '@/lib/projectDateStrings'
+import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { getProjectReadiness, normalizeProjectFinanceMode, type ProjectFinanceMode } from '@/lib/projectFinance'
 import { headers } from 'next/headers'
 import {
@@ -922,8 +923,13 @@ export default async function ProjectPage({
   const collectorLabel = collectorParticipant ? participantName(collectorParticipant) : 'Member'
   const collectorName = collectorLabel
   const viewerIsCollector = !!(myParticipantId && collectorId && myParticipantId === collectorId)
+  const viewerCanManageJoinRequests = canManageProjectJoinRequests({
+    participantId: myParticipantId,
+    participantRole: myParticipantRole,
+    collectorParticipantId: collectorId,
+  })
   const collectorIsCountedPaid = !!(collectorId && paidIds.includes(collectorId))
-  const shouldLoadPendingRequests = viewerIsCollector
+  const shouldLoadPendingRequests = viewerCanManageJoinRequests
   const { data: pendingForOrganizer, error: pendingErr } = shouldLoadPendingRequests
     ? await supabaseAdmin
         .from('join_requests')
@@ -935,7 +941,7 @@ export default async function ProjectPage({
   if (pendingErr) {
     console.error('[ProjectPage] Error fetching pending requests:', pendingErr)
   }
-  console.log('[ProjectPage] Pending requests for collector:', { count: pendingForOrganizer?.length ?? 0, requests: pendingForOrganizer })
+  console.log('[ProjectPage] Pending join requests for manager:', { count: pendingForOrganizer?.length ?? 0, requests: pendingForOrganizer })
   const basePaidIds = countedPayments
     .filter(p => baseParticipantIds.has(p.participant_id))
     .map(p => p.participant_id)
@@ -1634,7 +1640,7 @@ export default async function ProjectPage({
         counts={{
           participants: membersCount,
           activity: unreadCount,
-          adminPending: viewerIsCollector ? (pendingForOrganizer ?? []).length : 0,
+          adminPending: viewerCanManageJoinRequests ? (pendingForOrganizer ?? []).length : 0,
           paymentsPending: financeManaged ? (pendingPaymentsCountWithExtras || undefined) : undefined,
         }}
         sections={{
@@ -1696,7 +1702,7 @@ export default async function ProjectPage({
                   allOptions={allOptionsEntries}
                   paidSet={paidSet}
                   organizerId={organizerId}
-                  pendingRequests={viewerIsCollector ? (pendingForOrganizer ?? []) : []}
+                  pendingRequests={viewerCanManageJoinRequests ? (pendingForOrganizer ?? []) : []}
                   showPendingRequests={false}
                   showPayments={false}
                   myParticipantId={myParticipantId}
@@ -2539,15 +2545,16 @@ export default async function ProjectPage({
             />
           ),
           settings: viewerIsCollector ? <ProjectSettingsTab projectId={projectId} /> : null,
-          admin: viewerIsCollector ? (
+          admin: viewerCanManageJoinRequests ? (
             <AdminPanel
               projectId={projectId}
               participants={participantsClean}
               collectorId={collectorId}
               myParticipantId={myParticipantId}
               pendingRequests={pendingForOrganizer ?? []}
-              pendingCount={viewerIsCollector ? (pendingForOrganizer ?? []).length : 0}
+              pendingCount={(pendingForOrganizer ?? []).length}
               canManage={viewerIsCollector}
+              canManageJoinRequests={viewerCanManageJoinRequests}
               canCancel={!isAborted && !isFinalized}
               openRequestsOnMount={openRequestsOnLoad}
               activityItems={activityItems}
