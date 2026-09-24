@@ -187,6 +187,13 @@ export function ProjectDateFinder({
     respondedCount: data.respondedCount,
     memberCount: data.memberCount,
   })
+  const canRemoveOption = (option: ProjectDateFinderOption) => votingOpen
+    && (canManage || (option.created_by_user_id === viewerUserId && option.otherResponseCount === 0))
+  const canEditOwnAvailability = votingOpen && viewerIsParticipant && visibleOptions.length > 0
+  const canSuggestAnotherDate = suggestionsOpen && viewerIsParticipant
+  const canEditAllResponded = canEditOwnAvailability
+    || canSuggestAnotherDate
+    || visibleOptions.some(canRemoveOption)
 
   const run = async (key: string, action: () => Promise<unknown>) => {
     setPendingKey(key)
@@ -223,7 +230,6 @@ export function ProjectDateFinder({
       {visibleOptions.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">{strings.noDateOptions}</div>
       ) : visibleOptions.map(option => {
-        const canRemove = canManage || (option.created_by_user_id === viewerUserId && option.otherResponseCount === 0)
         const isBest = showBestOption && option.isCurrentlyBest
         const hasResponses = option.availableCount + option.maybeCount + option.unavailableCount > 0
         return (
@@ -243,7 +249,7 @@ export function ProjectDateFinder({
                   <span className="text-indigo-700"><strong>{option.preferredCount}</strong> {strings.preferred.toLowerCase()}</span>
                 </div>}
               </div>
-              {interactive && canRemove && votingOpen && (
+              {interactive && canRemoveOption(option) && (
                 <Button type="button" variant="outline" className="min-h-11 rounded-full text-red-700" disabled={!!pendingKey} onClick={() => {
                   if (window.confirm(`${strings.removeDate}?`)) void run(`remove-${option.id}`, () => removeProjectDateOption(projectId, option.id))
                 }}><Trash2 className="mr-2 h-4 w-4" /> {strings.removeDate}</Button>
@@ -529,21 +535,23 @@ export function ProjectDateFinder({
           <p className="mt-3 text-sm text-slate-600">
             {activeOptions.some(option => option.isTied) ? strings.tiedUntilDeadlineHelp : strings.allRespondedHelp}
           </p>
-          <details data-secondary-controls className="group mt-4 rounded-xl border border-slate-200 bg-slate-50/60">
-            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-slate-800">
-              {strings.editResponsesAndOptions}
-              <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="border-t border-slate-200 p-4">
-              {renderOptions({ interactive: true, anchor: false })}
-              <p className="mt-3 text-xs text-slate-500">{strings.preferredHelp}</p>
-              {suggestionsOpen && viewerIsParticipant && !suggesting && (
-                <Button type="button" variant="outline" className="mt-4 min-h-11 rounded-full" onClick={() => setSuggesting(true)}><Plus className="mr-2 h-4 w-4" /> {strings.suggestAnother}</Button>
-              )}
-              {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} onDone={() => setSuggesting(false)} /></div>}
-              {!suggestionsOpen && votingOpen && <p className="mt-4 text-sm text-slate-600">{strings.suggestionsClosed}</p>}
-            </div>
-          </details>
+          {canEditAllResponded && (
+            <details data-secondary-controls className="group mt-4 rounded-xl border border-slate-200 bg-slate-50/60">
+              <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-slate-800">
+                {strings.editResponsesAndOptions}
+                <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="border-t border-slate-200 p-4">
+                {renderOptions({ interactive: true, anchor: false })}
+                <p className="mt-3 text-xs text-slate-500">{strings.preferredHelp}</p>
+                {suggestionsOpen && viewerIsParticipant && !suggesting && (
+                  <Button type="button" variant="outline" className="mt-4 min-h-11 rounded-full" onClick={() => setSuggesting(true)}><Plus className="mr-2 h-4 w-4" /> {strings.suggestAnother}</Button>
+                )}
+                {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} onDone={() => setSuggesting(false)} /></div>}
+                {!suggestionsOpen && votingOpen && <p className="mt-4 text-sm text-slate-600">{strings.suggestionsClosed}</p>}
+              </div>
+            </details>
+          )}
         </div>
       )}
 

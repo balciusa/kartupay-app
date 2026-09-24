@@ -428,6 +428,45 @@ test('Date Finder state: all responses show a leader and preserve valid editing 
   assert.doesNotMatch(html, /Priority task|Select this date|Calculate result now/)
 })
 
+test('Date Finder disclosure: manager with valid date management retains the edit affordance', () => {
+  const html = renderDate(selectingData({
+    respondedCount: 2,
+    memberCount: 2,
+    missingResponseNames: [],
+    viewerTaskComplete: true,
+  }), { viewerIsParticipant: false, canManage: true })
+  assert.match(html, /Edit responses and date options/)
+  assert.match(html, /Remove date/)
+})
+
+for (const locale of ['en', 'lt'] as const) {
+  test(`Date Finder disclosure: ${locale} read-only viewer gets one result and no misleading edit affordance`, () => {
+    const html = renderDate(selectingData({
+      respondedCount: 2,
+      memberCount: 2,
+      missingResponseNames: [],
+      viewerTaskComplete: true,
+    }), { viewerIsParticipant: false, canManage: false, locale })
+    const strings = dateStrings.getProjectDateStrings(locale)
+    assert.match(html, /data-date-state="all_responded"/)
+    assert.equal((html.match(/data-current-result="true"/g) ?? []).length, 1)
+    assert.doesNotMatch(html, new RegExp(strings.editResponsesAndOptions))
+    assert.doesNotMatch(html, /data-secondary-controls|>Available<\/button>|>Galiu<\/button>|Remove date|Pašalinti datą|Suggest another date|Pasiūlyti kitą datą/)
+  })
+}
+
+test('Date Finder disclosure: participant cannot edit after voting enters organizer decision', () => {
+  const html = renderDate(selectingData({
+    selectionStatus: 'awaiting_organizer_decision',
+    respondedCount: 2,
+    memberCount: 2,
+    missingResponseNames: [],
+    viewerTaskComplete: true,
+    options: [dateOption('a', { isCurrentlyBest: false, isTied: true })],
+  }), { canManage: false })
+  assert.doesNotMatch(html, /Edit responses and date options|data-secondary-controls|>Available<\/button>|>Galiu<\/button>/)
+})
+
 test('Date Finder state: an open exact tie is honest and cannot finalize early', () => {
   const tiedOptions = [
     dateOption('a', { availableCount: 2, preferredCount: 1, isCurrentlyBest: false, isTied: true }),
