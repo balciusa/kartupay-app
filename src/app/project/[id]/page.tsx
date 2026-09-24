@@ -10,6 +10,7 @@ import { type ActivityLogItem } from '@/components/Project/ActivityLogTab'
 import { OutgoingTransfer } from '@/components/Project/OutgoingTransfer'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { JoinButton } from '@/components/Project/JoinButton'
+import { ShareProjectButton } from '@/components/Project/ShareProjectButton'
 import { ProfileTab } from '@/components/Project/ProfileTab'
 import { ProjectSettingsTab } from '@/components/Project/ProjectSettingsTab'
 import { LateOutgoingTransfers } from '@/components/Project/LateOutgoingTransfers'
@@ -26,6 +27,7 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { loadProjectDateFinderData } from '@/lib/projectDateService'
 import { resolveProjectDateLocale } from '@/lib/projectDateStrings'
 import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
+import { shouldShowProjectShare } from '@/lib/projectShare'
 import { getProjectReadiness, normalizeProjectFinanceMode, type ProjectFinanceMode } from '@/lib/projectFinance'
 import { headers } from 'next/headers'
 import {
@@ -1300,6 +1302,11 @@ export default async function ProjectPage({
   })
 
   const isMemberActive = isMeParticipant
+  const showProjectShare = shouldShowProjectShare({
+    isActiveParticipant: isMemberActive,
+    isCanceled: isAborted,
+    isFinalized,
+  })
   const userVotes: Record<string, string | null> = {}
   if (uid) {
     for (const vote of pollVotes ?? []) {
@@ -1599,7 +1606,14 @@ export default async function ProjectPage({
               </div>
             )}
           </div>
-          <div className="flex items-start gap-2 md:items-center">
+          <div className="flex flex-wrap items-start justify-end gap-2 md:items-center">
+            {showProjectShare && (
+              <ShareProjectButton
+                projectId={projectId}
+                projectTitle={project.title}
+                locale={projectDateLocale}
+              />
+            )}
             {isClosedStatus ? (
               !isMemberActive && !isAborted ? (
                 <div className="flex items-center gap-2">
