@@ -1640,7 +1640,7 @@ export default async function ProjectPage({
         sections={{
           overview: (
             <div className="space-y-6">
-              <ProjectSuccessOverview model={successPath} projectId={projectId} />
+              <ProjectSuccessOverview model={successPath} projectId={projectId} locale={projectDateLocale} />
               {projectDateData && !isAborted && (
                 <div id="project-date-finder" className="scroll-mt-4">
                   <ProjectDateFinder
@@ -1650,6 +1650,7 @@ export default async function ProjectPage({
                     viewerIsParticipant={isMeParticipant}
                     canManage={viewerIsCollector}
                     locale={projectDateLocale}
+                    dateActionShown={successPath.nextAction === 'choose_dates'}
                   />
                 </div>
               )}
