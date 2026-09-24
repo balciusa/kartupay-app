@@ -318,7 +318,7 @@ const selectingData = (changes = {}) => ({
   options: [dateOption()], votingDeadlineAt: '2099-01-01T00:00:00.000Z',
   suggestionsCloseAt: '2098-12-01T00:00:00.000Z', ...changes,
 })
-const renderDate = (data = selectingData(), props = {}) => renderToStaticMarkup(createElement(dateComponentExports.ProjectDateFinder, {
+const renderDate = (data: Record<string, unknown> = selectingData(), props: Record<string, unknown> = {}) => renderToStaticMarkup(createElement(dateComponentExports.ProjectDateFinder, {
   projectId: 'fixture', data, viewerUserId: 'user', viewerIsParticipant: true, canManage: true, locale: 'en', ...props,
 }))
 
@@ -395,6 +395,148 @@ test('Waiting area: organizer reminder remains, participant and closed voting ca
   assert.doesNotMatch(renderDate(selectingData(), { canManage: false }), /Send reminder/)
   assert.doesNotMatch(renderDate(selectingData({ missingResponseNames: [] })), /Send reminder|Date voting/)
   assert.doesNotMatch(renderDate(selectingData({ selectionStatus: 'awaiting_organizer_decision' })), /Send reminder|Priority task/)
+})
+
+test('Date Finder state: partial responses keep the collecting ballot and organizer reminder', () => {
+  const html = renderDate(selectingData({ respondedCount: 1, memberCount: 2 }))
+  assert.match(html, /data-date-state="collecting_responses"/)
+  assert.match(html, />Available<\/button>/)
+  assert.ok(html.includes('Suggest another date</button>'))
+  assert.match(html, />Send reminder<\/button>/)
+  assert.doesNotMatch(html, /Everyone has responded|data-secondary-controls/)
+})
+
+test('Date Finder state: all responses show a leader and preserve valid editing in disclosure', () => {
+  const html = renderDate(selectingData({
+    respondedCount: 2,
+    memberCount: 2,
+    missingResponseNames: [],
+    viewerTaskComplete: true,
+    options: [
+      dateOption('a', { availableCount: 2, preferredCount: 1 }),
+      dateOption('b', { starts_at: '2099-02-02T00:00:00.000Z', availableCount: 1, isCurrentlyBest: false }),
+    ],
+  }))
+  assert.match(html, /data-date-state="all_responded"/)
+  assert.match(html, /Everyone has responded/)
+  assert.equal((html.match(/Currently best option/g) ?? []).length, 2)
+  assert.match(html, /data-current-result="true"/)
+  assert.match(html, /data-secondary-controls="true"/)
+  assert.match(html, /Edit responses and date options/)
+  assert.match(html, />Available<\/button>/)
+  assert.ok(html.includes('Suggest another date</button>'))
+  assert.doesNotMatch(html, /Priority task|Select this date|Calculate result now/)
+})
+
+test('Date Finder disclosure: manager with valid date management retains the edit affordance', () => {
+  const html = renderDate(selectingData({
+    respondedCount: 2,
+    memberCount: 2,
+    missingResponseNames: [],
+    viewerTaskComplete: true,
+  }), { viewerIsParticipant: false, canManage: true })
+  assert.match(html, /Edit responses and date options/)
+  assert.match(html, /Remove date/)
+})
+
+for (const locale of ['en', 'lt'] as const) {
+  test(`Date Finder disclosure: ${locale} read-only viewer gets one result and no misleading edit affordance`, () => {
+    const html = renderDate(selectingData({
+      respondedCount: 2,
+      memberCount: 2,
+      missingResponseNames: [],
+      viewerTaskComplete: true,
+    }), { viewerIsParticipant: false, canManage: false, locale })
+    const strings = dateStrings.getProjectDateStrings(locale)
+    assert.match(html, /data-date-state="all_responded"/)
+    assert.equal((html.match(/data-current-result="true"/g) ?? []).length, 1)
+    assert.doesNotMatch(html, new RegExp(strings.editResponsesAndOptions))
+    assert.doesNotMatch(html, /data-secondary-controls|>Available<\/button>|>Galiu<\/button>|Remove date|Pašalinti datą|Suggest another date|Pasiūlyti kitą datą/)
+  })
+}
+
+test('Date Finder disclosure: participant cannot edit after voting enters organizer decision', () => {
+  const html = renderDate(selectingData({
+    selectionStatus: 'awaiting_organizer_decision',
+    respondedCount: 2,
+    memberCount: 2,
+    missingResponseNames: [],
+    viewerTaskComplete: true,
+    options: [dateOption('a', { isCurrentlyBest: false, isTied: true })],
+  }), { canManage: false })
+  assert.doesNotMatch(html, /Edit responses and date options|data-secondary-controls|>Available<\/button>|>Galiu<\/button>/)
+})
+
+test('Date Finder state: an open exact tie is honest and cannot finalize early', () => {
+  const tiedOptions = [
+    dateOption('a', { availableCount: 2, preferredCount: 1, isCurrentlyBest: false, isTied: true }),
+    dateOption('b', { starts_at: '2099-02-02T00:00:00.000Z', availableCount: 2, preferredCount: 1, isCurrentlyBest: false, isTied: true }),
+  ]
+  const html = renderDate(selectingData({ respondedCount: 2, memberCount: 2, missingResponseNames: [], viewerTaskComplete: true, options: tiedOptions }))
+  assert.match(html, /These options are currently tied/)
+  assert.equal((html.match(/Currently tied/g) ?? []).length, 4)
+  assert.doesNotMatch(html, /Currently best option|Select this date|Calculate result now/)
+})
+
+test('Date Finder state: persisted tie gives only the organizer the existing resolution action', () => {
+  const decisionData = selectingData({
+    selectionStatus: 'awaiting_organizer_decision',
+    respondedCount: 2,
+    memberCount: 2,
+    missingResponseNames: [],
+    viewerTaskComplete: true,
+    options: [
+      dateOption('a', { availableCount: 2, preferredCount: 1, isCurrentlyBest: false, isTied: true }),
+      dateOption('b', { starts_at: '2099-02-02T00:00:00.000Z', availableCount: 2, preferredCount: 1, isCurrentlyBest: false, isTied: true }),
+    ],
+  })
+  const organizer = renderDate(decisionData)
+  assert.match(organizer, /data-date-state="organizer_decision_required"/)
+  assert.equal((organizer.match(/>Select this date<\/button>/g) ?? []).length, 2)
+  assert.doesNotMatch(organizer, />Available<\/button>|Suggest another date/)
+  const participant = renderDate(decisionData, { canManage: false })
+  assert.match(participant, /Waiting for the organizer to choose the final date/)
+  assert.doesNotMatch(participant, /Select this date/)
+})
+
+test('Date Finder state: closed suggestions do not appear in all-responded editing', () => {
+  const html = renderDate(selectingData({
+    respondedCount: 2,
+    memberCount: 2,
+    missingResponseNames: [],
+    viewerTaskComplete: true,
+    suggestionsCloseAt: '2020-01-01T00:00:00.000Z',
+  }))
+  assert.match(html, /New suggestions closed/)
+  assert.doesNotMatch(html, />Suggest another date<\/button>/)
+})
+
+test('Date Finder state: selected date is a compact summary with details and no ballot mutations', () => {
+  const html = renderDate({ ...fixedDateFixture, selectionStatus: 'confirmation_open' })
+  assert.match(html, /data-date-state="final_date_confirmed"/)
+  assert.match(html, />Confirmed</)
+  assert.match(html, /Participants confirmed: 2/)
+  assert.match(html, /View date details/)
+  assert.match(html, /data-secondary-controls="true"/)
+  assert.doesNotMatch(html, /Choose project date|Suggest another date|Remove date|>Available<\/button>|>Preferred<\/button>/)
+})
+
+test('Success Path: unresolved date cannot be masked by invite guidance', () => {
+  const result = derive({ ...selecting({ viewerResponded: true, missingResponses: 0 }), confirmedParticipants: 0 }, manager)
+  assert.equal(result.nextAction, null)
+  assert.deepEqual(result.blockers, [{ type: 'date' }, { type: 'participants', count: 6 }])
+  assert.equal(result.visibleStages.find(stage => stage.id === 'date')?.state, 'current')
+  assert.equal(result.visibleStages.find(stage => stage.id === 'participants')?.state, 'upcoming')
+})
+
+test('Date Finder state: Lithuanian all-responded and confirmed views stay localized', () => {
+  const allResponded = renderDate(selectingData({ respondedCount: 2, memberCount: 2, missingResponseNames: [], viewerTaskComplete: true }), { locale: 'lt' })
+  assert.match(allResponded, /Visi atsakė/)
+  assert.match(allResponded, /Keisti atsakymus ir datų variantus/)
+  assert.doesNotMatch(allResponded, /Everyone has responded|Current result|Edit responses|Voting closes/)
+  const confirmed = renderDate({ ...fixedDateFixture }, { locale: 'lt' })
+  assert.match(confirmed, /Patvirtinta|Peržiūrėti datos informaciją/)
+  assert.doesNotMatch(confirmed, /View date details|Participants confirmed/)
 })
 
 test('Overview: unique finance and organizer-decision blockers stay visible', () => {

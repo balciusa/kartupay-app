@@ -1,7 +1,7 @@
 'use client'
 
 import { FormEvent, useMemo, useState } from 'react'
-import { CalendarDays, Check, Clock3, Plus, Star, Trash2, Users } from 'lucide-react'
+import { CalendarDays, Check, ChevronDown, Clock3, Plus, Star, Trash2 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import {
   chooseTiedProjectDate,
@@ -17,7 +17,12 @@ import {
 } from '@/app/project/[id]/actions'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { Button } from '@/components/ui/button'
-import { isDateOnlyTimestamp, normalizeDateOnlyOption, type DateAvailability } from '@/lib/projectDateSelection'
+import {
+  deriveProjectDatePresentationState,
+  isDateOnlyTimestamp,
+  normalizeDateOnlyOption,
+  type DateAvailability,
+} from '@/lib/projectDateSelection'
 import type { ProjectDateFinderData, ProjectDateFinderOption } from '@/lib/projectDateService'
 import { getProjectDateStrings, type ProjectDateLocale } from '@/lib/projectDateStrings'
 
@@ -175,6 +180,20 @@ export function ProjectDateFinder({
     option.availableCount + option.maybeCount + option.unavailableCount > 0
   )
   const showBestOption = activeOptions.length >= 2 && hasAvailabilityResponses
+  const presentationState = deriveProjectDatePresentationState({
+    dateMode: data.dateMode,
+    selectionStatus: data.selectionStatus,
+    selectedDateOptionId: data.selectedDateOptionId,
+    respondedCount: data.respondedCount,
+    memberCount: data.memberCount,
+  })
+  const canRemoveOption = (option: ProjectDateFinderOption) => votingOpen
+    && (canManage || (option.created_by_user_id === viewerUserId && option.otherResponseCount === 0))
+  const canEditOwnAvailability = votingOpen && viewerIsParticipant && visibleOptions.length > 0
+  const canSuggestAnotherDate = suggestionsOpen && viewerIsParticipant
+  const canEditAllResponded = canEditOwnAvailability
+    || canSuggestAnotherDate
+    || visibleOptions.some(canRemoveOption)
 
   const run = async (key: string, action: () => Promise<unknown>) => {
     setPendingKey(key)
@@ -199,6 +218,82 @@ export function ProjectDateFinder({
       )
     )
 
+  const renderOptions = ({ interactive, anchor }: { interactive: boolean; anchor: boolean }) => (
+    <div
+      id={anchor ? 'date-availability' : undefined}
+      role="region"
+      aria-label={strings.chooseDatesHelp}
+      tabIndex={anchor ? -1 : undefined}
+      data-current-result={!interactive ? true : undefined}
+      className="space-y-3 scroll-mt-24 rounded-xl target:outline-2 target:outline-offset-4 target:outline-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-400"
+    >
+      {visibleOptions.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">{strings.noDateOptions}</div>
+      ) : visibleOptions.map(option => {
+        const isBest = showBestOption && option.isCurrentlyBest
+        const hasResponses = option.availableCount + option.maybeCount + option.unavailableCount > 0
+        return (
+          <article key={option.id} aria-label={formatDateOption(option, locale)} className={`rounded-xl p-3 sm:p-4 ${isBest ? 'bg-emerald-50/60' : option.isTied && hasAvailabilityResponses ? 'bg-amber-50/40' : 'bg-slate-50/80'}`}>
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-semibold text-slate-900">{formatDateOption(option, locale)}</h3>
+                  {isBest && <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800">{strings.currentlyBest}</span>}
+                  {option.isTied && hasAvailabilityResponses && <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800">{strings.currentlyTied}</span>}
+                </div>
+                <p className="mt-1 text-xs text-slate-500">{strings.suggestedBy} {option.suggestedBy}</p>
+                {hasResponses && <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+                  <span className="text-emerald-700"><strong>{option.availableCount}</strong> {strings.available.toLowerCase()}</span>
+                  <span className="text-amber-700"><strong>{option.maybeCount}</strong> {strings.maybe.toLowerCase()}</span>
+                  <span className="text-red-700"><strong>{option.unavailableCount}</strong> {strings.unavailable.toLowerCase()}</span>
+                  <span className="text-indigo-700"><strong>{option.preferredCount}</strong> {strings.preferred.toLowerCase()}</span>
+                </div>}
+              </div>
+              {interactive && canRemoveOption(option) && (
+                <Button type="button" variant="outline" className="min-h-11 rounded-full text-red-700" disabled={!!pendingKey} onClick={() => {
+                  if (window.confirm(`${strings.removeDate}?`)) void run(`remove-${option.id}`, () => removeProjectDateOption(projectId, option.id))
+                }}><Trash2 className="mr-2 h-4 w-4" /> {strings.removeDate}</Button>
+              )}
+            </div>
+
+            {interactive && viewerIsParticipant && votingOpen && (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {(['available', 'maybe', 'unavailable'] as DateAvailability[]).map(status => (
+                  <Button
+                    key={status}
+                    type="button"
+                    variant="outline"
+                    disabled={!!pendingKey}
+                    aria-pressed={option.viewerAvailability === status}
+                    className={`min-h-11 rounded-full ${option.viewerAvailability === status ? selectedStatusClasses[status] : statusClasses[status]}`}
+                    onClick={() => void respond(option, status)}
+                  >
+                    {option.viewerAvailability === status && <Check className="mr-1.5 h-4 w-4" />}
+                    {status === 'available' ? strings.available : status === 'maybe' ? strings.maybe : strings.unavailable}
+                  </Button>
+                ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!!pendingKey || option.viewerAvailability !== 'available'}
+                  aria-pressed={option.viewerPreferred}
+                  className={`min-h-11 rounded-full ${option.viewerPreferred ? 'border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700' : 'border-indigo-300 text-indigo-700'}`}
+                  onClick={() => void run(`preferred-${option.id}`, () => setProjectDateResponse(projectId, option.id, 'available', !option.viewerPreferred))}
+                >
+                  <Star className={`mr-1.5 h-4 w-4 ${option.viewerPreferred ? 'fill-current' : ''}`} /> {strings.preferred}
+                </Button>
+              </div>
+            )}
+
+            {tiedDecision && canManage && (
+              <Button className="mt-4 min-h-11 rounded-full" disabled={!!pendingKey} onClick={() => void run(`select-${option.id}`, () => chooseTiedProjectDate(projectId, option.id))}>{strings.selectDate}</Button>
+            )}
+          </article>
+        )
+      })}
+    </div>
+  )
+
   if (data.dateMode === 'fixed' && !data.selectedDateOptionId) return null
 
   if (data.dateMode === 'fixed') {
@@ -212,7 +307,7 @@ export function ProjectDateFinder({
     }
     const hasProjectTime = !!data.eventStartAt && !isDateOnlyTimestamp(data.eventStartAt)
     return (
-      <section className="rounded-2xl border border-emerald-200 bg-white p-4 shadow-sm md:p-5">
+      <section data-date-state={presentationState} className="rounded-2xl border border-emerald-200 bg-white p-4 shadow-sm md:p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-sm font-medium text-emerald-700">
@@ -221,13 +316,14 @@ export function ProjectDateFinder({
             <h2 className="text-xl font-semibold text-slate-900">
               {confirmedDateOption.starts_at ? formatDateOption(confirmedDateOption, locale) : ''}
             </h2>
+            <p className="text-sm text-slate-600">{strings.confirmedParticipants}: {data.confirmedCount}</p>
             {data.confirmationDeadlineAt && data.awaitingCount > 0 && (
               <p className="text-sm text-slate-600">{strings.confirmationDeadline}: {formatDeadline(data.confirmationDeadlineAt, locale)}</p>
             )}
           </div>
           <div className="flex flex-wrap gap-2 sm:justify-end">
-            <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-700">
-              <Users className="h-4 w-4" /> {data.confirmedCount} {strings.confirmed.toLowerCase()}
+            <div className="flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800">
+              <Check className="h-4 w-4" /> {strings.dateConfirmed}
             </div>
             {data.unreadNotificationCount > 0 && (
               <div className="rounded-full bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-800">
@@ -237,7 +333,13 @@ export function ProjectDateFinder({
           </div>
         </div>
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <details data-secondary-controls className="group mt-4 rounded-xl border border-slate-200 bg-slate-50/60">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-slate-800">
+            {strings.viewDateDetails}
+            <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="border-t border-slate-200 p-4">
+        <div className="grid gap-3 sm:grid-cols-3">
           <div className="rounded-xl bg-emerald-50 p-3"><div className="text-2xl font-semibold text-emerald-800">{data.confirmedCount}</div><div className="text-xs text-emerald-700">{strings.confirmed}</div></div>
           <div className="rounded-xl bg-amber-50 p-3"><div className="text-2xl font-semibold text-amber-800">{data.awaitingCount}</div><div className="text-xs text-amber-700">{strings.awaitingConfirmation}</div></div>
           <div className="rounded-xl bg-red-50 p-3"><div className="text-2xl font-semibold text-red-800">{data.cannotAttendCount}</div><div className="text-xs text-red-700">{strings.cannotAttend}</div></div>
@@ -251,7 +353,7 @@ export function ProjectDateFinder({
         ) : null}
 
         {canManage && (
-          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+          <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="font-semibold text-slate-900">{strings.projectTime}</h3>
@@ -328,6 +430,8 @@ export function ProjectDateFinder({
             )}
           </div>
         )}
+          </div>
+        </details>
 
         {needsConfirmation && (
           <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
@@ -385,11 +489,17 @@ export function ProjectDateFinder({
   }
 
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-4 md:p-5">
+    <section data-date-state={presentationState} className="rounded-2xl border border-slate-200 bg-white p-4 md:p-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-sm font-medium text-indigo-700"><CalendarDays className="h-4 w-4" /> {strings.projectDate}</div>
-          <h2 className="text-xl font-semibold text-slate-900">{strings.chooseProjectDate}</h2>
+          <h2 className="text-xl font-semibold text-slate-900">
+            {presentationState === 'all_responded'
+              ? strings.everyoneResponded
+              : presentationState === 'organizer_decision_required'
+                ? strings.organizerDecision
+                : strings.chooseProjectDate}
+          </h2>
           {data.unreadNotificationCount > 0 && (
             <span className="inline-flex rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-800">
               {strings.notifications}: {data.unreadNotificationCount}
@@ -398,11 +508,11 @@ export function ProjectDateFinder({
         </div>
         <div className="space-y-1 text-sm text-slate-600 sm:text-right">
           <div className="font-medium text-slate-900">{data.respondedCount} / {data.memberCount} {strings.responded}</div>
-          {data.votingDeadlineAt && <div className="flex items-center gap-1 sm:justify-end"><Clock3 className="h-4 w-4" /> {strings.ends} {formatDeadline(data.votingDeadlineAt, locale)}</div>}
+          {data.votingDeadlineAt && <div className="flex items-center gap-1 sm:justify-end"><Clock3 className="h-4 w-4" /> {presentationState === 'all_responded' ? strings.votingCloses : strings.ends} {formatDeadline(data.votingDeadlineAt, locale)}</div>}
         </div>
       </div>
 
-      {!dateActionShown && viewerIsParticipant && !data.viewerTaskComplete && votingOpen && (
+      {presentationState === 'collecting_responses' && !dateActionShown && viewerIsParticipant && !data.viewerTaskComplete && votingOpen && (
         <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
           <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">{strings.priorityTask}</div>
           <h3 className="mt-1 font-semibold text-slate-900">{strings.chooseDates}</h3>
@@ -414,84 +524,51 @@ export function ProjectDateFinder({
       {tiedDecision && (
         <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
           <h3 className="font-semibold text-amber-900">{strings.organizerDecision}</h3>
-          <p className="mt-1 text-sm text-amber-800">{strings.organizerDecisionHelp}</p>
+          <p className="mt-1 text-sm text-amber-800">{canManage ? strings.organizerDecisionHelp : strings.waitingForOrganizerDecision}</p>
         </div>
       )}
 
-      <div id="date-availability" role="region" aria-label={strings.chooseDatesHelp} tabIndex={-1}
-        className="mt-5 space-y-3 scroll-mt-24 rounded-xl target:outline-2 target:outline-offset-4 target:outline-indigo-200 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-400">
-        {visibleOptions.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">{strings.noDateOptions}</div>
-        ) : visibleOptions.map(option => {
-          const canRemove = canManage || (option.created_by_user_id === viewerUserId && option.otherResponseCount === 0)
-          const isBest = showBestOption && option.isCurrentlyBest
-          const hasResponses = option.availableCount + option.maybeCount + option.unavailableCount > 0
-          return (
-            <article key={option.id} aria-label={formatDateOption(option, locale)} className={`rounded-xl p-3 sm:p-4 ${isBest ? 'bg-emerald-50/60' : option.isTied && hasAvailabilityResponses ? 'bg-amber-50/40' : 'bg-slate-50/80'}`}>
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="font-semibold text-slate-900">{formatDateOption(option, locale)}</h3>
-                    {isBest && <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800">{strings.currentlyBest}</span>}
-                  </div>
-                  <p className="mt-1 text-xs text-slate-500">{strings.suggestedBy} {option.suggestedBy}</p>
-                  {hasResponses && <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
-                    <span className="text-emerald-700"><strong>{option.availableCount}</strong> {strings.available.toLowerCase()}</span>
-                    <span className="text-amber-700"><strong>{option.maybeCount}</strong> {strings.maybe.toLowerCase()}</span>
-                    <span className="text-red-700"><strong>{option.unavailableCount}</strong> {strings.unavailable.toLowerCase()}</span>
-                    <span className="text-indigo-700"><strong>{option.preferredCount}</strong> {strings.preferred.toLowerCase()}</span>
-                  </div>}
-                </div>
-                {canRemove && votingOpen && (
-                  <Button type="button" variant="outline" className="min-h-11 rounded-full text-red-700" disabled={!!pendingKey} onClick={() => {
-                    if (window.confirm(`${strings.removeDate}?`)) void run(`remove-${option.id}`, () => removeProjectDateOption(projectId, option.id))
-                  }}><Trash2 className="mr-2 h-4 w-4" /> {strings.removeDate}</Button>
+      {presentationState === 'all_responded' && (
+        <div className="mt-5">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-600">{strings.currentResult}</h3>
+          <div className="mt-3">{renderOptions({ interactive: false, anchor: true })}</div>
+          <p className="mt-3 text-sm text-slate-600">
+            {activeOptions.some(option => option.isTied) ? strings.tiedUntilDeadlineHelp : strings.allRespondedHelp}
+          </p>
+          {canEditAllResponded && (
+            <details data-secondary-controls className="group mt-4 rounded-xl border border-slate-200 bg-slate-50/60">
+              <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-slate-800">
+                {strings.editResponsesAndOptions}
+                <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="border-t border-slate-200 p-4">
+                {renderOptions({ interactive: true, anchor: false })}
+                <p className="mt-3 text-xs text-slate-500">{strings.preferredHelp}</p>
+                {suggestionsOpen && viewerIsParticipant && !suggesting && (
+                  <Button type="button" variant="outline" className="mt-4 min-h-11 rounded-full" onClick={() => setSuggesting(true)}><Plus className="mr-2 h-4 w-4" /> {strings.suggestAnother}</Button>
                 )}
+                {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} onDone={() => setSuggesting(false)} /></div>}
+                {!suggestionsOpen && votingOpen && <p className="mt-4 text-sm text-slate-600">{strings.suggestionsClosed}</p>}
               </div>
-
-              {viewerIsParticipant && votingOpen && (
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {(['available', 'maybe', 'unavailable'] as DateAvailability[]).map(status => (
-                    <Button
-                      key={status}
-                      type="button"
-                      variant="outline"
-                      disabled={!!pendingKey}
-                      aria-pressed={option.viewerAvailability === status}
-                      className={`min-h-11 rounded-full ${option.viewerAvailability === status ? selectedStatusClasses[status] : statusClasses[status]}`}
-                      onClick={() => void respond(option, status)}
-                    >
-                      {option.viewerAvailability === status && <Check className="mr-1.5 h-4 w-4" />}
-                      {status === 'available' ? strings.available : status === 'maybe' ? strings.maybe : strings.unavailable}
-                    </Button>
-                  ))}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={!!pendingKey || option.viewerAvailability !== 'available'}
-                    aria-pressed={option.viewerPreferred}
-                    className={`min-h-11 rounded-full ${option.viewerPreferred ? 'border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700' : 'border-indigo-300 text-indigo-700'}`}
-                    onClick={() => void run(`preferred-${option.id}`, () => setProjectDateResponse(projectId, option.id, 'available', !option.viewerPreferred))}
-                  >
-                    <Star className={`mr-1.5 h-4 w-4 ${option.viewerPreferred ? 'fill-current' : ''}`} /> {strings.preferred}
-                  </Button>
-                </div>
-              )}
-
-              {tiedDecision && canManage && (
-                <Button className="mt-4 min-h-11 rounded-full" disabled={!!pendingKey} onClick={() => void run(`select-${option.id}`, () => chooseTiedProjectDate(projectId, option.id))}>{strings.selectDate}</Button>
-              )}
-            </article>
-          )
-        })}
-      </div>
-
-      <p className="mt-3 text-xs text-slate-500">{strings.preferredHelp}</p>
-      {suggestionsOpen && viewerIsParticipant && !suggesting && (
-        <Button type="button" variant="outline" className="mt-4 min-h-11 rounded-full" onClick={() => setSuggesting(true)}><Plus className="mr-2 h-4 w-4" /> {strings.suggestAnother}</Button>
+            </details>
+          )}
+        </div>
       )}
-      {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} onDone={() => setSuggesting(false)} /></div>}
-      {!suggestionsOpen && votingOpen && <p className="mt-4 text-sm text-slate-600">{strings.suggestionsClosed}</p>}
+
+      {presentationState !== 'all_responded' && (
+        <div className="mt-5">{renderOptions({ interactive: true, anchor: true })}</div>
+      )}
+
+      {presentationState !== 'all_responded' && (
+        <>
+          <p className="mt-3 text-xs text-slate-500">{strings.preferredHelp}</p>
+          {suggestionsOpen && viewerIsParticipant && !suggesting && (
+            <Button type="button" variant="outline" className="mt-4 min-h-11 rounded-full" onClick={() => setSuggesting(true)}><Plus className="mr-2 h-4 w-4" /> {strings.suggestAnother}</Button>
+          )}
+          {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} onDone={() => setSuggesting(false)} /></div>}
+          {!suggestionsOpen && votingOpen && <p className="mt-4 text-sm text-slate-600">{strings.suggestionsClosed}</p>}
+        </>
+      )}
 
       {canManage && votingOpen && data.missingResponseNames.length > 0 && (
         <div className="mt-5 border-t border-slate-100 pt-4">

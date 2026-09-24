@@ -37,6 +37,28 @@ export type RankedDateResult =
   | { kind: 'winner'; tallies: DateOptionTally[]; winnerId: string; tiedOptionIds: [] }
   | { kind: 'tie'; tallies: DateOptionTally[]; winnerId: null; tiedOptionIds: string[] }
 
+export type ProjectDatePresentationState =
+  | 'collecting_responses'
+  | 'all_responded'
+  | 'organizer_decision_required'
+  | 'final_date_confirmed'
+
+export function deriveProjectDatePresentationState(input: {
+  dateMode: 'fixed' | 'selecting'
+  selectionStatus: 'open' | 'awaiting_organizer_decision' | 'date_selected' | 'confirmation_open' | 'confirmed'
+  selectedDateOptionId: string | null
+  respondedCount: number
+  memberCount: number
+}): ProjectDatePresentationState {
+  if (input.dateMode === 'fixed' && input.selectedDateOptionId) return 'final_date_confirmed'
+  if (input.selectionStatus === 'awaiting_organizer_decision') return 'organizer_decision_required'
+  if (input.dateMode === 'selecting' && input.selectionStatus === 'open'
+    && input.memberCount > 0 && input.respondedCount >= input.memberCount) {
+    return 'all_responded'
+  }
+  return 'collecting_responses'
+}
+
 const validDate = (value: string) => {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) throw new Error('Invalid date')
