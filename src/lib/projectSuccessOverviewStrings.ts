@@ -11,7 +11,7 @@ type SuccessOverviewStrings = {
   health: Record<ProjectSuccessPath['health'], string>
   actions: Record<SuccessAction, { title: string; detail: string; label: string }>
   headings: Record<'canceled' | 'finalized' | 'ready' | 'waiting', string>
-  details: Record<'canceled' | 'finalized' | 'ready' | 'waiting' | 'date' | 'date_tie' | 'finance', string>
+  details: Record<'canceled' | 'finalized' | 'ready' | 'waiting' | 'date' | 'date_all_responded' | 'date_tie' | 'finance', string>
   participantMinimum: (confirmed: number, minimum: number) => string
   participantNoMinimum: (confirmed: number) => string
   waitingParticipants: (count: number) => string
@@ -36,6 +36,7 @@ const strings: Record<ProjectDateLocale, SuccessOverviewStrings> = {
     actions: {
       choose_dates: { title: 'Choose your available dates', detail: 'Your response helps the group choose a date.', label: enDate.chooseDates },
       confirm_attendance: { title: 'Confirm your attendance', detail: 'The final date is selected. Let the group know if you can attend.', label: 'Confirm attendance' },
+      finalize_date_early: { title: 'Choose the final date', detail: 'Everyone has responded. You can choose the final date now or wait until the voting deadline.', label: 'Choose final date' },
       resolve_date: { title: 'Choose the final date', detail: 'Date Finder has an exact tie that needs your decision.', label: 'Choose final date' },
       invite_people: { title: 'Invite more people', detail: 'Share the project link with people you would like to join.', label: 'Review participants' },
       review_finance: { title: 'Review Finance', detail: 'Review the existing payment controls and outstanding base contributions.', label: 'Review payments' },
@@ -48,6 +49,7 @@ const strings: Record<ProjectDateLocale, SuccessOverviewStrings> = {
       ready: 'All relevant project requirements are met.',
       waiting: 'You have no required action right now. The group is still working toward readiness.',
       date: 'Waiting for Date Finder to select the final date.',
+      date_all_responded: 'Everyone has responded. The organizer can choose the final date now, or Date Finder will finalize the result when voting closes.',
       date_tie: 'Waiting for the organizer to choose the final date.',
       finance: 'Base contributions are not yet settled.',
     },
@@ -68,6 +70,7 @@ const strings: Record<ProjectDateLocale, SuccessOverviewStrings> = {
     actions: {
       choose_dates: { title: ltDate.chooseDatesHelp, detail: 'Jūsų atsakymas padės grupei pasirinkti datą.', label: ltDate.chooseDates },
       confirm_attendance: { title: 'Patvirtinkite dalyvavimą', detail: 'Galutinė data pasirinkta. Praneškite grupei, ar galėsite dalyvauti.', label: 'Patvirtinti dalyvavimą' },
+      finalize_date_early: { title: 'Pasirinkite galutinę datą', detail: 'Visi dalyviai atsakė. Galite pasirinkti galutinę datą dabar arba palaukti balsavimo pabaigos.', label: 'Pasirinkti galutinę datą' },
       resolve_date: { title: 'Pasirinkite galutinę datą', detail: ltDate.organizerDecisionHelp, label: 'Pasirinkti galutinę datą' },
       invite_people: { title: ltFinance.inviteMorePlural, detail: 'Pasidalykite projekto nuoroda su žmonėmis, kuriuos norite pakviesti.', label: 'Peržiūrėti dalyvius' },
       review_finance: { title: 'Peržiūrėkite finansus', detail: 'Peržiūrėkite mokėjimų valdymo parinktis ir dar nesumokėtas pagrindines įmokas.', label: 'Peržiūrėti mokėjimus' },
@@ -80,6 +83,7 @@ const strings: Record<ProjectDateLocale, SuccessOverviewStrings> = {
       ready: 'Visi projektui taikomi reikalavimai įvykdyti.',
       waiting: 'Šiuo metu jums nereikia atlikti jokių veiksmų. Grupė dar ruošiasi projektui.',
       date: 'Laukiama, kol datų parinkimo sistema parinks galutinę datą.',
+      date_all_responded: 'Visi dalyviai atsakė. Organizatorius gali pasirinkti galutinę datą dabar arba Date Finder užfiksuos rezultatą pasibaigus balsavimui.',
       date_tie: 'Laukiama, kol organizatorius pasirinks galutinę datą.',
       finance: 'Pagrindinės įmokos dar nesumokėtos.',
     },

@@ -9,6 +9,7 @@ import * as finance from './projectFinance.ts'
 import * as joinRequests from './projectJoinRequests.ts'
 import * as statusUi from './projectStatusUi.ts'
 import * as projectInvite from './projectInvite.ts'
+import * as dateSelection from './projectDateSelection.ts'
 
 type Row = Record<string, unknown>
 type Tables = Record<string, Row[]>
@@ -27,7 +28,7 @@ const adminPanelCode = compile('../components/Project/AdminPanel.tsx')
 
 function fixture() {
   const tables: Tables = {
-    projects: [{ id: 'project', status: 'pending', canceled_at: null, aborted_at: null, is_public: true, finance_mode: 'none', collector_participant_id: 'collector' }],
+    projects: [{ id: 'project', status: 'pending', canceled_at: null, aborted_at: null, is_public: true, finance_mode: 'none', collector_participant_id: 'collector', date_mode: 'selecting', date_selection_status: 'open', date_voting_deadline_at: '2099-10-01T00:00:00.000Z', selected_date_option_id: null }],
     participants: [{ id: 'me', project_id: 'project', user_id: 'user', role: 'member', left_at: null }],
     polls: [{ id: 'poll', project_id: 'project', created_by: 'user', title: 'Original' }],
     poll_options: [
@@ -35,12 +36,16 @@ function fixture() {
       { id: 'option-b', poll_id: 'poll', label: 'B', created_at: '2026-01-01' },
     ],
     poll_votes: [{ id: 'vote', poll_id: 'poll', option_id: 'option-a', user_id: 'voter' }],
+    project_date_options: [], project_date_responses: [],
     messages: [], chat_reads: [], join_requests: [],
   }
   const writes: string[] = []
   const failures = new Map<string, { code: string; message: string }>()
   const missingColumns = new Set<string>()
   const selects: Array<{ table: string; fields?: string }> = []
+  const appliedDateSelections: Array<{ projectId: string; optionId: string; actorUserId: string; actorParticipantId: string }> = []
+  const syncedDateProjects: string[] = []
+  let beforeEarlySelection: (() => void | Promise<void>) | null = null
   let currentUserId = 'user'
   const db = {
     from(table: string) {
@@ -133,6 +138,39 @@ function fixture() {
     '@/lib/projectJoinRequests': joinRequests,
     '@/lib/projectInvite': projectInvite,
     '@/lib/projectStatusUi': statusUi,
+    '@/lib/projectDateSelection': dateSelection,
+    '@/lib/projectDateService': {
+      applySelectedProjectDate: async (projectId: string, optionId: string, actor: { actorUserId: string; actorParticipantId: string }) => {
+        appliedDateSelections.push({ projectId, optionId, ...actor })
+      },
+      applyEarlySelectedProjectDate: async (projectId: string, optionId: string, actor: { actorUserId: string; actorParticipantId: string }) => {
+        await beforeEarlySelection?.()
+        const project = tables.projects.find(row => row.id === projectId)
+        if (!project || project.date_mode !== 'selecting' || project.date_selection_status !== 'open' || project.selected_date_option_id) {
+          throw new Error('Date voting is no longer open')
+        }
+        if (!project.date_voting_deadline_at || new Date(String(project.date_voting_deadline_at)) <= new Date()) {
+          throw new Error('The voting deadline has passed')
+        }
+        const activeOptions = tables.project_date_options.filter(row => row.project_id === projectId && row.status === 'active')
+        if (activeOptions.length === 0) throw new Error('No active date options are available')
+        if (!activeOptions.some(row => row.id === optionId)) throw new Error('Choose an active date option from this project')
+        const activeUsers = tables.participants
+          .filter(row => row.project_id === projectId && row.left_at === null)
+          .map(row => row.user_id)
+        const missing = activeUsers.some(userId => activeOptions.some(option =>
+          !tables.project_date_responses.some(response =>
+            response.project_id === projectId && response.date_option_id === option.id && response.user_id === userId
+          )
+        ))
+        if (missing) throw new Error('Every active participant must respond to every active date option first')
+        appliedDateSelections.push({ projectId, optionId, ...actor })
+        project.date_mode = 'fixed'
+        project.date_selection_status = 'confirmed'
+        project.selected_date_option_id = optionId
+      },
+      syncProjectDateSelection: async (projectId: string) => { syncedDateProjects.push(projectId) },
+    },
     'next/cache': { revalidatePath: () => {} },
     'next/navigation': { redirect: () => { throw new Error('NEXT_REDIRECT') } },
   }
@@ -144,9 +182,14 @@ function fixture() {
     failures,
     missingColumns,
     selects,
+    appliedDateSelections,
+    syncedDateProjects,
     actions: exports as typeof import('../app/project/[id]/actions'),
     setCurrentUserId(userId: string) {
       currentUserId = userId
+    },
+    setBeforeEarlySelection(callback: (() => void | Promise<void>) | null) {
+      beforeEarlySelection = callback
     },
   }
 }
@@ -173,6 +216,162 @@ function pollForm(options = 'A\nB') {
   form.set('options', options)
   return form
 }
+
+function earlyDateFixture() {
+  const f = fixture()
+  f.tables.projects[0].collector_participant_id = 'me'
+  f.tables.participants = [
+    { id: 'me', project_id: 'project', user_id: 'user', role: 'organizer', left_at: null },
+    { id: 'member', project_id: 'project', user_id: 'member-user', role: 'member', left_at: null },
+    { id: 'former', project_id: 'project', user_id: 'former-user', role: 'member', left_at: '2026-01-01T00:00:00.000Z' },
+  ]
+  f.tables.project_date_options = [
+    { id: 'date-a', project_id: 'project', starts_at: '2026-10-01T00:00:00.000Z', ends_at: null, status: 'active' },
+    { id: 'date-b', project_id: 'project', starts_at: '2026-10-02T00:00:00.000Z', ends_at: null, status: 'active' },
+    { id: 'removed', project_id: 'project', starts_at: '2026-10-03T00:00:00.000Z', ends_at: null, status: 'removed' },
+    { id: 'other-project-date', project_id: 'other-project', starts_at: '2026-10-04T00:00:00.000Z', ends_at: null, status: 'active' },
+  ]
+  f.tables.project_date_responses = [
+    { project_id: 'project', date_option_id: 'date-a', user_id: 'user', availability: 'available', is_preferred: true },
+    { project_id: 'project', date_option_id: 'date-b', user_id: 'user', availability: 'maybe', is_preferred: false },
+    { project_id: 'project', date_option_id: 'date-a', user_id: 'member-user', availability: 'unavailable', is_preferred: false },
+    { project_id: 'project', date_option_id: 'date-b', user_id: 'member-user', availability: 'available', is_preferred: true },
+  ]
+  return f
+}
+
+test('early finalization selects any active project option through the existing apply flow', async () => {
+  for (const optionId of ['date-a', 'date-b']) {
+    const f = earlyDateFixture()
+    await f.actions.selectProjectDateEarly('project', optionId)
+    assert.deepEqual(f.appliedDateSelections, [{
+      projectId: 'project', optionId, actorUserId: 'user', actorParticipantId: 'me',
+    }])
+  }
+})
+
+test('early finalization denies an ordinary participant before any selection side effect', async () => {
+  const f = earlyDateFixture()
+  f.tables.projects[0].collector_participant_id = 'someone-else'
+  await assert.rejects(f.actions.selectProjectDateEarly('project', 'date-a'), /Not authorized/)
+  assert.deepEqual(f.appliedDateSelections, [])
+})
+
+test('early finalization rejects canceled and already-selected projects', async () => {
+  const canceled = earlyDateFixture()
+  canceled.tables.projects[0].canceled_at = '2026-09-01T00:00:00.000Z'
+  await assert.rejects(canceled.actions.selectProjectDateEarly('project', 'date-a'), /disabled for canceled projects/)
+  assert.deepEqual(canceled.appliedDateSelections, [])
+
+  const selected = earlyDateFixture()
+  selected.tables.projects[0].selected_date_option_id = 'date-a'
+  await assert.rejects(selected.actions.selectProjectDateEarly('project', 'date-a'), /no longer open/)
+  assert.deepEqual(selected.appliedDateSelections, [])
+})
+
+test('early finalization rejects incomplete and partial active ballots', async () => {
+  const incomplete = earlyDateFixture()
+  incomplete.tables.project_date_responses = incomplete.tables.project_date_responses.filter(row => row.user_id !== 'member-user')
+  await assert.rejects(incomplete.actions.selectProjectDateEarly('project', 'date-a'), /Every active participant/)
+
+  const partial = earlyDateFixture()
+  partial.tables.project_date_responses = partial.tables.project_date_responses.filter(row => !(row.user_id === 'member-user' && row.date_option_id === 'date-b'))
+  await assert.rejects(partial.actions.selectProjectDateEarly('project', 'date-a'), /Every active participant/)
+})
+
+test('removed options and former participants do not block early finalization', async () => {
+  const f = earlyDateFixture()
+  await f.actions.selectProjectDateEarly('project', 'date-a')
+  assert.equal(f.appliedDateSelections.length, 1)
+})
+
+test('early finalization rejects zero, inactive, and cross-project options', async () => {
+  const zero = earlyDateFixture()
+  zero.tables.project_date_options = zero.tables.project_date_options.filter(row => row.status !== 'active' || row.project_id !== 'project')
+  await assert.rejects(zero.actions.selectProjectDateEarly('project', 'date-a'), /No active date options/)
+
+  for (const optionId of ['removed', 'other-project-date']) {
+    const f = earlyDateFixture()
+    await assert.rejects(f.actions.selectProjectDateEarly('project', optionId), /active date option from this project/)
+    assert.deepEqual(f.appliedDateSelections, [])
+  }
+})
+
+test('early finalization rejects an exact or passed deadline even when persisted state is still open', async () => {
+  for (const deadline of [new Date().toISOString(), '2026-01-01T00:00:00.000Z']) {
+    const f = earlyDateFixture()
+    f.tables.projects[0].date_voting_deadline_at = deadline
+    await assert.rejects(f.actions.selectProjectDateEarly('project', 'date-a'), /voting deadline has passed/)
+    assert.deepEqual(f.appliedDateSelections, [])
+  }
+})
+
+test('stale pre-deadline request is rejected when the authoritative operation observes a passed deadline', async () => {
+  const f = earlyDateFixture()
+  f.setBeforeEarlySelection(() => {
+    f.tables.projects[0].date_voting_deadline_at = '2026-01-01T00:00:00.000Z'
+  })
+  await assert.rejects(f.actions.selectProjectDateEarly('project', 'date-a'), /voting deadline has passed/)
+  assert.deepEqual(f.appliedDateSelections, [])
+})
+
+test('post-deadline resolution still delegates to normal Date Finder automation', async () => {
+  const f = earlyDateFixture()
+  f.tables.projects[0].date_voting_deadline_at = '2026-01-01T00:00:00.000Z'
+  await f.actions.resolveProjectDateVoting('project')
+  assert.deepEqual(f.syncedDateProjects, ['project'])
+  assert.deepEqual(f.appliedDateSelections, [])
+})
+
+test('existing persisted tie action still accepts only a tied date', async () => {
+  const f = earlyDateFixture()
+  f.tables.projects[0].date_selection_status = 'awaiting_organizer_decision'
+  await f.actions.chooseTiedProjectDate('project', 'date-a')
+  assert.deepEqual(f.appliedDateSelections, [{
+    projectId: 'project', optionId: 'date-a', actorUserId: 'user', actorParticipantId: 'me',
+  }])
+})
+
+test('atomic early selection observes a participant activated before its locked completion check', async () => {
+  const f = earlyDateFixture()
+  f.setBeforeEarlySelection(() => {
+    f.tables.participants.push({ id: 'new-member', project_id: 'project', user_id: 'new-user', role: 'member', left_at: null })
+  })
+  await assert.rejects(f.actions.selectProjectDateEarly('project', 'date-a'), /Every active participant/)
+  assert.deepEqual(f.appliedDateSelections, [])
+})
+
+test('atomic early selection observes an active option added before its locked completion check', async () => {
+  const f = earlyDateFixture()
+  f.setBeforeEarlySelection(() => {
+    f.tables.project_date_options.push({
+      id: 'date-c', project_id: 'project', starts_at: '2026-10-05T00:00:00.000Z', ends_at: null, status: 'active',
+    })
+  })
+  await assert.rejects(f.actions.selectProjectDateEarly('project', 'date-a'), /Every active participant/)
+  assert.deepEqual(f.appliedDateSelections, [])
+})
+
+test('completed response edit serializes to a deterministic eligible snapshot', async () => {
+  const f = earlyDateFixture()
+  f.setBeforeEarlySelection(() => {
+    const response = f.tables.project_date_responses.find(row => row.user_id === 'member-user' && row.date_option_id === 'date-a')
+    if (response) response.availability = 'maybe'
+  })
+  await f.actions.selectProjectDateEarly('project', 'date-b')
+  assert.equal(f.appliedDateSelections.length, 1)
+})
+
+test('competing early finalizations produce one selection and one safe conflict', async () => {
+  const f = earlyDateFixture()
+  const results = await Promise.allSettled([
+    f.actions.selectProjectDateEarly('project', 'date-a'),
+    f.actions.selectProjectDateEarly('project', 'date-b'),
+  ])
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1)
+  assert.equal(results.filter(result => result.status === 'rejected').length, 1)
+  assert.equal(f.appliedDateSelections.length, 1)
+})
 
 test('poll metadata edit preserves vote rows and option IDs', async () => {
   const f = fixture()

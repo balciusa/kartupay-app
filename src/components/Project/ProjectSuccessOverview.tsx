@@ -6,6 +6,7 @@ import { getProjectSuccessOverviewStrings } from '@/lib/projectSuccessOverviewSt
 const destinations: Record<SuccessAction, string> = {
   choose_dates: '#date-availability',
   confirm_attendance: '#project-date-finder',
+  finalize_date_early: '#early-date-finalization',
   resolve_date: '#project-date-finder',
   invite_people: '?tab=people',
   review_finance: '?tab=payments',
@@ -27,7 +28,7 @@ export function ProjectSuccessOverview({ model, projectId, locale = 'en' }: {
     : model.stage === 'finalized' ? strings.headings.finalized
     : model.ready ? strings.headings.ready : strings.headings.waiting
   const details: Record<ProjectSuccessPath['blockers'][number]['type'], string> = {
-    date: strings.details.date, date_tie: strings.details.date_tie,
+    date: strings.details.date, date_all_responded: strings.details.date_all_responded, date_tie: strings.details.date_tie,
     participants: participantDetail, finance: strings.details.finance,
   }
   // Date progress and the participant count already explain these blockers.
@@ -72,7 +73,9 @@ export function ProjectSuccessOverview({ model, projectId, locale = 'en' }: {
               : model.ready ? strings.details.ready
               : model.stage === 'date' ? model.blockers.some(blocker => blocker.type === 'date_tie')
                 ? strings.details.date_tie
-                : strings.details.date
+                : model.blockers.some(blocker => blocker.type === 'date_all_responded')
+                  ? strings.details.date_all_responded
+                  : strings.details.date
               : model.waitingOn.participants > 0 ? strings.waitingParticipants(model.waitingOn.participants)
               : strings.details.waiting}
           </p>

@@ -8,6 +8,7 @@ import {
   lateConfirmProjectAttendance,
   removeProjectDateOption,
   respondToDateConfirmation,
+  selectProjectDateEarly,
   sendProjectDateReminders,
   setDateConfirmationDeadline,
   setProjectDateResponse,
@@ -164,6 +165,8 @@ export function ProjectDateFinder({
   const router = useRouter()
   const [suggesting, setSuggesting] = useState(false)
   const [editingTime, setEditingTime] = useState(false)
+  const [selectingEarly, setSelectingEarly] = useState(false)
+  const [earlyOptionId, setEarlyOptionId] = useState<string | null>(null)
   const [pendingKey, setPendingKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const now = Date.now()
@@ -176,6 +179,7 @@ export function ProjectDateFinder({
   )
   const selectedOption = data.options.find(option => option.id === data.selectedDateOptionId)
   const activeOptions = data.options.filter(option => option.status === 'active')
+  const earlyOption = earlyOptionId ? activeOptions.find(option => option.id === earlyOptionId) : null
   const hasAvailabilityResponses = activeOptions.some(option =>
     option.availableCount + option.maybeCount + option.unavailableCount > 0
   )
@@ -187,6 +191,10 @@ export function ProjectDateFinder({
     respondedCount: data.respondedCount,
     memberCount: data.memberCount,
   })
+  const canFinalizeEarly = presentationState === 'all_responded'
+    && canManage
+    && votingOpen
+    && activeOptions.length > 0
   const canRemoveOption = (option: ProjectDateFinderOption) => votingOpen
     && (canManage || (option.created_by_user_id === viewerUserId && option.otherResponseCount === 0))
   const canEditOwnAvailability = votingOpen && viewerIsParticipant && visibleOptions.length > 0
@@ -218,7 +226,15 @@ export function ProjectDateFinder({
       )
     )
 
-  const renderOptions = ({ interactive, anchor }: { interactive: boolean; anchor: boolean }) => (
+  const renderOptions = ({
+    interactive,
+    anchor,
+    earlyFinalization = false,
+  }: {
+    interactive: boolean
+    anchor: boolean
+    earlyFinalization?: boolean
+  }) => (
     <div
       id={anchor ? 'date-availability' : undefined}
       role="region"
@@ -287,6 +303,19 @@ export function ProjectDateFinder({
 
             {tiedDecision && canManage && (
               <Button className="mt-4 min-h-11 rounded-full" disabled={!!pendingKey} onClick={() => void run(`select-${option.id}`, () => chooseTiedProjectDate(projectId, option.id))}>{strings.selectDate}</Button>
+            )}
+            {earlyFinalization && canFinalizeEarly && (
+              <Button
+                type="button"
+                variant={earlyOptionId === option.id ? 'default' : 'outline'}
+                className="mt-4 min-h-11 rounded-full"
+                disabled={!!pendingKey}
+                aria-pressed={earlyOptionId === option.id}
+                onClick={() => setEarlyOptionId(option.id)}
+              >
+                {earlyOptionId === option.id && <Check className="mr-1.5 h-4 w-4" />}
+                {strings.chooseFinalDate}
+              </Button>
             )}
           </article>
         )
@@ -531,10 +560,60 @@ export function ProjectDateFinder({
       {presentationState === 'all_responded' && (
         <div className="mt-5">
           <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-600">{strings.currentResult}</h3>
-          <div className="mt-3">{renderOptions({ interactive: false, anchor: true })}</div>
+          <div className="mt-3">{renderOptions({ interactive: false, anchor: true, earlyFinalization: selectingEarly })}</div>
           <p className="mt-3 text-sm text-slate-600">
             {activeOptions.some(option => option.isTied) ? strings.tiedUntilDeadlineHelp : strings.allRespondedHelp}
           </p>
+          {canFinalizeEarly && (
+            <div id="early-date-finalization" className="mt-4 scroll-mt-24 rounded-xl border border-indigo-200 bg-indigo-50/70 p-4">
+              <p className="text-sm text-slate-700">{strings.everyoneRespondedOrganizerHelp}</p>
+              {!selectingEarly ? (
+                <Button type="button" className="mt-3 min-h-11 rounded-full" onClick={() => setSelectingEarly(true)}>
+                  {strings.selectFinalDateNow}
+                </Button>
+              ) : earlyOption ? (
+                <div className="mt-3 rounded-xl border border-indigo-200 bg-white p-4" role="group" aria-labelledby="confirm-final-date-title">
+                  <h4 id="confirm-final-date-title" className="font-semibold text-slate-900">{strings.confirmFinalDateTitle}</h4>
+                  <p className="mt-1 text-sm font-medium text-slate-800">
+                    {formatDateOption(earlyOption, locale)}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-600">{strings.confirmFinalDateHelp}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="min-h-11 rounded-full"
+                      disabled={!!pendingKey}
+                      onClick={() => {
+                        setEarlyOptionId(null)
+                        setSelectingEarly(false)
+                      }}
+                    >
+                      {strings.cancel}
+                    </Button>
+                    <Button
+                      type="button"
+                      className="min-h-11 rounded-full"
+                      disabled={!!pendingKey}
+                      onClick={() => void run(`early-select-${earlyOption.id}`, async () => {
+                        try {
+                          await selectProjectDateEarly(projectId, earlyOption.id)
+                        } finally {
+                          router.refresh()
+                        }
+                      })}
+                    >
+                      {strings.confirmFinalDate}
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-slate-600">{strings.chooseFinalDate}</p>
+              )}
+              <p className="mt-3 text-xs text-slate-600">{strings.waitForDeadline}</p>
+            </div>
+          )}
+          {!canManage && <p className="mt-3 text-sm text-slate-600">{strings.everyoneRespondedParticipantHelp}</p>}
           {canEditAllResponded && (
             <details data-secondary-controls className="group mt-4 rounded-xl border border-slate-200 bg-slate-50/60">
               <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-slate-800">

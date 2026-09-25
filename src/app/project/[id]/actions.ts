@@ -23,7 +23,7 @@ import {
   type DateResponseLike,
   type ParticipantAttendanceStatus,
 } from '@/lib/projectDateSelection'
-import { applySelectedProjectDate, syncProjectDateSelection } from '@/lib/projectDateService'
+import { applyEarlySelectedProjectDate, applySelectedProjectDate, syncProjectDateSelection } from '@/lib/projectDateService'
 import {
   FINANCE_HISTORY_ERROR,
   assertManagedFinance,
@@ -3260,6 +3260,51 @@ export async function chooseTiedProjectDate(projectId: string, optionId: string)
     throw new Error('Choose one of the tied date options')
   }
   await applySelectedProjectDate(projectId, optionId, {
+    actorUserId: uid,
+    actorParticipantId: manager.id,
+  })
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function selectProjectDateEarly(projectId: string, optionId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  const { manager, project } = await loadManagedDateProject(projectId, uid)
+  if (
+    project.date_mode !== 'selecting'
+    || project.date_selection_status !== 'open'
+    || project.selected_date_option_id
+  ) {
+    throw new Error('Date voting is no longer open')
+  }
+  if (
+    !project.date_voting_deadline_at
+    || new Date(project.date_voting_deadline_at) <= new Date()
+  ) {
+    throw new Error('The voting deadline has passed')
+  }
+
+  const cancellationAttempt = await supabaseAdmin
+    .from('projects')
+    .select('status, canceled_at, aborted_at')
+    .eq('id', projectId)
+    .maybeSingle()
+  let cancellation = cancellationAttempt.data
+  let cancellationError = cancellationAttempt.error
+  if (missingColumn(cancellationError, 'aborted_at')) {
+    const fallback = await supabaseAdmin
+      .from('projects')
+      .select('status, canceled_at')
+      .eq('id', projectId)
+      .maybeSingle()
+    cancellation = fallback.data ? { ...fallback.data, aborted_at: null } : null
+    cancellationError = fallback.error
+  }
+  if (cancellationError || !cancellation) throw cancellationError || new Error('Project not found')
+  if (isProjectCanceled(cancellation)) throw new Error('Date selection is disabled for canceled projects')
+
+  await applyEarlySelectedProjectDate(projectId, optionId, {
     actorUserId: uid,
     actorParticipantId: manager.id,
   })

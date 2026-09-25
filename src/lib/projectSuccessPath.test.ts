@@ -16,7 +16,7 @@ function context(changes: Partial<SuccessContext> = {}): SuccessContext {
   return {
     isCanceled: false, isFinalized: false, financeMode: 'none', confirmedParticipants: 6,
     minParticipants: 6, capacityAvailable: true, joinsAllowed: true, managedFinanceReady: false,
-    date: { selecting: false, votingOpen: false, hasOptions: true, awaitingOrganizer: false,
+    date: { selecting: false, votingOpen: false, hasOptions: true, allResponded: false, awaitingOrganizer: false,
       viewerResponded: false, viewerNeedsConfirmation: false, missingResponses: 0, awaitingAttendance: 0 },
     ...changes,
   }
@@ -133,8 +133,9 @@ test('26. existing attendance helper excludes MAYBE, observer, cannot attend and
   assert.equal(derive(context({ confirmedParticipants })).ready, false)
   assert.equal(confirmedParticipants, 1)
 })
-test('27. no manual date resolution before persisted tie state', () => {
-  assert.equal(derive(selecting({ viewerResponded: true }), manager).nextAction, null)
+test('27. manager can finalize before the deadline only after everyone responds', () => {
+  assert.equal(derive(selecting({ viewerResponded: true, allResponded: false }), manager).nextAction, null)
+  assert.equal(derive(selecting({ viewerResponded: true, allResponded: true, missingResponses: 0 }), manager).nextAction, 'finalize_date_early')
 })
 test('28. unavailable join flow prevents invite', () => {
   assert.equal(derive(context({ confirmedParticipants: 2, joinsAllowed: false }), manager).nextAction, null)
@@ -203,6 +204,23 @@ test('UI: canceled and finalized hide actionable links and stale blockers', () =
 test('UI: rendering is stable with no clock/browser-dependent inference', () => {
   assert.equal(render(selecting()), render(selecting()))
   assert.doesNotMatch(componentSource, /Date\.now|new Date|Math\.random|window\.|useEffect/)
+})
+
+test('UI: all-responded manager gets one early-finalization link into Date Finder', () => {
+  const html = render(selecting({ viewerResponded: true, allResponded: true, missingResponses: 0 }), manager)
+  assert.match(html, /Choose the final date/)
+  assert.match(html, /Everyone has responded/)
+  assert.match(html, /href="#early-date-finalization"/)
+  assert.equal((html.match(/<a /g) ?? []).length, 1)
+})
+
+test('UI: all-responded participant gets passive status in EN and LT', () => {
+  const input = selecting({ viewerResponded: true, allResponded: true, missingResponses: 0 })
+  const en = render(input, viewer, 'en')
+  const lt = render(input, viewer, 'lt')
+  assert.match(en, /The organizer can choose the final date now/)
+  assert.match(lt, /Organizatorius gali pasirinkti galutinę datą dabar/)
+  assert.doesNotMatch(en, /href="#early-date-finalization"/)
 })
 
 // Evaluate the actual page JSX guard, then render the real Date Finder. Only I/O
@@ -423,6 +441,9 @@ test('Date Finder state: all responses show a leader and preserve valid editing 
   assert.match(html, /data-current-result="true"/)
   assert.match(html, /data-secondary-controls="true"/)
   assert.match(html, /Edit responses and date options/)
+  assert.match(html, /Select final date now/)
+  assert.match(html, /id="early-date-finalization"/)
+  assert.match(html, /or wait until voting closes/)
   assert.match(html, />Available<\/button>/)
   assert.ok(html.includes('Suggest another date</button>'))
   assert.doesNotMatch(html, /Priority task|Select this date|Calculate result now/)
@@ -467,7 +488,7 @@ test('Date Finder disclosure: participant cannot edit after voting enters organi
   assert.doesNotMatch(html, /Edit responses and date options|data-secondary-controls|>Available<\/button>|>Galiu<\/button>/)
 })
 
-test('Date Finder state: an open exact tie is honest and cannot finalize early', () => {
+test('Date Finder state: an open exact tie is honest and offers early finalization', () => {
   const tiedOptions = [
     dateOption('a', { availableCount: 2, preferredCount: 1, isCurrentlyBest: false, isTied: true }),
     dateOption('b', { starts_at: '2099-02-02T00:00:00.000Z', availableCount: 2, preferredCount: 1, isCurrentlyBest: false, isTied: true }),
@@ -475,7 +496,17 @@ test('Date Finder state: an open exact tie is honest and cannot finalize early',
   const html = renderDate(selectingData({ respondedCount: 2, memberCount: 2, missingResponseNames: [], viewerTaskComplete: true, options: tiedOptions }))
   assert.match(html, /These options are currently tied/)
   assert.equal((html.match(/Currently tied/g) ?? []).length, 4)
+  assert.match(html, /Select final date now/)
   assert.doesNotMatch(html, /Currently best option|Select this date|Calculate result now/)
+})
+
+test('Date Finder state: partial response and participant views cannot gain early-finalization controls', () => {
+  assert.doesNotMatch(renderDate(selectingData({ respondedCount: 1, memberCount: 2 })), /Select final date now/)
+  const participant = renderDate(selectingData({
+    respondedCount: 2, memberCount: 2, missingResponseNames: [], viewerTaskComplete: true,
+  }), { canManage: false })
+  assert.match(participant, /The organizer can choose the final date now/)
+  assert.doesNotMatch(participant, /Select final date now|Confirm final date|Set this as the final date/)
 })
 
 test('Date Finder state: persisted tie gives only the organizer the existing resolution action', () => {
@@ -533,6 +564,7 @@ test('Date Finder state: Lithuanian all-responded and confirmed views stay local
   const allResponded = renderDate(selectingData({ respondedCount: 2, memberCount: 2, missingResponseNames: [], viewerTaskComplete: true }), { locale: 'lt' })
   assert.match(allResponded, /Visi atsakė/)
   assert.match(allResponded, /Keisti atsakymus ir datų variantus/)
+  assert.match(allResponded, /Pasirinkti galutinę datą dabar/)
   assert.doesNotMatch(allResponded, /Everyone has responded|Current result|Edit responses|Voting closes/)
   const confirmed = renderDate({ ...fixedDateFixture }, { locale: 'lt' })
   assert.match(confirmed, /Patvirtinta|Peržiūrėti datos informaciją/)

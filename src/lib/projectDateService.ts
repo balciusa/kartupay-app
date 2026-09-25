@@ -1,6 +1,7 @@
 import { recordProjectActivity } from '@/lib/activityLog'
 import {
   DEFAULT_CONFIRMATION_WINDOW_HOURS,
+  fullyRespondedDateParticipantIds,
   rankDateOptions,
   type DateAvailability,
   type DateOptionLike,
@@ -114,6 +115,49 @@ export async function applySelectedProjectDate(
       starts_at: option.starts_at,
       ends_at: option.ends_at,
       confirmation_deadline_at: confirmationDeadlineAt,
+    },
+  })
+}
+
+export async function applyEarlySelectedProjectDate(
+  projectId: string,
+  optionId: string,
+  input?: { actorUserId?: string | null; actorParticipantId?: string | null; confirmationDeadlineAt?: string | null }
+) {
+  const now = new Date()
+  const confirmationDeadlineAt = input?.confirmationDeadlineAt
+    ? new Date(input.confirmationDeadlineAt).toISOString()
+    : defaultConfirmationDeadline(now)
+  if (new Date(confirmationDeadlineAt) <= now) throw new Error('Confirmation deadline must be in the future')
+
+  // Option metadata is used only for the activity entry. The RPC independently
+  // validates the current active option and completion scope while locked.
+  const { data: option, error: optionError } = await supabaseAdmin
+    .from('project_date_options')
+    .select('id, project_id, starts_at, ends_at, status')
+    .eq('id', optionId)
+    .eq('project_id', projectId)
+    .maybeSingle()
+  if (optionError || !option) throw optionError || new Error('Date option not found')
+
+  const { error } = await supabaseAdmin.rpc('select_project_date_early', {
+    p_project_id: projectId,
+    p_option_id: optionId,
+    p_confirmation_deadline: confirmationDeadlineAt,
+  })
+  if (error) throw new Error(error.message ?? 'Failed to select project date early')
+
+  await recordProjectActivity({
+    projectId,
+    entryType: 'project_date_selected',
+    actorUserId: input?.actorUserId ?? null,
+    actorParticipantId: input?.actorParticipantId ?? null,
+    metadata: {
+      date_option_id: optionId,
+      starts_at: option.starts_at,
+      ends_at: option.ends_at,
+      confirmation_deadline_at: confirmationDeadlineAt,
+      selected_early: true,
     },
   })
 }
@@ -341,11 +385,11 @@ export async function loadProjectDateFinderData(
   const bestIds = ranking.kind === 'winner' ? [ranking.winnerId] : ranking.kind === 'tie' ? ranking.tiedOptionIds : []
   const labelByUserId = new Map(participants.map(participant => [participant.user_id, memberLabel(participant)]))
   const activeOptions = options.filter(option => (option.status ?? 'active') === 'active')
-  const fullyRespondedUserIds = new Set(
-    userIds.filter(userId => activeOptions.length > 0 && activeOptions.every(option =>
-      responses.some(response => response.user_id === userId && response.date_option_id === option.id)
-    ))
-  )
+  const fullyRespondedUserIds = new Set(fullyRespondedDateParticipantIds(
+    activeOptions.map(option => option.id),
+    responses,
+    userIds
+  ))
   const viewerTaskComplete = !!viewerUserId && fullyRespondedUserIds.has(viewerUserId)
   const viewerTaskResult = viewerUserId
     ? await supabaseAdmin

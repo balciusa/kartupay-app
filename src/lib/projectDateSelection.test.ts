@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   applyDateResponse,
@@ -10,6 +11,8 @@ import {
   dateAvailabilityTaskForParticipant,
   deriveProjectDatePresentationState,
   financeReadiness,
+  fullyRespondedDateParticipantIds,
+  haveAllActiveParticipantsResponded,
   isDuplicateDateOption,
   isDateOnlyOption,
   normalizeDateOnlyOption,
@@ -202,4 +205,63 @@ test('20. Date Finder presentation state follows persisted lifecycle and respons
     selectionStatus: 'confirmation_open',
     selectedDateOptionId: 'a',
   }), 'final_date_confirmed')
+})
+
+test('21. early finalization requires every active participant to complete every active option', () => {
+  const complete = [
+    response('a', 'u1', 'available'), response('b', 'u1', 'maybe'),
+    response('a', 'u2', 'unavailable'), response('b', 'u2', 'available'),
+  ]
+  assert.deepEqual(fullyRespondedDateParticipantIds(['a', 'b'], complete, ['u1', 'u2']), ['u1', 'u2'])
+  assert.equal(haveAllActiveParticipantsResponded(['a', 'b'], complete, ['u1', 'u2']), true)
+  assert.equal(haveAllActiveParticipantsResponded(['a', 'b'], complete.filter(item => !(item.user_id === 'u2' && item.date_option_id === 'b')), ['u1', 'u2']), false)
+  assert.equal(haveAllActiveParticipantsResponded(['a', 'b'], [response('a', 'u1', 'available')], ['u1']), false)
+})
+
+test('22. removed options and former participants do not block active-scope completion', () => {
+  const activeScopeResponses = [response('a', 'u1', 'available')]
+  assert.equal(haveAllActiveParticipantsResponded(['a'], activeScopeResponses, ['u1']), true)
+  assert.equal(haveAllActiveParticipantsResponded(['a'], activeScopeResponses, ['u1', 'former']), false)
+  assert.equal(haveAllActiveParticipantsResponded([], activeScopeResponses, ['u1']), false)
+})
+
+test('23. selected-date attendance mapping stays available, maybe, unavailable', () => {
+  assert.equal(attendanceAfterSelection('available'), 'confirmed')
+  assert.equal(attendanceAfterSelection('maybe'), 'awaiting_confirmation')
+  assert.equal(attendanceAfterSelection('unavailable'), 'cannot_attend')
+})
+
+const atomicMigration = readFileSync(
+  new URL('../../supabase/migrations/20260925_make_early_date_finalization_atomic.sql', import.meta.url),
+  'utf8'
+)
+
+test('24. atomic early-selection RPC locks before database-time deadline and completion checks', () => {
+  const functionStart = atomicMigration.indexOf('create or replace function public.select_project_date_early')
+  const projectLock = atomicMigration.indexOf('for update;', functionStart)
+  const databaseClock = atomicMigration.indexOf('v_checked_at := clock_timestamp();', functionStart)
+  const completion = atomicMigration.indexOf('cross join public.project_date_options option', functionStart)
+  const apply = atomicMigration.indexOf('perform public.apply_project_date_selection', functionStart)
+  assert.ok(functionStart >= 0)
+  assert.ok(projectLock > functionStart)
+  assert.ok(databaseClock > projectLock)
+  assert.ok(completion > databaseClock)
+  assert.ok(apply > completion)
+  assert.match(atomicMigration, /date_voting_deadline_at <= v_checked_at/)
+  assert.match(atomicMigration, /participant\.left_at is null/)
+  assert.match(atomicMigration, /option\.status = 'active'/)
+  assert.match(atomicMigration, /response\.date_option_id = option\.id[\s\S]*response\.user_id = participant\.user_id/)
+})
+
+test('25. scope-expanding mutations and response writes share the project-row lock', () => {
+  assert.match(atomicMigration, /initialize_project_participant_date_state\(\)[\s\S]*new\.left_at is null[\s\S]*for update;/)
+  assert.match(atomicMigration, /project_date_options_lock_open_scope[\s\S]*before insert or update of status/)
+  assert.match(atomicMigration, /project_date_responses_lock_open_scope[\s\S]*before insert or update/)
+  assert.match(atomicMigration, /lock_open_project_date_scope\(\)[\s\S]*for update;[\s\S]*date_voting_deadline_at <= clock_timestamp\(\)/)
+})
+
+test('26. early-selection RPC is service-only and preserves the existing lifecycle implementation', () => {
+  assert.match(atomicMigration, /revoke all on function public\.select_project_date_early\(uuid, uuid, timestamptz\)[\s\S]*from public, anon, authenticated/)
+  assert.match(atomicMigration, /grant execute on function public\.select_project_date_early\(uuid, uuid, timestamptz\)[\s\S]*to service_role/)
+  assert.match(atomicMigration, /perform public\.apply_project_date_selection\([\s\S]*p_project_id,[\s\S]*p_option_id,[\s\S]*p_confirmation_deadline/)
 })
