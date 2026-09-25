@@ -9,6 +9,7 @@ import { calculateProjectPricing, validateBundlePricingConfig } from '@/lib/proj
 import { getCurrentUserId } from '@/lib/supabaseServer'
 import { getProjectStatusUiKey } from '@/lib/projectStatusUi'
 import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
+import { isProjectCanceled } from '@/lib/projectInvite'
 import { buildExtraDueRows } from '@/lib/extraPayments'
 import {
   applyTimeToDateOption,
@@ -1718,7 +1719,7 @@ export async function requestJoin(projectId: string) {
   console.log('[requestJoin] start', { projectId, uid })
 
   const baseProjectFields = 'id, status, canceled_at'
-  const optionalProjectFields = ['finance_mode', 'max_participants', 'date_mode', 'selected_date_option_id'] as const
+  const optionalProjectFields = ['finance_mode', 'max_participants', 'date_mode', 'selected_date_option_id', 'aborted_at'] as const
   let optionalFields = [...optionalProjectFields]
   type JoinProjectRow = {
     id: string
@@ -1728,6 +1729,7 @@ export async function requestJoin(projectId: string) {
     max_participants?: number | null
     date_mode?: 'fixed' | 'selecting' | null
     selected_date_option_id?: string | null
+    aborted_at?: string | null
   }
   let project: JoinProjectRow | null = null
   let pErr: { message?: string; details?: string | null; hint?: string | null; code?: string } | null = null
@@ -1754,6 +1756,7 @@ export async function requestJoin(projectId: string) {
           max_participants: 'max_participants' in row ? row.max_participants ?? null : null,
           date_mode: 'date_mode' in row ? row.date_mode ?? 'fixed' : 'fixed',
           selected_date_option_id: 'selected_date_option_id' in row ? row.selected_date_option_id ?? null : null,
+          aborted_at: 'aborted_at' in row ? row.aborted_at ?? null : null,
         }
       : null
     pErr = result.error
@@ -1766,7 +1769,7 @@ export async function requestJoin(projectId: string) {
     return { ok: false, reason: 'project_fetch_failed' as const }
   }
 
-  const canceled = project.status === 'canceled' || !!project.canceled_at
+  const canceled = isProjectCanceled(project)
   if (canceled) {
     console.log('[requestJoin] blocked - project canceled', { projectId, status: project.status, canceled_at: project.canceled_at })
     revalidatePath(`/project/${projectId}`)

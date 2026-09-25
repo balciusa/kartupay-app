@@ -3,7 +3,7 @@
 import { useState, useTransition } from 'react'
 import { cancelJoinRequestFromForm, requestJoinFromForm } from '@/app/project/[id]/actions'
 import { useRouter } from 'next/navigation'
-import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
+import { getProjectInviteStrings } from '@/lib/projectInvite'
 import type { ProjectDateLocale } from '@/lib/projectDateStrings'
 
 export function JoinButton({
@@ -21,7 +21,7 @@ export function JoinButton({
   const [pending, startTransition] = useTransition()
   const [localStatus, setLocalStatus] = useState<string | null>(null)
   const status = localStatus ?? requestStatus ?? null
-  const strings = getProjectFinanceStrings(locale)
+  const inviteStrings = getProjectInviteStrings(locale)
 
   const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -66,12 +66,12 @@ export function JoinButton({
         className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50"
       >
         {pending
-          ? 'Submitting...'
+          ? inviteStrings.submitting
           : status === 'pending'
-            ? 'Request sent'
+            ? inviteStrings.requestSent
             : canJoinNow
-              ? strings.joinProject
-              : 'Request to join'}
+              ? inviteStrings.joinProject
+              : inviteStrings.requestToJoin}
       </button>
       {status === 'pending' && (
         <button
@@ -97,7 +97,7 @@ export function JoinButton({
             })
           }}
         >
-          Cancel request
+          {inviteStrings.cancelRequest}
         </button>
       )}
     </form>
