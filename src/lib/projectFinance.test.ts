@@ -40,9 +40,11 @@ test('5. managed project validates financial fields', () => {
   assert.equal(validateProjectFinanceInput({ financeMode: 'managed', totalEur: '12,34' }).totalCents, 1234)
 })
 
-test('6. membership capability is independent from finance mode', () => {
-  assert.equal(getProjectJoinStrategy('none'), 'direct_membership')
-  assert.equal(getProjectJoinStrategy('managed'), 'approval_request')
+test('6. private projects always require approval while public finance-none stays direct', () => {
+  assert.equal(getProjectJoinStrategy({ isPublic: false, financeMode: 'none' }), 'approval_request')
+  assert.equal(getProjectJoinStrategy({ isPublic: false, financeMode: 'managed' }), 'approval_request')
+  assert.equal(getProjectJoinStrategy({ isPublic: true, financeMode: 'none' }), 'direct_membership')
+  assert.equal(getProjectJoinStrategy({ isPublic: true, financeMode: 'managed' }), 'approval_request')
 })
 
 test('7. non-financial project counts confirmed attendance toward minimum', () => {

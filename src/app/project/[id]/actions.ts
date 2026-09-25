@@ -725,12 +725,45 @@ async function requireActiveManager(projectId: string, userId: string) {
 }
 
 async function requireActiveJoinRequestManager(projectId: string, userId: string) {
-  const { data: project, error: projectErr } = await supabaseAdmin
-    .from('projects')
-    .select('collector_participant_id')
-    .eq('id', projectId)
-    .maybeSingle()
-  if (projectErr) throw projectErr
+  const baseProjectFields = 'collector_participant_id, status, canceled_at'
+  const optionalProjectFields = ['is_public', 'aborted_at'] as const
+  let optionalFields = [...optionalProjectFields]
+  type JoinRequestManagerProject = {
+    collector_participant_id: string | null
+    status: string | null
+    canceled_at: string | null
+    is_public: boolean
+    aborted_at: string | null
+  }
+  let project: JoinRequestManagerProject | null = null
+
+  while (true) {
+    const result = await supabaseAdmin
+      .from('projects')
+      .select([baseProjectFields, ...optionalFields].join(', '))
+      .eq('id', projectId)
+      .maybeSingle()
+
+    const missingField = optionalFields.find(field => missingColumn(result.error, field))
+    if (missingField) {
+      optionalFields = optionalFields.filter(field => field !== missingField)
+      continue
+    }
+    if (result.error) throw result.error
+
+    const row = result.data as Partial<JoinRequestManagerProject> | null
+    project = row
+      ? {
+          collector_participant_id: row.collector_participant_id ?? null,
+          status: row.status ?? null,
+          canceled_at: row.canceled_at ?? null,
+          is_public: 'is_public' in row ? row.is_public === true : true,
+          aborted_at: 'aborted_at' in row ? row.aborted_at ?? null : null,
+        }
+      : null
+    break
+  }
+
   if (!project) throw new Error('Project not found')
 
   const { data: participant, error: participantErr } = await supabaseAdmin
@@ -743,6 +776,7 @@ async function requireActiveJoinRequestManager(projectId: string, userId: string
   if (participantErr) throw participantErr
 
   if (!canManageProjectJoinRequests({
+    isPublic: project.is_public,
     participantId: participant?.id,
     participantRole: participant?.role,
     collectorParticipantId: project.collector_participant_id,
@@ -750,7 +784,7 @@ async function requireActiveJoinRequestManager(projectId: string, userId: string
     throw new Error('Not authorized')
   }
 
-  return participant
+  return { participant, project }
 }
 
 async function requireActiveProjectParticipant(projectId: string, userId: string) {
@@ -1719,12 +1753,13 @@ export async function requestJoin(projectId: string) {
   console.log('[requestJoin] start', { projectId, uid })
 
   const baseProjectFields = 'id, status, canceled_at'
-  const optionalProjectFields = ['finance_mode', 'max_participants', 'date_mode', 'selected_date_option_id', 'aborted_at'] as const
+  const optionalProjectFields = ['is_public', 'finance_mode', 'max_participants', 'date_mode', 'selected_date_option_id', 'aborted_at'] as const
   let optionalFields = [...optionalProjectFields]
   type JoinProjectRow = {
     id: string
     status: string | null
     canceled_at: string | null
+    is_public?: boolean | null
     finance_mode?: ProjectFinanceMode | null
     max_participants?: number | null
     date_mode?: 'fixed' | 'selecting' | null
@@ -1752,6 +1787,7 @@ export async function requestJoin(projectId: string) {
     project = row
       ? {
           ...row,
+          is_public: 'is_public' in row ? row.is_public === true : true,
           finance_mode: 'finance_mode' in row ? normalizeProjectFinanceMode(row.finance_mode) : 'managed',
           max_participants: 'max_participants' in row ? row.max_participants ?? null : null,
           date_mode: 'date_mode' in row ? row.date_mode ?? 'fixed' : 'fixed',
@@ -1792,7 +1828,7 @@ export async function requestJoin(projectId: string) {
   }
 
 
-  if (getProjectJoinStrategy(project.finance_mode) === 'direct_membership') {
+  if (getProjectJoinStrategy({ isPublic: project.is_public, financeMode: project.finance_mode }) === 'direct_membership') {
     if (project.max_participants) {
       let capacityQuery = supabaseAdmin
         .from('participants')
@@ -2010,7 +2046,10 @@ export async function approveJoinRequest(requestId: string) {
     .single()
   if (reqErr || !req) throw new Error('Join request not found')
 
-  await requireActiveJoinRequestManager(req.project_id, managerId)
+  const { project } = await requireActiveJoinRequestManager(req.project_id, managerId)
+  if (isProjectCanceled(project)) {
+    throw new Error('This project is no longer active')
+  }
   const { actorUserId, actorParticipantId } = await getActiveParticipantContext(req.project_id, managerId)
 
   if (req.status !== 'pending') {
