@@ -10,6 +10,8 @@ import {
   dateAvailabilityTaskForParticipant,
   deriveProjectDatePresentationState,
   financeReadiness,
+  fullyRespondedDateParticipantIds,
+  haveAllActiveParticipantsResponded,
   isDuplicateDateOption,
   isDateOnlyOption,
   normalizeDateOnlyOption,
@@ -202,4 +204,28 @@ test('20. Date Finder presentation state follows persisted lifecycle and respons
     selectionStatus: 'confirmation_open',
     selectedDateOptionId: 'a',
   }), 'final_date_confirmed')
+})
+
+test('21. early finalization requires every active participant to complete every active option', () => {
+  const complete = [
+    response('a', 'u1', 'available'), response('b', 'u1', 'maybe'),
+    response('a', 'u2', 'unavailable'), response('b', 'u2', 'available'),
+  ]
+  assert.deepEqual(fullyRespondedDateParticipantIds(['a', 'b'], complete, ['u1', 'u2']), ['u1', 'u2'])
+  assert.equal(haveAllActiveParticipantsResponded(['a', 'b'], complete, ['u1', 'u2']), true)
+  assert.equal(haveAllActiveParticipantsResponded(['a', 'b'], complete.filter(item => !(item.user_id === 'u2' && item.date_option_id === 'b')), ['u1', 'u2']), false)
+  assert.equal(haveAllActiveParticipantsResponded(['a', 'b'], [response('a', 'u1', 'available')], ['u1']), false)
+})
+
+test('22. removed options and former participants do not block active-scope completion', () => {
+  const activeScopeResponses = [response('a', 'u1', 'available')]
+  assert.equal(haveAllActiveParticipantsResponded(['a'], activeScopeResponses, ['u1']), true)
+  assert.equal(haveAllActiveParticipantsResponded(['a'], activeScopeResponses, ['u1', 'former']), false)
+  assert.equal(haveAllActiveParticipantsResponded([], activeScopeResponses, ['u1']), false)
+})
+
+test('23. selected-date attendance mapping stays available, maybe, unavailable', () => {
+  assert.equal(attendanceAfterSelection('available'), 'confirmed')
+  assert.equal(attendanceAfterSelection('maybe'), 'awaiting_confirmation')
+  assert.equal(attendanceAfterSelection('unavailable'), 'cannot_attend')
 })

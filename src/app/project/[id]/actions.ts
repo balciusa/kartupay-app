@@ -15,6 +15,7 @@ import {
   applyTimeToDateOption,
   canRemoveDateOption,
   canSuggestDate,
+  haveAllActiveParticipantsResponded,
   normalizeDateOption,
   rankDateOptions,
   reenterViaLateJoinFlow,
@@ -3259,6 +3260,78 @@ export async function chooseTiedProjectDate(projectId: string, optionId: string)
   if (ranking.kind !== 'tie' || !ranking.tiedOptionIds.includes(optionId)) {
     throw new Error('Choose one of the tied date options')
   }
+  await applySelectedProjectDate(projectId, optionId, {
+    actorUserId: uid,
+    actorParticipantId: manager.id,
+  })
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function selectProjectDateEarly(projectId: string, optionId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  const { manager, project } = await loadManagedDateProject(projectId, uid)
+  if (
+    project.date_mode !== 'selecting'
+    || project.date_selection_status !== 'open'
+    || project.selected_date_option_id
+  ) {
+    throw new Error('Date voting is no longer open')
+  }
+
+  const cancellationAttempt = await supabaseAdmin
+    .from('projects')
+    .select('status, canceled_at, aborted_at')
+    .eq('id', projectId)
+    .maybeSingle()
+  let cancellation = cancellationAttempt.data
+  let cancellationError = cancellationAttempt.error
+  if (missingColumn(cancellationError, 'aborted_at')) {
+    const fallback = await supabaseAdmin
+      .from('projects')
+      .select('status, canceled_at')
+      .eq('id', projectId)
+      .maybeSingle()
+    cancellation = fallback.data ? { ...fallback.data, aborted_at: null } : null
+    cancellationError = fallback.error
+  }
+  if (cancellationError || !cancellation) throw cancellationError || new Error('Project not found')
+  if (isProjectCanceled(cancellation)) throw new Error('Date selection is disabled for canceled projects')
+
+  const [optionResult, participantResult, responseResult] = await Promise.all([
+    supabaseAdmin
+      .from('project_date_options')
+      .select('id, project_id, starts_at, ends_at, status')
+      .eq('project_id', projectId)
+      .eq('status', 'active'),
+    supabaseAdmin
+      .from('participants')
+      .select('user_id')
+      .eq('project_id', projectId)
+      .is('left_at', null),
+    supabaseAdmin
+      .from('project_date_responses')
+      .select('date_option_id, user_id, availability, is_preferred')
+      .eq('project_id', projectId),
+  ])
+  if (optionResult.error || participantResult.error || responseResult.error) {
+    throw optionResult.error || participantResult.error || responseResult.error
+  }
+
+  const activeOptions = (optionResult.data ?? []) as DateOptionLike[]
+  const activeParticipantUserIds = (participantResult.data ?? []).map(row => row.user_id)
+  const responses = (responseResult.data ?? []) as DateResponseLike[]
+  if (activeOptions.length === 0) throw new Error('No active date options are available')
+  if (!activeOptions.some(option => option.id === optionId)) throw new Error('Choose an active date option from this project')
+  if (!haveAllActiveParticipantsResponded(
+    activeOptions.map(option => option.id),
+    responses,
+    activeParticipantUserIds
+  )) {
+    throw new Error('Every active participant must respond to every active date option first')
+  }
+
   await applySelectedProjectDate(projectId, optionId, {
     actorUserId: uid,
     actorParticipantId: manager.id,

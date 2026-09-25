@@ -1358,6 +1358,8 @@ export default async function ProjectPage({
       selecting: (projectDateData?.dateMode ?? project.date_mode) === 'selecting',
       votingOpen: projectDateData?.dateMode === 'selecting' && projectDateData.selectionStatus === 'open',
       hasOptions: !!projectDateData?.options.some(option => option.status === 'active'),
+      allResponded: (projectDateData?.memberCount ?? 0) > 0
+        && (projectDateData?.respondedCount ?? 0) >= (projectDateData?.memberCount ?? 0),
       awaitingOrganizer: projectDateData?.selectionStatus === 'awaiting_organizer_decision',
       viewerResponded: projectDateData?.viewerTaskComplete ?? false,
       viewerNeedsConfirmation: projectDateData?.viewerAttendanceStatus === 'awaiting_confirmation'

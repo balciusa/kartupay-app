@@ -1,6 +1,7 @@
 import { recordProjectActivity } from '@/lib/activityLog'
 import {
   DEFAULT_CONFIRMATION_WINDOW_HOURS,
+  fullyRespondedDateParticipantIds,
   rankDateOptions,
   type DateAvailability,
   type DateOptionLike,
@@ -341,11 +342,11 @@ export async function loadProjectDateFinderData(
   const bestIds = ranking.kind === 'winner' ? [ranking.winnerId] : ranking.kind === 'tie' ? ranking.tiedOptionIds : []
   const labelByUserId = new Map(participants.map(participant => [participant.user_id, memberLabel(participant)]))
   const activeOptions = options.filter(option => (option.status ?? 'active') === 'active')
-  const fullyRespondedUserIds = new Set(
-    userIds.filter(userId => activeOptions.length > 0 && activeOptions.every(option =>
-      responses.some(response => response.user_id === userId && response.date_option_id === option.id)
-    ))
-  )
+  const fullyRespondedUserIds = new Set(fullyRespondedDateParticipantIds(
+    activeOptions.map(option => option.id),
+    responses,
+    userIds
+  ))
   const viewerTaskComplete = !!viewerUserId && fullyRespondedUserIds.has(viewerUserId)
   const viewerTaskResult = viewerUserId
     ? await supabaseAdmin

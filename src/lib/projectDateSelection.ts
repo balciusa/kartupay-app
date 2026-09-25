@@ -174,6 +174,27 @@ export function isDateAvailabilityTaskComplete(
   return activeOptionIds.every(optionId => responded.has(optionId))
 }
 
+export function fullyRespondedDateParticipantIds(
+  activeOptionIds: string[],
+  responses: DateResponseLike[],
+  activeParticipantUserIds: string[]
+) {
+  if (activeOptionIds.length === 0) return []
+  return activeParticipantUserIds.filter(userId =>
+    isDateAvailabilityTaskComplete(activeOptionIds, responses, userId)
+  )
+}
+
+export function haveAllActiveParticipantsResponded(
+  activeOptionIds: string[],
+  responses: DateResponseLike[],
+  activeParticipantUserIds: string[]
+) {
+  return activeParticipantUserIds.length > 0
+    && fullyRespondedDateParticipantIds(activeOptionIds, responses, activeParticipantUserIds).length
+      === activeParticipantUserIds.length
+}
+
 export function dateAvailabilityTaskForParticipant(input: {
   dateMode: 'fixed' | 'selecting'
   activeOptionIds: string[]

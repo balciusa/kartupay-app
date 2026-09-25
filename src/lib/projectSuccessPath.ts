@@ -1,7 +1,7 @@
 import { getProjectReadiness, isManagedFinance } from './projectFinance.ts'
 
 export type SuccessStage = 'date' | 'participants' | 'finance' | 'ready'
-export type SuccessAction = 'choose_dates' | 'confirm_attendance' | 'resolve_date' | 'invite_people' | 'review_finance' | 'review_payment'
+export type SuccessAction = 'choose_dates' | 'confirm_attendance' | 'finalize_date_early' | 'resolve_date' | 'invite_people' | 'review_finance' | 'review_payment'
 export type SuccessContext = {
   isCanceled: boolean
   isFinalized: boolean
@@ -15,6 +15,7 @@ export type SuccessContext = {
     selecting: boolean
     votingOpen: boolean
     hasOptions: boolean
+    allResponded: boolean
     awaitingOrganizer: boolean
     viewerResponded: boolean
     viewerNeedsConfirmation: boolean
@@ -31,7 +32,7 @@ export type ProjectSuccessPath = {
   stage: SuccessStage | 'canceled' | 'finalized'
   health: 'on_track' | 'needs_attention' | 'blocked' | 'ready' | 'canceled' | 'finalized'
   visibleStages: Array<{ id: SuccessStage; state: 'complete' | 'current' | 'upcoming' }>
-  blockers: Array<{ type: 'date' | 'date_tie' | 'participants' | 'finance'; count?: number }>
+  blockers: Array<{ type: 'date' | 'date_all_responded' | 'date_tie' | 'participants' | 'finance'; count?: number }>
   nextAction: SuccessAction | null
   waitingOn: { dates: number; attendance: number; participants: number }
   ready: boolean
@@ -61,7 +62,13 @@ export function deriveProjectSuccessPath(context: SuccessContext, viewer: Succes
   const dateReady = !context.date.selecting
   const ready = dateReady && readiness.projectReady
   const blockers: ProjectSuccessPath['blockers'] = []
-  if (!dateReady) blockers.push({ type: context.date.awaitingOrganizer ? 'date_tie' : 'date' })
+  if (!dateReady) blockers.push({
+    type: context.date.awaitingOrganizer
+      ? 'date_tie'
+      : context.date.votingOpen && context.date.allResponded
+        ? 'date_all_responded'
+        : 'date',
+  })
   if (!readiness.participationReady) blockers.push({ type: 'participants', count: readiness.remainingParticipants })
   if (!readiness.financeReady) blockers.push({ type: 'finance' })
 
@@ -80,6 +87,8 @@ export function deriveProjectSuccessPath(context: SuccessContext, viewer: Succes
     nextAction = 'choose_dates'
   } else if (viewer.isParticipant && dateReady && context.date.viewerNeedsConfirmation) {
     nextAction = 'confirm_attendance'
+  } else if (!dateReady && context.date.votingOpen && context.date.hasOptions && context.date.allResponded && viewer.canManage) {
+    nextAction = 'finalize_date_early'
   } else if (!dateReady && context.date.awaitingOrganizer && viewer.canManage) {
     nextAction = 'resolve_date'
   } else if (dateReady && !readiness.participationReady && viewer.canManage && context.capacityAvailable && context.joinsAllowed) {
