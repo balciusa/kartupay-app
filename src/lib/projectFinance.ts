@@ -30,8 +30,15 @@ export function assertManagedFinance(value: unknown): asserts value is 'managed'
   if (!isManagedFinance(value)) throw new Error(FINANCE_DISABLED_ERROR)
 }
 
-export function getProjectJoinStrategy(value: unknown): 'direct_membership' | 'approval_request' {
-  return isManagedFinance(value) ? 'approval_request' : 'direct_membership'
+export function getProjectJoinStrategy({
+  isPublic,
+  financeMode,
+}: {
+  isPublic: unknown
+  financeMode: unknown
+}): 'direct_membership' | 'approval_request' {
+  if (isPublic !== true) return 'approval_request'
+  return isManagedFinance(financeMode) ? 'approval_request' : 'direct_membership'
 }
 
 export function hasMeaningfulFinancialActivity(summary: FinancialActivitySummary): boolean {

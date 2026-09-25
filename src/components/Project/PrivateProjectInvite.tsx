@@ -12,7 +12,6 @@ export function PrivateProjectInvite({
   eventDate,
   location,
   isAuthenticated,
-  canJoinNow,
   requestStatus,
   isCanceled,
   locale,
@@ -23,7 +22,6 @@ export function PrivateProjectInvite({
   eventDate?: string | null
   location?: string | null
   isAuthenticated: boolean
-  canJoinNow: boolean
   requestStatus?: string | null
   isCanceled: boolean
   locale: ProjectDateLocale
@@ -90,7 +88,7 @@ export function PrivateProjectInvite({
               )}
               <JoinButton
                 projectId={projectId}
-                canJoinNow={canJoinNow}
+                canJoinNow={false}
                 requestStatus={requestStatus}
                 locale={locale}
               />

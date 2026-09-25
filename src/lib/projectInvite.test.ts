@@ -73,7 +73,6 @@ function renderInvite(overrides: Partial<Parameters<typeof inviteComponentExport
     eventDate: 'Oct 3, 2026, 10:00 AM',
     location: 'Vilnius',
     isAuthenticated: true,
-    canJoinNow: false,
     requestStatus: null,
     isCanceled: false,
     locale: 'en',
@@ -109,10 +108,10 @@ test('rejected and canceled managed requests can be resubmitted', () => {
   }
 })
 
-test('finance-none nonmember gets direct Join project action', () => {
-  const html = renderInvite({ canJoinNow: true })
-  assert.match(html, />Join project<\/button>/)
-  assert.doesNotMatch(html, /Request to join/)
+test('private finance-none invite always requires an approval request', () => {
+  const html = renderInvite()
+  assert.match(html, />Request to join<\/button>/)
+  assert.doesNotMatch(html, />Join project<\/button>/)
 })
 
 test('canceled private project is inactive and has no join or sign-in action', () => {
@@ -122,8 +121,8 @@ test('canceled private project is inactive and has no join or sign-in action', (
 })
 
 test('closed/finalized projects keep their existing late-join surface', () => {
-  const html = renderInvite({ canJoinNow: true, isCanceled: false })
-  assert.match(html, />Join project<\/button>/)
+  const html = renderInvite({ isCanceled: false })
+  assert.match(html, />Request to join<\/button>/)
 })
 
 test('Lithuanian invite and join UI contains no English action copy', () => {

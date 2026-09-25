@@ -29,7 +29,7 @@ import { loadProjectDateFinderData } from '@/lib/projectDateService'
 import { resolveProjectDateLocale } from '@/lib/projectDateStrings'
 import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { shouldShowProjectShare } from '@/lib/projectShare'
-import { getProjectReadiness, normalizeProjectFinanceMode, type ProjectFinanceMode } from '@/lib/projectFinance'
+import { getProjectJoinStrategy, getProjectReadiness, normalizeProjectFinanceMode, type ProjectFinanceMode } from '@/lib/projectFinance'
 import { isProjectCanceled } from '@/lib/projectInvite'
 import { headers } from 'next/headers'
 import {
@@ -361,7 +361,6 @@ export default async function ProjectPage({
       description: project.description,
       eventDate: inviteDate,
       location: project.event_location_label,
-      canJoinNow: normalizeProjectFinanceMode(project.finance_mode) === 'none',
       isCanceled: inviteCanceled,
       locale: projectDateLocale,
     }
@@ -863,6 +862,7 @@ export default async function ProjectPage({
   const minParticipantsReached = projectReadiness.participationReady
   const capacityParticipantCount = project.date_mode === 'selecting' ? membersCount : participantsCount
   const canJoinNow =
+    getProjectJoinStrategy({ isPublic: project.is_public, financeMode: project.finance_mode }) === 'direct_membership' &&
     (financeManaged ? isCollectingStatus : !isFinalized) &&
     !isAborted &&
     (!maxParticipants || capacityParticipantCount < maxParticipants)
@@ -997,6 +997,7 @@ export default async function ProjectPage({
   const collectorName = collectorLabel
   const viewerIsCollector = !!(myParticipantId && collectorId && myParticipantId === collectorId)
   const viewerCanManageJoinRequests = canManageProjectJoinRequests({
+    isPublic: project.is_public,
     participantId: myParticipantId,
     participantRole: myParticipantRole,
     collectorParticipantId: collectorId,
