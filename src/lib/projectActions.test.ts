@@ -28,7 +28,7 @@ const adminPanelCode = compile('../components/Project/AdminPanel.tsx')
 
 function fixture() {
   const tables: Tables = {
-    projects: [{ id: 'project', status: 'pending', canceled_at: null, aborted_at: null, is_public: true, finance_mode: 'none', collector_participant_id: 'collector', date_mode: 'selecting', date_selection_status: 'open', selected_date_option_id: null }],
+    projects: [{ id: 'project', status: 'pending', canceled_at: null, aborted_at: null, is_public: true, finance_mode: 'none', collector_participant_id: 'collector', date_mode: 'selecting', date_selection_status: 'open', date_voting_deadline_at: '2099-10-01T00:00:00.000Z', selected_date_option_id: null }],
     participants: [{ id: 'me', project_id: 'project', user_id: 'user', role: 'member', left_at: null }],
     polls: [{ id: 'poll', project_id: 'project', created_by: 'user', title: 'Original' }],
     poll_options: [
@@ -44,6 +44,8 @@ function fixture() {
   const missingColumns = new Set<string>()
   const selects: Array<{ table: string; fields?: string }> = []
   const appliedDateSelections: Array<{ projectId: string; optionId: string; actorUserId: string; actorParticipantId: string }> = []
+  const syncedDateProjects: string[] = []
+  let beforeEarlySelection: (() => void | Promise<void>) | null = null
   let currentUserId = 'user'
   const db = {
     from(table: string) {
@@ -141,7 +143,33 @@ function fixture() {
       applySelectedProjectDate: async (projectId: string, optionId: string, actor: { actorUserId: string; actorParticipantId: string }) => {
         appliedDateSelections.push({ projectId, optionId, ...actor })
       },
-      syncProjectDateSelection: async () => {},
+      applyEarlySelectedProjectDate: async (projectId: string, optionId: string, actor: { actorUserId: string; actorParticipantId: string }) => {
+        await beforeEarlySelection?.()
+        const project = tables.projects.find(row => row.id === projectId)
+        if (!project || project.date_mode !== 'selecting' || project.date_selection_status !== 'open' || project.selected_date_option_id) {
+          throw new Error('Date voting is no longer open')
+        }
+        if (!project.date_voting_deadline_at || new Date(String(project.date_voting_deadline_at)) <= new Date()) {
+          throw new Error('The voting deadline has passed')
+        }
+        const activeOptions = tables.project_date_options.filter(row => row.project_id === projectId && row.status === 'active')
+        if (activeOptions.length === 0) throw new Error('No active date options are available')
+        if (!activeOptions.some(row => row.id === optionId)) throw new Error('Choose an active date option from this project')
+        const activeUsers = tables.participants
+          .filter(row => row.project_id === projectId && row.left_at === null)
+          .map(row => row.user_id)
+        const missing = activeUsers.some(userId => activeOptions.some(option =>
+          !tables.project_date_responses.some(response =>
+            response.project_id === projectId && response.date_option_id === option.id && response.user_id === userId
+          )
+        ))
+        if (missing) throw new Error('Every active participant must respond to every active date option first')
+        appliedDateSelections.push({ projectId, optionId, ...actor })
+        project.date_mode = 'fixed'
+        project.date_selection_status = 'confirmed'
+        project.selected_date_option_id = optionId
+      },
+      syncProjectDateSelection: async (projectId: string) => { syncedDateProjects.push(projectId) },
     },
     'next/cache': { revalidatePath: () => {} },
     'next/navigation': { redirect: () => { throw new Error('NEXT_REDIRECT') } },
@@ -155,9 +183,13 @@ function fixture() {
     missingColumns,
     selects,
     appliedDateSelections,
+    syncedDateProjects,
     actions: exports as typeof import('../app/project/[id]/actions'),
     setCurrentUserId(userId: string) {
       currentUserId = userId
+    },
+    setBeforeEarlySelection(callback: (() => void | Promise<void>) | null) {
+      beforeEarlySelection = callback
     },
   }
 }
@@ -263,6 +295,82 @@ test('early finalization rejects zero, inactive, and cross-project options', asy
     await assert.rejects(f.actions.selectProjectDateEarly('project', optionId), /active date option from this project/)
     assert.deepEqual(f.appliedDateSelections, [])
   }
+})
+
+test('early finalization rejects an exact or passed deadline even when persisted state is still open', async () => {
+  for (const deadline of [new Date().toISOString(), '2026-01-01T00:00:00.000Z']) {
+    const f = earlyDateFixture()
+    f.tables.projects[0].date_voting_deadline_at = deadline
+    await assert.rejects(f.actions.selectProjectDateEarly('project', 'date-a'), /voting deadline has passed/)
+    assert.deepEqual(f.appliedDateSelections, [])
+  }
+})
+
+test('stale pre-deadline request is rejected when the authoritative operation observes a passed deadline', async () => {
+  const f = earlyDateFixture()
+  f.setBeforeEarlySelection(() => {
+    f.tables.projects[0].date_voting_deadline_at = '2026-01-01T00:00:00.000Z'
+  })
+  await assert.rejects(f.actions.selectProjectDateEarly('project', 'date-a'), /voting deadline has passed/)
+  assert.deepEqual(f.appliedDateSelections, [])
+})
+
+test('post-deadline resolution still delegates to normal Date Finder automation', async () => {
+  const f = earlyDateFixture()
+  f.tables.projects[0].date_voting_deadline_at = '2026-01-01T00:00:00.000Z'
+  await f.actions.resolveProjectDateVoting('project')
+  assert.deepEqual(f.syncedDateProjects, ['project'])
+  assert.deepEqual(f.appliedDateSelections, [])
+})
+
+test('existing persisted tie action still accepts only a tied date', async () => {
+  const f = earlyDateFixture()
+  f.tables.projects[0].date_selection_status = 'awaiting_organizer_decision'
+  await f.actions.chooseTiedProjectDate('project', 'date-a')
+  assert.deepEqual(f.appliedDateSelections, [{
+    projectId: 'project', optionId: 'date-a', actorUserId: 'user', actorParticipantId: 'me',
+  }])
+})
+
+test('atomic early selection observes a participant activated before its locked completion check', async () => {
+  const f = earlyDateFixture()
+  f.setBeforeEarlySelection(() => {
+    f.tables.participants.push({ id: 'new-member', project_id: 'project', user_id: 'new-user', role: 'member', left_at: null })
+  })
+  await assert.rejects(f.actions.selectProjectDateEarly('project', 'date-a'), /Every active participant/)
+  assert.deepEqual(f.appliedDateSelections, [])
+})
+
+test('atomic early selection observes an active option added before its locked completion check', async () => {
+  const f = earlyDateFixture()
+  f.setBeforeEarlySelection(() => {
+    f.tables.project_date_options.push({
+      id: 'date-c', project_id: 'project', starts_at: '2026-10-05T00:00:00.000Z', ends_at: null, status: 'active',
+    })
+  })
+  await assert.rejects(f.actions.selectProjectDateEarly('project', 'date-a'), /Every active participant/)
+  assert.deepEqual(f.appliedDateSelections, [])
+})
+
+test('completed response edit serializes to a deterministic eligible snapshot', async () => {
+  const f = earlyDateFixture()
+  f.setBeforeEarlySelection(() => {
+    const response = f.tables.project_date_responses.find(row => row.user_id === 'member-user' && row.date_option_id === 'date-a')
+    if (response) response.availability = 'maybe'
+  })
+  await f.actions.selectProjectDateEarly('project', 'date-b')
+  assert.equal(f.appliedDateSelections.length, 1)
+})
+
+test('competing early finalizations produce one selection and one safe conflict', async () => {
+  const f = earlyDateFixture()
+  const results = await Promise.allSettled([
+    f.actions.selectProjectDateEarly('project', 'date-a'),
+    f.actions.selectProjectDateEarly('project', 'date-b'),
+  ])
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1)
+  assert.equal(results.filter(result => result.status === 'rejected').length, 1)
+  assert.equal(f.appliedDateSelections.length, 1)
 })
 
 test('poll metadata edit preserves vote rows and option IDs', async () => {

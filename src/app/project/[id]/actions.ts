@@ -15,7 +15,6 @@ import {
   applyTimeToDateOption,
   canRemoveDateOption,
   canSuggestDate,
-  haveAllActiveParticipantsResponded,
   normalizeDateOption,
   rankDateOptions,
   reenterViaLateJoinFlow,
@@ -24,7 +23,7 @@ import {
   type DateResponseLike,
   type ParticipantAttendanceStatus,
 } from '@/lib/projectDateSelection'
-import { applySelectedProjectDate, syncProjectDateSelection } from '@/lib/projectDateService'
+import { applyEarlySelectedProjectDate, applySelectedProjectDate, syncProjectDateSelection } from '@/lib/projectDateService'
 import {
   FINANCE_HISTORY_ERROR,
   assertManagedFinance,
@@ -3279,6 +3278,12 @@ export async function selectProjectDateEarly(projectId: string, optionId: string
   ) {
     throw new Error('Date voting is no longer open')
   }
+  if (
+    !project.date_voting_deadline_at
+    || new Date(project.date_voting_deadline_at) <= new Date()
+  ) {
+    throw new Error('The voting deadline has passed')
+  }
 
   const cancellationAttempt = await supabaseAdmin
     .from('projects')
@@ -3299,40 +3304,7 @@ export async function selectProjectDateEarly(projectId: string, optionId: string
   if (cancellationError || !cancellation) throw cancellationError || new Error('Project not found')
   if (isProjectCanceled(cancellation)) throw new Error('Date selection is disabled for canceled projects')
 
-  const [optionResult, participantResult, responseResult] = await Promise.all([
-    supabaseAdmin
-      .from('project_date_options')
-      .select('id, project_id, starts_at, ends_at, status')
-      .eq('project_id', projectId)
-      .eq('status', 'active'),
-    supabaseAdmin
-      .from('participants')
-      .select('user_id')
-      .eq('project_id', projectId)
-      .is('left_at', null),
-    supabaseAdmin
-      .from('project_date_responses')
-      .select('date_option_id, user_id, availability, is_preferred')
-      .eq('project_id', projectId),
-  ])
-  if (optionResult.error || participantResult.error || responseResult.error) {
-    throw optionResult.error || participantResult.error || responseResult.error
-  }
-
-  const activeOptions = (optionResult.data ?? []) as DateOptionLike[]
-  const activeParticipantUserIds = (participantResult.data ?? []).map(row => row.user_id)
-  const responses = (responseResult.data ?? []) as DateResponseLike[]
-  if (activeOptions.length === 0) throw new Error('No active date options are available')
-  if (!activeOptions.some(option => option.id === optionId)) throw new Error('Choose an active date option from this project')
-  if (!haveAllActiveParticipantsResponded(
-    activeOptions.map(option => option.id),
-    responses,
-    activeParticipantUserIds
-  )) {
-    throw new Error('Every active participant must respond to every active date option first')
-  }
-
-  await applySelectedProjectDate(projectId, optionId, {
+  await applyEarlySelectedProjectDate(projectId, optionId, {
     actorUserId: uid,
     actorParticipantId: manager.id,
   })
