@@ -10,6 +10,7 @@ import { type ActivityLogItem } from '@/components/Project/ActivityLogTab'
 import { OutgoingTransfer } from '@/components/Project/OutgoingTransfer'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { JoinButton } from '@/components/Project/JoinButton'
+import { PrivateProjectInvite } from '@/components/Project/PrivateProjectInvite'
 import { ShareProjectButton } from '@/components/Project/ShareProjectButton'
 import { ProfileTab } from '@/components/Project/ProfileTab'
 import { ProjectSettingsTab } from '@/components/Project/ProjectSettingsTab'
@@ -29,6 +30,7 @@ import { resolveProjectDateLocale } from '@/lib/projectDateStrings'
 import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { shouldShowProjectShare } from '@/lib/projectShare'
 import { getProjectReadiness, normalizeProjectFinanceMode, type ProjectFinanceMode } from '@/lib/projectFinance'
+import { isProjectCanceled } from '@/lib/projectInvite'
 import { headers } from 'next/headers'
 import {
   approveParticipantRefund,
@@ -269,26 +271,14 @@ export default async function ProjectPage({
 
   const supabase = await getSupabaseServer()
 
-  const baseProjectFields =
-    'id, title, description, total_cents, total_is_per_person, min_participants, max_participants, status, canceled_at, collector_participant_id, event_start_at, event_end_at'
+  // Load only deliberately public invite fields until private-project membership is established.
+  const baseProjectFields = 'id, title, description, status, canceled_at, event_start_at, event_end_at'
   const optionalProjectFields = [
     'is_public',
     'closed_at',
     'aborted_at',
     'finalized_at',
-    'bundle_size',
-    'bundle_pay_for',
     'event_location_label',
-    'event_location_address',
-    'event_location_lat',
-    'event_location_lng',
-    'event_location_place_id',
-    'date_mode',
-    'date_voting_deadline_at',
-    'date_suggestions_close_at',
-    'date_selection_status',
-    'selected_date_option_id',
-    'confirmation_deadline_at',
     'finance_mode',
   ] as const
   let optionalFields = [...optionalProjectFields]
@@ -353,6 +343,134 @@ export default async function ProjectPage({
     )
   }
 
+  const uid = await getCurrentUserId()
+  const requestHeaders = await headers()
+  const projectDateLocale = resolveProjectDateLocale(requestHeaders.get('accept-language'))
+
+  if (project.is_public !== true) {
+    const inviteCanceled = isProjectCanceled(project)
+    const inviteDate = project.event_start_at
+      ? new Intl.DateTimeFormat(projectDateLocale === 'lt' ? 'lt-LT' : 'en-US', {
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        }).format(new Date(project.event_start_at))
+      : null
+    const inviteProps = {
+      projectId,
+      title: project.title,
+      description: project.description,
+      eventDate: inviteDate,
+      location: project.event_location_label,
+      canJoinNow: normalizeProjectFinanceMode(project.finance_mode) === 'none',
+      isCanceled: inviteCanceled,
+      locale: projectDateLocale,
+    }
+
+    if (!uid) {
+      return <PrivateProjectInvite {...inviteProps} isAuthenticated={false} />
+    }
+
+    const { data: privateMembership, error: privateMembershipError } = await supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('user_id', uid)
+      .is('left_at', null)
+      .limit(1)
+
+    if (privateMembershipError) {
+      console.error('[ProjectPage] private membership check error', privateMembershipError)
+      return (
+        <main className="p-6 max-w-2xl mx-auto space-y-4">
+          <h1 className="text-xl font-semibold">Project unavailable</h1>
+          <p className="text-sm opacity-70">
+            The privacy check failed while opening this project.
+          </p>
+        </main>
+      )
+    }
+
+    if (!privateMembership?.length) {
+      const { data: myInviteRequest, error: inviteRequestError } = await supabaseAdmin
+        .from('join_requests')
+        .select('status')
+        .eq('project_id', projectId)
+        .eq('requester_user_id', uid)
+        .maybeSingle()
+      if (inviteRequestError) {
+        console.error('[ProjectPage] private invite request check error', inviteRequestError)
+      }
+
+      return (
+        <PrivateProjectInvite
+          {...inviteProps}
+          isAuthenticated
+          requestStatus={myInviteRequest?.status ?? null}
+        />
+      )
+    }
+  }
+
+  // Public viewers and active private-project participants may load the full page record.
+  const fullBaseProjectFields =
+    'id, total_cents, total_is_per_person, min_participants, max_participants, collector_participant_id'
+  const fullOptionalProjectFields = [
+    'bundle_size',
+    'bundle_pay_for',
+    'event_location_address',
+    'event_location_lat',
+    'event_location_lng',
+    'event_location_place_id',
+    'date_mode',
+    'date_voting_deadline_at',
+    'date_suggestions_close_at',
+    'date_selection_status',
+    'selected_date_option_id',
+    'confirmation_deadline_at',
+  ] as const
+  let fullOptionalFields = [...fullOptionalProjectFields]
+  const missingFullFields = new Set<string>()
+  let fullProject: Partial<ProjectRow> | null = null
+  let fullProjectError: { message?: string } | null = null
+
+  while (true) {
+    const selectList = [fullBaseProjectFields, ...fullOptionalFields].join(', ')
+    const { data, error } = await supabase
+      .from('projects')
+      .select(selectList)
+      .eq('id', projectId)
+      .single()
+
+    const missingField = fullOptionalFields.find(field => missingColumn(error, field))
+    if (missingField) {
+      missingFullFields.add(missingField)
+      fullOptionalFields = fullOptionalFields.filter(field => field !== missingField)
+      continue
+    }
+
+    fullProject = data as Partial<ProjectRow> | null
+    fullProjectError = error
+    break
+  }
+
+  if (fullProjectError || !fullProject) {
+    console.error('[ProjectPage] full project fetch error', fullProjectError)
+    return (
+      <main className="p-6 max-w-2xl mx-auto space-y-4">
+        <h1 className="text-xl font-semibold">Project unavailable</h1>
+        <p className="text-sm opacity-70">The project details could not be loaded.</p>
+      </main>
+    )
+  }
+
+  project = { ...project, ...fullProject }
+  const fullProjectRecord = project as Record<string, unknown>
+  for (const field of fullOptionalProjectFields) {
+    if (missingFullFields.has(field) || typeof project[field] === 'undefined') {
+      fullProjectRecord[field] = null
+    }
+  }
+
   const financeMode = normalizeProjectFinanceMode(project.finance_mode)
   const financeManaged = financeMode === 'managed'
 
@@ -407,53 +525,6 @@ export default async function ProjectPage({
     : eventLocationQuery
       ? `https://maps.apple.com/?q=${encodedEventLocationQuery}`
       : null
-
-  const uid = await getCurrentUserId()
-  const requestHeaders = await headers()
-  const projectDateLocale = resolveProjectDateLocale(requestHeaders.get('accept-language'))
-
-  if (project.is_public !== true) {
-    if (!uid) {
-      return (
-        <main className="p-6 max-w-2xl mx-auto space-y-4">
-          <h1 className="text-xl font-semibold">Private project</h1>
-          <p className="text-sm opacity-70">
-            This project is private. Sign in with a member account to view it.
-          </p>
-        </main>
-      )
-    }
-
-    const { data: privateMembership, error: privateMembershipError } = await supabaseAdmin
-      .from('participants')
-      .select('id')
-      .eq('project_id', projectId)
-      .eq('user_id', uid)
-      .limit(1)
-
-    if (privateMembershipError) {
-      console.error('[ProjectPage] private membership check error', privateMembershipError)
-      return (
-        <main className="p-6 max-w-2xl mx-auto space-y-4">
-          <h1 className="text-xl font-semibold">Project unavailable</h1>
-          <p className="text-sm opacity-70">
-            The privacy check failed while opening this project.
-          </p>
-        </main>
-      )
-    }
-
-    if (!privateMembership?.length) {
-      return (
-        <main className="p-6 max-w-2xl mx-auto space-y-4">
-          <h1 className="text-xl font-semibold">Private project</h1>
-          <p className="text-sm opacity-70">
-            This project is only visible to the creator and members who already joined it.
-          </p>
-        </main>
-      )
-    }
-  }
 
   // Fetch all related data in parallel
   const pollsPromise = (async () => {

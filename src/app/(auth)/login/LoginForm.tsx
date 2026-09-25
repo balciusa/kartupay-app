@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 
-export default function LoginForm() {
+export default function LoginForm({ redirectPath = '/' }: { redirectPath?: string }) {
   const [mode, setMode] = useState<'password' | 'magic'>('password')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -35,12 +35,13 @@ export default function LoginForm() {
         if (error) throw error
         setMsgTone('success')
         setMsg('Signed in!')
-        window.location.href = '/'
+        window.location.assign(redirectPath)
       } else {
-        const redirectUrl = `${origin}/auth/callback`
+        const callbackUrl = new URL('/auth/callback', origin)
+        if (redirectPath !== '/') callbackUrl.searchParams.set('redirect', redirectPath)
         const { error } = await supabase.auth.signInWithOtp({
           email,
-          options: { shouldCreateUser: true, emailRedirectTo: redirectUrl },
+          options: { shouldCreateUser: true, emailRedirectTo: callbackUrl.toString() },
         })
 
         if (error) throw error

@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
+import { getSafeProjectReturnPath } from '@/lib/projectInvite'
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url)
   const code = url.searchParams.get('code')
   const token = url.searchParams.get('token')
   const vtype = (url.searchParams.get('type') || 'magiclink') as 'magiclink'|'recovery'|'invite'
-  const redirect = url.searchParams.get('redirect') || '/'
+  const redirect = getSafeProjectReturnPath(url.searchParams.get('redirect'))
   
   // Track if this is a password reset flow
   let isPasswordReset = false

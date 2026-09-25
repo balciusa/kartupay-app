@@ -8,6 +8,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import * as finance from './projectFinance.ts'
 import * as joinRequests from './projectJoinRequests.ts'
 import * as statusUi from './projectStatusUi.ts'
+import * as projectInvite from './projectInvite.ts'
 
 type Row = Record<string, unknown>
 type Tables = Record<string, Row[]>
@@ -34,7 +35,7 @@ function fixture() {
       { id: 'option-b', poll_id: 'poll', label: 'B', created_at: '2026-01-01' },
     ],
     poll_votes: [{ id: 'vote', poll_id: 'poll', option_id: 'option-a', user_id: 'voter' }],
-    messages: [], chat_reads: [],
+    messages: [], chat_reads: [], join_requests: [],
   }
   const writes: string[] = []
   const failures = new Map<string, { code: string; message: string }>()
@@ -46,8 +47,9 @@ function fixture() {
       let values: Row | Row[] = {}
       let single = false
       let limit = Infinity
+      let includeCount = false
       const query = {
-        select() { return query },
+        select(_fields?: string, options?: { count?: string }) { includeCount = options?.count === 'exact'; return query },
         eq(key: string, value: unknown) { filters.push(row => row[key] === value); return query },
         neq(key: string, value: unknown) { filters.push(row => row[key] !== value); return query },
         is(key: string, value: unknown) { filters.push(row => row[key] === value); return query },
@@ -59,7 +61,7 @@ function fixture() {
         insert(value: Row | Row[]) { operation = 'insert'; values = value; return query },
         upsert(value: Row) { operation = 'insert'; values = value; return query },
         delete() { operation = 'delete'; return query },
-        then(resolve: (result: { data: Row | Row[] | null; error: Row | null }) => void) {
+        then(resolve: (result: { data: Row | Row[] | null; error: Row | null; count?: number }) => void) {
           const error = failures.get(table)
           if (error) { resolve({ data: null, error }); return }
           let rows = (tables[table] ?? []).filter(row => filters.every(filter => filter(row)))
@@ -83,7 +85,7 @@ function fixture() {
             rows = (Array.isArray(values) ? values : [values]).map((row, i) => ({ id: `new-${i}`, ...row }))
             tables[table].push(...rows)
           }
-          resolve({ data: single ? rows[0] ?? null : rows, error: null })
+          resolve({ data: single ? rows[0] ?? null : rows, error: null, count: includeCount ? rows.length : undefined })
         },
       }
       return query
@@ -95,6 +97,7 @@ function fixture() {
     '@/lib/activityLog': { recordProjectActivity: async () => {} },
     '@/lib/projectFinance': finance,
     '@/lib/projectJoinRequests': joinRequests,
+    '@/lib/projectInvite': projectInvite,
     '@/lib/projectStatusUi': statusUi,
     'next/cache': { revalidatePath: () => {} },
     'next/navigation': { redirect: () => { throw new Error('NEXT_REDIRECT') } },
@@ -226,6 +229,85 @@ test('ordinary participant cannot manage a pending join request', async () => {
 
   assert.equal(f.tables.join_requests[0].status, 'pending')
   assert.deepEqual(f.writes, [])
+})
+
+test('finance-none direct join reactivates a previous participant immediately', async () => {
+  const f = fixture()
+  f.tables.participants[0].left_at = '2026-09-01T00:00:00.000Z'
+
+  const result = await f.actions.requestJoin('project')
+
+  assert.deepEqual(result, { ok: true, joined: true })
+  assert.equal(f.tables.participants[0].left_at, null)
+  assert.match(f.writes.join(','), /participants:update/)
+  assert.equal(f.tables.join_requests.length, 0)
+})
+
+test('managed join creates a pending request and rejected requests can be resubmitted', async () => {
+  const f = fixture()
+  f.tables.projects[0].finance_mode = 'managed'
+  f.tables.participants = []
+
+  assert.deepEqual(await f.actions.requestJoin('project'), { ok: true, pending: true })
+  assert.equal(f.tables.join_requests[0].status, 'pending')
+
+  f.tables.join_requests[0].status = 'rejected'
+  assert.deepEqual(await f.actions.requestJoin('project'), { ok: true, pending: true })
+  assert.equal(f.tables.join_requests[0].status, 'pending')
+})
+
+test('pending join request can still be canceled', async () => {
+  const f = fixture()
+  f.tables.projects[0].finance_mode = 'managed'
+  f.tables.participants = []
+  f.tables.join_requests = [{
+    id: 'request', project_id: 'project', requester_user_id: 'user', status: 'pending',
+  }]
+
+  assert.deepEqual(await f.actions.cancelJoinRequest('project'), { ok: true })
+  assert.equal(f.tables.join_requests[0].status, 'canceled')
+})
+
+test('finance-none direct join remains blocked at project capacity', async () => {
+  const f = fixture()
+  f.tables.projects[0].max_participants = 1
+  f.tables.participants = [{
+    id: 'other', project_id: 'project', user_id: 'other-user', role: 'member', left_at: null,
+  }]
+
+  assert.deepEqual(await f.actions.requestJoin('project'), {
+    ok: false,
+    blocked: true,
+    error: 'Project capacity has been reached',
+  })
+  assert.equal(f.tables.participants.length, 1)
+})
+
+for (const canceledState of [
+  { status: 'canceled' },
+  { status: 'cancelled' },
+  { status: ' CANCELLED ' },
+  { canceled_at: '2026-09-01T00:00:00.000Z' },
+  { aborted_at: '2026-09-01T00:00:00.000Z' },
+]) {
+  test(`joining is blocked for canceled state ${JSON.stringify(canceledState)}`, async () => {
+    const f = fixture()
+    f.tables.participants = []
+    Object.assign(f.tables.projects[0], canceledState)
+
+    assert.deepEqual(await f.actions.requestJoin('project'), { ok: false, blocked: true })
+    assert.deepEqual(f.tables.participants, [])
+    assert.deepEqual(f.tables.join_requests, [])
+  })
+}
+
+test('existing finalized/closed late-join behavior remains available', async () => {
+  const f = fixture()
+  f.tables.projects[0].status = 'closed'
+  f.tables.participants[0].left_at = '2026-09-01T00:00:00.000Z'
+
+  assert.deepEqual(await f.actions.requestJoin('project'), { ok: true, joined: true })
+  assert.equal(f.tables.participants[0].left_at, null)
 })
 
 test('organizer join-request panel shows its notification count and approval controls', () => {
