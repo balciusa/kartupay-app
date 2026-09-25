@@ -725,12 +725,45 @@ async function requireActiveManager(projectId: string, userId: string) {
 }
 
 async function requireActiveJoinRequestManager(projectId: string, userId: string) {
-  const { data: project, error: projectErr } = await supabaseAdmin
-    .from('projects')
-    .select('collector_participant_id, is_public, status, canceled_at, aborted_at')
-    .eq('id', projectId)
-    .maybeSingle()
-  if (projectErr) throw projectErr
+  const baseProjectFields = 'collector_participant_id, status, canceled_at'
+  const optionalProjectFields = ['is_public', 'aborted_at'] as const
+  let optionalFields = [...optionalProjectFields]
+  type JoinRequestManagerProject = {
+    collector_participant_id: string | null
+    status: string | null
+    canceled_at: string | null
+    is_public: boolean
+    aborted_at: string | null
+  }
+  let project: JoinRequestManagerProject | null = null
+
+  while (true) {
+    const result = await supabaseAdmin
+      .from('projects')
+      .select([baseProjectFields, ...optionalFields].join(', '))
+      .eq('id', projectId)
+      .maybeSingle()
+
+    const missingField = optionalFields.find(field => missingColumn(result.error, field))
+    if (missingField) {
+      optionalFields = optionalFields.filter(field => field !== missingField)
+      continue
+    }
+    if (result.error) throw result.error
+
+    const row = result.data as Partial<JoinRequestManagerProject> | null
+    project = row
+      ? {
+          collector_participant_id: row.collector_participant_id ?? null,
+          status: row.status ?? null,
+          canceled_at: row.canceled_at ?? null,
+          is_public: 'is_public' in row ? row.is_public === true : true,
+          aborted_at: 'aborted_at' in row ? row.aborted_at ?? null : null,
+        }
+      : null
+    break
+  }
+
   if (!project) throw new Error('Project not found')
 
   const { data: participant, error: participantErr } = await supabaseAdmin
@@ -1719,14 +1752,14 @@ export async function requestJoin(projectId: string) {
 
   console.log('[requestJoin] start', { projectId, uid })
 
-  const baseProjectFields = 'id, status, canceled_at, is_public'
-  const optionalProjectFields = ['finance_mode', 'max_participants', 'date_mode', 'selected_date_option_id', 'aborted_at'] as const
+  const baseProjectFields = 'id, status, canceled_at'
+  const optionalProjectFields = ['is_public', 'finance_mode', 'max_participants', 'date_mode', 'selected_date_option_id', 'aborted_at'] as const
   let optionalFields = [...optionalProjectFields]
   type JoinProjectRow = {
     id: string
     status: string | null
     canceled_at: string | null
-    is_public: boolean | null
+    is_public?: boolean | null
     finance_mode?: ProjectFinanceMode | null
     max_participants?: number | null
     date_mode?: 'fixed' | 'selecting' | null
@@ -1754,7 +1787,7 @@ export async function requestJoin(projectId: string) {
     project = row
       ? {
           ...row,
-          is_public: row.is_public === true,
+          is_public: 'is_public' in row ? row.is_public === true : true,
           finance_mode: 'finance_mode' in row ? normalizeProjectFinanceMode(row.finance_mode) : 'managed',
           max_participants: 'max_participants' in row ? row.max_participants ?? null : null,
           date_mode: 'date_mode' in row ? row.date_mode ?? 'fixed' : 'fixed',

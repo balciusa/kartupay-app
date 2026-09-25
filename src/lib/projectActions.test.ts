@@ -39,6 +39,8 @@ function fixture() {
   }
   const writes: string[] = []
   const failures = new Map<string, { code: string; message: string }>()
+  const missingColumns = new Set<string>()
+  const selects: Array<{ table: string; fields?: string }> = []
   let currentUserId = 'user'
   const db = {
     from(table: string) {
@@ -49,8 +51,14 @@ function fixture() {
       let single = false
       let limit = Infinity
       let includeCount = false
+      let selectedFields: string | undefined
       const query = {
-        select(_fields?: string, options?: { count?: string }) { includeCount = options?.count === 'exact'; return query },
+        select(fields?: string, options?: { count?: string }) {
+          selectedFields = fields
+          selects.push({ table, fields })
+          includeCount = options?.count === 'exact'
+          return query
+        },
         eq(key: string, value: unknown) { filters.push(row => row[key] === value); return query },
         neq(key: string, value: unknown) { filters.push(row => row[key] !== value); return query },
         is(key: string, value: unknown) { filters.push(row => row[key] === value); return query },
@@ -65,6 +73,17 @@ function fixture() {
         then(resolve: (result: { data: Row | Row[] | null; error: Row | null; count?: number }) => void) {
           const error = failures.get(table)
           if (error) { resolve({ data: null, error }); return }
+          const missingColumnName = [...missingColumns]
+            .filter(entry => entry.startsWith(`${table}.`))
+            .map(entry => entry.slice(table.length + 1))
+            .find(column => selectedFields?.split(',').map(field => field.trim()).includes(column))
+          if (missingColumnName) {
+            resolve({
+              data: null,
+              error: { code: '42703', message: `column ${missingColumnName} does not exist` },
+            })
+            return
+          }
           let rows = (tables[table] ?? []).filter(row => filters.every(filter => filter(row)))
           rows.sort((a, b) => {
             for (const key of orders) {
@@ -74,6 +93,16 @@ function fixture() {
             return 0
           })
           rows = rows.slice(0, limit)
+          if (operation === 'select') {
+            const missingForTable = [...missingColumns]
+              .filter(entry => entry.startsWith(`${table}.`))
+              .map(entry => entry.slice(table.length + 1))
+            if (missingForTable.length) {
+              rows = rows.map(row => Object.fromEntries(
+                Object.entries(row).filter(([key]) => !missingForTable.includes(key))
+              ))
+            }
+          }
           if (operation !== 'select') writes.push(`${table}:${operation}`)
           if (operation === 'update') rows.forEach(row => Object.assign(row, values))
           if (operation === 'delete') {
@@ -113,6 +142,8 @@ function fixture() {
     tables,
     writes,
     failures,
+    missingColumns,
+    selects,
     actions: exports as typeof import('../app/project/[id]/actions'),
     setCurrentUserId(userId: string) {
       currentUserId = userId
@@ -309,7 +340,40 @@ test('private managed join creates a pending request and rejected requests can b
   assert.equal(f.tables.join_requests[0].status, 'pending')
 })
 
-test('private organizer can approve a pending request and activate the requester', async () => {
+test('public managed join keeps the existing pending approval behavior', async () => {
+  const f = fixture()
+  f.tables.projects[0].finance_mode = 'managed'
+  f.tables.participants = []
+
+  assert.deepEqual(await f.actions.requestJoin('project'), { ok: true, pending: true })
+  assert.equal(f.tables.join_requests[0].status, 'pending')
+  assert.deepEqual(f.tables.participants, [])
+})
+
+test('legacy project without is_public keeps public finance-none direct join behavior', async () => {
+  const f = fixture()
+  f.missingColumns.add('projects.is_public')
+  f.tables.participants = []
+
+  assert.deepEqual(await f.actions.requestJoin('project'), { ok: true, joined: true })
+  assert.equal(f.tables.participants[0].user_id, 'user')
+  assert.equal(f.tables.join_requests.length, 0)
+  assert.equal(f.selects.some(query => query.table === 'projects' && query.fields?.includes('is_public')), true)
+  assert.equal(f.selects.some(query => query.table === 'projects' && !query.fields?.includes('is_public')), true)
+})
+
+test('legacy project without is_public keeps managed pending approval behavior', async () => {
+  const f = fixture()
+  f.missingColumns.add('projects.is_public')
+  f.tables.projects[0].finance_mode = 'managed'
+  f.tables.participants = []
+
+  assert.deepEqual(await f.actions.requestJoin('project'), { ok: true, pending: true })
+  assert.equal(f.tables.join_requests[0].status, 'pending')
+  assert.deepEqual(f.tables.participants, [])
+})
+
+test('private organizer can approve a pending request when aborted_at exists', async () => {
   const f = pendingJoinFixture('organizer')
   f.tables.projects[0].is_public = false
 
@@ -320,6 +384,39 @@ test('private organizer can approve a pending request and activate the requester
   assert.equal(requester.left_at, null)
   assert.equal(requester.role, 'member')
   assert.equal(f.tables.join_requests[0].status, 'approved')
+})
+
+test('private organizer can approve when legacy schema has no aborted_at', async () => {
+  const f = pendingJoinFixture('organizer')
+  f.tables.projects[0].is_public = false
+  f.missingColumns.add('projects.aborted_at')
+
+  await assert.rejects(f.actions.approveJoinRequest('request'), /NEXT_REDIRECT/)
+
+  assert.equal(f.tables.join_requests[0].status, 'approved')
+  assert.equal(f.tables.participants.some(row => row.user_id === 'requester' && row.left_at === null), true)
+  assert.equal(f.selects.some(query => query.table === 'projects' && query.fields?.includes('aborted_at')), true)
+  assert.equal(f.selects.some(query => query.table === 'projects' && !query.fields?.includes('aborted_at')), true)
+})
+
+test('private organizer can reject when legacy schema has no aborted_at', async () => {
+  const f = pendingJoinFixture('organizer')
+  f.tables.projects[0].is_public = false
+  f.missingColumns.add('projects.aborted_at')
+
+  await assert.rejects(f.actions.rejectJoinRequest('request'), /NEXT_REDIRECT/)
+
+  assert.equal(f.tables.join_requests[0].status, 'rejected')
+})
+
+test('collector-only private participant stays denied when legacy schema has no aborted_at', async () => {
+  const f = pendingJoinFixture('member', 'me')
+  f.tables.projects[0].is_public = false
+  f.missingColumns.add('projects.aborted_at')
+
+  await assert.rejects(f.actions.approveJoinRequest('request'), /Not authorized/)
+  assert.equal(f.tables.join_requests[0].status, 'pending')
+  assert.equal(f.tables.participants.some(row => row.user_id === 'requester'), false)
 })
 
 test('private organizer who is also collector can approve because they are organizer', async () => {
@@ -389,6 +486,16 @@ test('approval is blocked after a private project is canceled', async () => {
   const f = pendingJoinFixture('organizer')
   f.tables.projects[0].is_public = false
   f.tables.projects[0].status = 'canceled'
+
+  await assert.rejects(f.actions.approveJoinRequest('request'), /This project is no longer active/)
+  assert.equal(f.tables.join_requests[0].status, 'pending')
+  assert.equal(f.tables.participants.some(row => row.user_id === 'requester'), false)
+})
+
+test('approval is blocked when canceled_at marks a private project canceled', async () => {
+  const f = pendingJoinFixture('organizer')
+  f.tables.projects[0].is_public = false
+  f.tables.projects[0].canceled_at = '2026-09-25T00:00:00.000Z'
 
   await assert.rejects(f.actions.approveJoinRequest('request'), /This project is no longer active/)
   assert.equal(f.tables.join_requests[0].status, 'pending')
