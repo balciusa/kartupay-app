@@ -243,11 +243,19 @@ const compileFixture = (source: string) => ts.transpileModule(source, {
 }).outputText
 const dateSelection = await import('./projectDateSelection.ts')
 const dateStrings = await import('./projectDateStrings.ts')
+const datePickerExports: Record<string, React.ComponentType<Record<string, unknown>>> = {}
+const datePickerRequire = (name: string) => {
+  if (name === '@/lib/projectDateSelection') return dateSelection
+  if (name === '@/lib/projectDateStrings') return dateStrings
+  return nodeRequire(name)
+}
+new Function('require', 'exports', compileFixture(readFileSync(new URL('../components/ui/DateRangePicker.tsx', import.meta.url), 'utf8')))(datePickerRequire, datePickerExports)
 const dateComponentExports: Record<string, React.ComponentType<Record<string, unknown>>> = {}
 const dateRequire = (name: string) => {
   if (name === 'next/navigation') return { useRouter: () => ({ refresh() {} }) }
   if (name === '@/app/project/[id]/actions') return new Proxy({}, { get: () => () => { throw new Error('Unexpected action invocation') } })
   if (name === '@/components/Project/LeaveProjectButton') return { LeaveProjectButton: () => createElement('button', {}, 'Leave project') }
+  if (name === '@/components/ui/DateRangePicker') return datePickerExports
   if (name === '@/components/ui/button') return { Button: ({ variant, asChild, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; asChild?: boolean }) => { void variant; return asChild ? children : createElement('button', props, children) } }
   if (name === '@/lib/projectDateSelection') return dateSelection
   if (name === '@/lib/projectDateStrings') return dateStrings
@@ -340,6 +348,25 @@ const renderDate = (data: Record<string, unknown> = selectingData(), props: Reco
   projectId: 'fixture', data, viewerUserId: 'user', viewerIsParticipant: true, canManage: true, locale: 'en', ...props,
 }))
 
+test('Date range picker: collapsed EN/LT control is one field backed by compatible hidden payload names', () => {
+  for (const [locale, label, empty] of [['en', 'Dates', 'Select dates'], ['lt', 'Datos', 'Pasirinkti datas']] as const) {
+    const html = renderToStaticMarkup(createElement(datePickerExports.DateRangePicker, {
+      value: { startDate: '', endDate: null },
+      onChange() {},
+      locale,
+      startName: 'start_date',
+      endName: 'end_date',
+      required: true,
+    }))
+    assert.match(html, new RegExp(label))
+    assert.match(html, new RegExp(empty))
+    assert.match(html, /name="start_date"/)
+    assert.match(html, /name="end_date"/)
+    assert.equal((html.match(/data-date-range-picker/g) ?? []).length, 1)
+    assert.doesNotMatch(html, /type="date"/)
+  }
+})
+
 test('Overview: actual page suppresses duplicate priority task when Success Path shows date action', () => {
   const model = derive({ ...selecting(), confirmedParticipants: 0, minParticipants: 2 }, manager)
   const html = renderToStaticMarkup(createElement(moduleObject.exports.ProjectSuccessOverview, { model, projectId: 'fixture' }))
@@ -404,6 +431,84 @@ test('Date options: responses show existing complete breakdown and selected sema
   })] }))
   for (const count of ['2</strong> available', '3</strong> maybe', '1</strong> unavailable', '1</strong> preferred']) assert.ok(html.includes(count))
   assert.equal((html.match(/aria-pressed="true"/g) ?? []).length, 2)
+})
+
+test('Date options: voting, early-finalization, and fixed summaries show derived duration once per rendering', () => {
+  const range = dateOption('range', {
+    starts_at: '2099-10-09T00:00:00.000Z',
+    ends_at: '2099-10-12T00:00:00.000Z',
+    availableCount: 2,
+  })
+  const voting = renderDate(selectingData({ options: [range] }))
+  assert.equal((voting.match(/3 nights/g) ?? []).length, 1)
+  assert.match(renderDate(selectingData({ options: [dateOption()] })), /1 day/)
+
+  const early = renderDate(selectingData({
+    respondedCount: 2,
+    memberCount: 2,
+    missingResponseNames: [],
+    viewerTaskComplete: true,
+    options: [range],
+  }))
+  assert.match(early, /Select final date now/)
+  assert.match(early, /3 nights/)
+
+  const fixed = renderPageDate('confirmed', false, false, false, {
+    eventStartAt: '2099-10-09T00:00:00.000Z',
+    eventEndAt: '2099-10-12T00:00:00.000Z',
+    options: [{ ...range, id: 'selected' }],
+  })
+  assert.match(fixed, /3 nights/)
+  assert.match(renderDate(selectingData({ options: [range] }), { locale: 'lt' }), /3 naktys/)
+})
+
+test('Fixed date: timezone-adjusted event display keeps duration from the selected calendar option', () => {
+  const selectedRange = dateOption('selected', {
+    starts_at: '2099-10-09T00:00:00.000Z',
+    ends_at: '2099-10-12T00:00:00.000Z',
+  })
+  const renderTimedRange = (eventStartAt: string, eventEndAt: string | null) => renderPageDate('confirmed', false, false, false, {
+    eventStartAt,
+    eventEndAt,
+    options: [selectedRange],
+  })
+
+  // UTC+3 at 01:00 stores the local Oct 9 start on the previous UTC date.
+  assert.match(renderTimedRange('2099-10-08T22:00:00.000Z', '2099-10-12T07:00:00.000Z'), /3 nights/)
+  // A negative UTC offset can move the stored instant onto the next UTC date.
+  assert.match(renderTimedRange('2099-10-10T02:00:00.000Z', '2099-10-13T01:00:00.000Z'), /3 nights/)
+  // Start-only time editing leaves the end at its original date-only boundary.
+  assert.match(renderTimedRange('2099-10-08T22:00:00.000Z', selectedRange.ends_at), /3 nights/)
+  // The visible time still comes from the project event timestamps.
+  assert.match(renderTimedRange('2099-10-09T01:00:00.000Z', '2099-10-12T10:00:00.000Z'), /9 Oct 2099, 01:00[\s\S]*12 Oct 2099, 10:00[\s\S]*3 nights/)
+  // Spring and autumn offset changes do not alter the selected calendar duration.
+  assert.match(renderPageDate('confirmed', false, false, false, {
+    eventStartAt: '2099-03-27T23:00:00.000Z',
+    eventEndAt: '2099-03-30T08:00:00.000Z',
+    options: [dateOption('selected', { starts_at: '2099-03-28T00:00:00.000Z', ends_at: '2099-03-30T00:00:00.000Z' })],
+  }), /2 nights/)
+  assert.match(renderPageDate('confirmed', false, false, false, {
+    eventStartAt: '2099-10-30T22:00:00.000Z',
+    eventEndAt: '2099-11-02T09:00:00.000Z',
+    options: [dateOption('selected', { starts_at: '2099-10-31T00:00:00.000Z', ends_at: '2099-11-02T00:00:00.000Z' })],
+  }), /2 nights/)
+})
+
+test('Fixed date: a timed single day stays one day and missing selected option omits duration', () => {
+  const singleDay = renderPageDate('confirmed', false, false, false, {
+    eventStartAt: '2099-10-08T22:00:00.000Z',
+    eventEndAt: null,
+    options: [dateOption('selected', { starts_at: '2099-10-09T00:00:00.000Z', ends_at: null })],
+  })
+  assert.match(singleDay, /1 day/)
+  assert.doesNotMatch(singleDay, /0 nights/)
+
+  const missingOption = renderPageDate('confirmed', false, false, false, {
+    eventStartAt: '2099-10-08T22:00:00.000Z',
+    eventEndAt: '2099-10-12T07:00:00.000Z',
+    options: [],
+  })
+  assert.doesNotMatch(missingOption, /\b(?:day|night|nights)\b/)
 })
 
 test('Waiting area: organizer reminder remains, participant and closed voting cannot gain it', () => {
