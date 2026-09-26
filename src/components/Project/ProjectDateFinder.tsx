@@ -52,20 +52,24 @@ const formatDateOption = (option: Pick<ProjectDateFinderOption, 'starts_at' | 'e
   formatProjectDateRange(option.starts_at, option.ends_at, locale)
 
 function DateOptionHeading({
-  option,
+  displayOption,
+  durationOption,
   locale,
   className = '',
 }: {
-  option: Pick<ProjectDateFinderOption, 'starts_at' | 'ends_at'>
+  displayOption: Pick<ProjectDateFinderOption, 'starts_at' | 'ends_at'>
+  durationOption: Pick<ProjectDateFinderOption, 'starts_at' | 'ends_at'> | null
   locale: ProjectDateLocale
   className?: string
 }) {
   return (
     <span className={className}>
-      <span className="block">{formatDateOption(option, locale)}</span>
-      <span className="mt-0.5 block text-sm font-medium text-indigo-700">
-        {formatDateRangeDuration(option.starts_at, option.ends_at, locale)}
-      </span>
+      <span className="block">{formatDateOption(displayOption, locale)}</span>
+      {durationOption && (
+        <span className="mt-0.5 block text-sm font-medium text-indigo-700">
+          {formatDateRangeDuration(durationOption.starts_at, durationOption.ends_at, locale)}
+        </span>
+      )}
     </span>
   )
 }
@@ -253,7 +257,7 @@ export function ProjectDateFinder({
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="font-semibold text-slate-900"><DateOptionHeading option={option} locale={locale} /></h3>
+                  <h3 className="font-semibold text-slate-900"><DateOptionHeading displayOption={option} durationOption={option} locale={locale} /></h3>
                   {isBest && <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800">{strings.currentlyBest}</span>}
                   {option.isTied && hasAvailabilityResponses && <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800">{strings.currentlyTied}</span>}
                 </div>
@@ -343,7 +347,9 @@ export function ProjectDateFinder({
               <CalendarDays className="h-4 w-4" /> {strings.projectDate}
             </div>
             <h2 className="text-xl font-semibold text-slate-900">
-              {confirmedDateOption.starts_at ? <DateOptionHeading option={confirmedDateOption} locale={locale} /> : ''}
+              {confirmedDateOption.starts_at ? (
+                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} />
+              ) : ''}
             </h2>
             <p className="text-sm text-slate-600">{strings.confirmedParticipants}: {data.confirmedCount}</p>
             {data.confirmationDeadlineAt && data.awaitingCount > 0 && (
@@ -468,7 +474,9 @@ export function ProjectDateFinder({
             <h3 className="mt-1 font-semibold text-slate-900">{strings.canYouAttend}</h3>
             <div className="mt-1 text-sm text-slate-700">
               <span>{strings.finalProjectDate}:</span>
-              {confirmedDateOption.starts_at ? <DateOptionHeading option={confirmedDateOption} locale={locale} className="mt-1" /> : ''}
+              {confirmedDateOption.starts_at ? (
+                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} className="mt-1" />
+              ) : ''}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               <Button className="min-h-11 rounded-full bg-emerald-600 hover:bg-emerald-700" disabled={!!pendingKey} onClick={() => run('confirm-yes', () => respondToDateConfirmation(projectId, 'yes'))}>{strings.yesAttend}</Button>
@@ -577,7 +585,7 @@ export function ProjectDateFinder({
               ) : earlyOption ? (
                 <div className="mt-3 rounded-xl border border-indigo-200 bg-white p-4" role="group" aria-labelledby="confirm-final-date-title">
                   <h4 id="confirm-final-date-title" className="font-semibold text-slate-900">{strings.confirmFinalDateTitle}</h4>
-                  <DateOptionHeading option={earlyOption} locale={locale} className="mt-1 text-sm font-medium text-slate-800" />
+                  <DateOptionHeading displayOption={earlyOption} durationOption={earlyOption} locale={locale} className="mt-1 text-sm font-medium text-slate-800" />
                   <p className="mt-1 text-sm text-slate-600">{strings.confirmFinalDateHelp}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Button

@@ -105,6 +105,11 @@ export function selectDateRangeDay(current: DateRangeDraft, date: string): DateR
   return { startDate: start.dateKey, endDate: next.dateKey, complete: true }
 }
 
+/**
+ * Calculates duration from the original Date Finder calendar boundaries.
+ * Timezone-adjusted project event timestamps are display values and must not be
+ * used as a substitute for these calendar dates.
+ */
 export function dateRangeNightCount(startsAt: string, endsAt: string | null | undefined) {
   if (!endsAt) return 0
   const start = dateKeyFromValue(startsAt)

@@ -456,9 +456,59 @@ test('Date options: voting, early-finalization, and fixed summaries show derived
   const fixed = renderPageDate('confirmed', false, false, false, {
     eventStartAt: '2099-10-09T00:00:00.000Z',
     eventEndAt: '2099-10-12T00:00:00.000Z',
+    options: [{ ...range, id: 'selected' }],
   })
   assert.match(fixed, /3 nights/)
   assert.match(renderDate(selectingData({ options: [range] }), { locale: 'lt' }), /3 naktys/)
+})
+
+test('Fixed date: timezone-adjusted event display keeps duration from the selected calendar option', () => {
+  const selectedRange = dateOption('selected', {
+    starts_at: '2099-10-09T00:00:00.000Z',
+    ends_at: '2099-10-12T00:00:00.000Z',
+  })
+  const renderTimedRange = (eventStartAt: string, eventEndAt: string | null) => renderPageDate('confirmed', false, false, false, {
+    eventStartAt,
+    eventEndAt,
+    options: [selectedRange],
+  })
+
+  // UTC+3 at 01:00 stores the local Oct 9 start on the previous UTC date.
+  assert.match(renderTimedRange('2099-10-08T22:00:00.000Z', '2099-10-12T07:00:00.000Z'), /3 nights/)
+  // A negative UTC offset can move the stored instant onto the next UTC date.
+  assert.match(renderTimedRange('2099-10-10T02:00:00.000Z', '2099-10-13T01:00:00.000Z'), /3 nights/)
+  // Start-only time editing leaves the end at its original date-only boundary.
+  assert.match(renderTimedRange('2099-10-08T22:00:00.000Z', selectedRange.ends_at), /3 nights/)
+  // The visible time still comes from the project event timestamps.
+  assert.match(renderTimedRange('2099-10-09T01:00:00.000Z', '2099-10-12T10:00:00.000Z'), /9 Oct 2099, 01:00[\s\S]*12 Oct 2099, 10:00[\s\S]*3 nights/)
+  // Spring and autumn offset changes do not alter the selected calendar duration.
+  assert.match(renderPageDate('confirmed', false, false, false, {
+    eventStartAt: '2099-03-27T23:00:00.000Z',
+    eventEndAt: '2099-03-30T08:00:00.000Z',
+    options: [dateOption('selected', { starts_at: '2099-03-28T00:00:00.000Z', ends_at: '2099-03-30T00:00:00.000Z' })],
+  }), /2 nights/)
+  assert.match(renderPageDate('confirmed', false, false, false, {
+    eventStartAt: '2099-10-30T22:00:00.000Z',
+    eventEndAt: '2099-11-02T09:00:00.000Z',
+    options: [dateOption('selected', { starts_at: '2099-10-31T00:00:00.000Z', ends_at: '2099-11-02T00:00:00.000Z' })],
+  }), /2 nights/)
+})
+
+test('Fixed date: a timed single day stays one day and missing selected option omits duration', () => {
+  const singleDay = renderPageDate('confirmed', false, false, false, {
+    eventStartAt: '2099-10-08T22:00:00.000Z',
+    eventEndAt: null,
+    options: [dateOption('selected', { starts_at: '2099-10-09T00:00:00.000Z', ends_at: null })],
+  })
+  assert.match(singleDay, /1 day/)
+  assert.doesNotMatch(singleDay, /0 nights/)
+
+  const missingOption = renderPageDate('confirmed', false, false, false, {
+    eventStartAt: '2099-10-08T22:00:00.000Z',
+    eventEndAt: '2099-10-12T07:00:00.000Z',
+    options: [],
+  })
+  assert.doesNotMatch(missingOption, /\b(?:day|night|nights)\b/)
 })
 
 test('Waiting area: organizer reminder remains, participant and closed voting cannot gain it', () => {
