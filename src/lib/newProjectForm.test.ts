@@ -112,7 +112,7 @@ test('server-rendered form retains POST action metadata and the bound creation r
     if (modules[name]) return modules[name]
     if (!name.startsWith('@/')) return require(name)
     const exports = {}
-    new Function('require', 'exports', compile(`src/${name.slice(2)}${name.endsWith('NewProjectForm') ? '.tsx' : '.ts'}`))(load, exports)
+    new Function('require', 'exports', compile(`src/${name.slice(2)}${name.includes('/components/') ? '.tsx' : '.ts'}`))(load, exports)
     return exports
   }
   const { NewProjectForm } = load('@/components/Project/NewProjectForm') as typeof import('../components/Project/NewProjectForm')
@@ -145,7 +145,7 @@ function browserBundle() {
   }
   const visit = (name: string) => {
     if (codes[name]) return
-    const path = name.startsWith('@/') ? `src/${name.slice(2)}${name.includes('NewProjectForm') ? '.tsx' : '.ts'}` : require.resolve(name)
+    const path = name.startsWith('@/') ? `src/${name.slice(2)}${name.includes('/components/') ? '.tsx' : '.ts'}` : require.resolve(name)
     codes[name] = name.startsWith('@/') ? compile(path) : readFileSync(path, 'utf8')
     codes[name] = codes[name].replace(/require\(['"]([^'"]+)['"]\)/g, (_match, dep: string) => {
       const id = dep.startsWith('.') ? require.resolve(resolve(path, '..', dep)) : dep

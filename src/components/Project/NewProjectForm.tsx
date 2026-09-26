@@ -3,6 +3,7 @@
 import { FormEvent, startTransition, useActionState, useEffect, useMemo, useRef, useState } from 'react'
 import { createProjectWithState } from '@/app/project/new/actions'
 import { Button } from '@/components/ui/button'
+import { DateRangePicker } from '@/components/ui/DateRangePicker'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
 import { normalizeDateOnlyOption } from '@/lib/projectDateSelection'
@@ -17,6 +18,8 @@ type NewProjectFormProps = {
 
 type DraftDateOption = {
   id: string
+  startDate: string
+  endDate: string | null
 }
 
 const EURO = '\u20AC'
@@ -88,7 +91,11 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   const [showServerError, setShowServerError] = useState(true)
   const [financeMode, setFinanceMode] = useState<'none' | 'managed'>('none')
   const [dateMode, setDateMode] = useState<'fixed' | 'selecting'>('fixed')
-  const [dateOptions, setDateOptions] = useState<DraftDateOption[]>([{ id: 'initial-date-option' }])
+  const [dateOptions, setDateOptions] = useState<DraftDateOption[]>([{
+    id: 'initial-date-option',
+    startDate: '',
+    endDate: null,
+  }])
   const [totalIsPerPerson, setTotalIsPerPerson] = useState(false)
   const [bundleEnabled, setBundleEnabled] = useState(false)
   const [bundleSize, setBundleSize] = useState('')
@@ -766,16 +773,16 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
                       </button>
                     )}
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <label className="space-y-1 text-sm font-medium text-slate-700">
-                      Date <span className="text-red-500">*</span>
-                      <input name="date_option_start_date" type="date" className="control-input min-h-11" required />
-                    </label>
-                    <label className="space-y-1 text-sm font-medium text-slate-700">
-                      End date <span className="font-normal text-muted-foreground">(optional)</span>
-                      <input name="date_option_end_date" type="date" className="control-input min-h-11" />
-                    </label>
-                  </div>
+                  <DateRangePicker
+                    value={{ startDate: option.startDate, endDate: option.endDate }}
+                    onChange={value => setDateOptions(current => current.map(item =>
+                      item.id === option.id ? { ...item, ...value } : item
+                    ))}
+                    locale={locale}
+                    startName="date_option_start_date"
+                    endName="date_option_end_date"
+                    required
+                  />
                 </div>
               ))}
               <Button
@@ -786,7 +793,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
                 onClick={() => {
                   const id = `date-option-${nextDateOptionIdRef.current}`
                   nextDateOptionIdRef.current += 1
-                  setDateOptions(current => [...current, { id }])
+                  setDateOptions(current => [...current, { id, startDate: '', endDate: null }])
                 }}
               >
                 + Add another date

@@ -43,6 +43,12 @@ export type ProjectDatePresentationState =
   | 'organizer_decision_required'
   | 'final_date_confirmed'
 
+export type DateRangeDraft = {
+  startDate: string
+  endDate: string | null
+  complete: boolean
+}
+
 export function deriveProjectDatePresentationState(input: {
   dateMode: 'fixed' | 'selecting'
   selectionStatus: 'open' | 'awaiting_organizer_decision' | 'date_selected' | 'confirmation_open' | 'confirmed'
@@ -76,6 +82,78 @@ export function normalizeDateOption(startsAt: string, endsAt: string | null | un
 }
 
 const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+
+const dateKeyFromValue = (value: string) => {
+  const dateKey = value.trim().slice(0, 10)
+  if (!DATE_ONLY_PATTERN.test(dateKey)) throw new Error('Invalid date')
+  const [year, month, day] = dateKey.split('-').map(Number)
+  const timestamp = Date.UTC(year, month - 1, day)
+  if (new Date(timestamp).toISOString().slice(0, 10) !== dateKey) throw new Error('Invalid date')
+  return { dateKey, timestamp }
+}
+
+export function selectDateRangeDay(current: DateRangeDraft, date: string): DateRangeDraft {
+  const selected = dateKeyFromValue(date).dateKey
+  if (!current.startDate || current.complete) {
+    return { startDate: selected, endDate: null, complete: false }
+  }
+  const start = dateKeyFromValue(current.startDate)
+  const next = dateKeyFromValue(selected)
+  if (next.timestamp <= start.timestamp) {
+    return { startDate: selected, endDate: null, complete: false }
+  }
+  return { startDate: start.dateKey, endDate: next.dateKey, complete: true }
+}
+
+export function dateRangeNightCount(startsAt: string, endsAt: string | null | undefined) {
+  if (!endsAt) return 0
+  const start = dateKeyFromValue(startsAt)
+  const end = dateKeyFromValue(endsAt)
+  const nights = Math.round((end.timestamp - start.timestamp) / 86_400_000)
+  if (nights < 0) throw new Error('Date range must end on or after it starts')
+  return nights
+}
+
+const lithuanianNightUnit = (nights: number) => {
+  const lastTwo = nights % 100
+  if (lastTwo >= 10 && lastTwo <= 20) return 'naktų'
+  const last = nights % 10
+  if (last === 1) return 'naktis'
+  if (last >= 2 && last <= 9) return 'naktys'
+  return 'naktų'
+}
+
+export function formatDateRangeDuration(
+  startsAt: string,
+  endsAt: string | null | undefined,
+  locale: 'en' | 'lt'
+) {
+  const nights = dateRangeNightCount(startsAt, endsAt)
+  if (nights === 0) return locale === 'lt' ? '1 diena' : '1 day'
+  if (locale === 'lt') return `${nights} ${lithuanianNightUnit(nights)}`
+  return `${nights} ${nights === 1 ? 'night' : 'nights'}`
+}
+
+export function formatProjectDateRange(
+  startsAt: string,
+  endsAt: string | null | undefined,
+  locale: 'en' | 'lt'
+) {
+  const localeName = locale === 'lt' ? 'lt-LT' : 'en-GB'
+  const formatValue = (value: string) => {
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) throw new Error('Invalid date')
+    return new Intl.DateTimeFormat(localeName, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      timeZone: 'UTC',
+      ...(!isDateOnlyTimestamp(value) ? { hour: '2-digit', minute: '2-digit', hour12: false } : {}),
+    }).format(date)
+  }
+  const start = formatValue(startsAt)
+  return endsAt ? `${start} – ${formatValue(endsAt)}` : start
+}
 
 const dateOnlyToIso = (value: string, label: string) => {
   const normalized = value.trim()
