@@ -1,12 +1,13 @@
 import { getProjectReadiness, isManagedFinance } from './projectFinance.ts'
 
 export type SuccessStage = 'date' | 'participants' | 'finance' | 'ready'
-export type SuccessAction = 'choose_dates' | 'confirm_attendance' | 'finalize_date_early' | 'resolve_date' | 'invite_people' | 'review_finance' | 'review_payment'
+export type SuccessAction = 'choose_dates' | 'confirm_attendance' | 'review_join_requests' | 'finalize_date_early' | 'resolve_date' | 'invite_people' | 'review_finance' | 'review_payment'
 export type SuccessContext = {
   isCanceled: boolean
   isFinalized: boolean
   financeMode: unknown
   confirmedParticipants: number
+  pendingJoinRequests: number
   minParticipants?: number | null
   capacityAvailable: boolean
   joinsAllowed: boolean
@@ -26,6 +27,7 @@ export type SuccessContext = {
 export type SuccessViewer = {
   isParticipant: boolean
   canManage: boolean
+  canManageJoinRequests: boolean
   canPay: boolean
 }
 export type ProjectSuccessPath = {
@@ -38,6 +40,7 @@ export type ProjectSuccessPath = {
   ready: boolean
   confirmedParticipants: number
   minimum: number
+  pendingJoinRequests: number
 }
 
 /** Facts come from the existing page/Date Finder. No I/O, clocks, or persisted workflow. */
@@ -51,6 +54,7 @@ export function deriveProjectSuccessPath(context: SuccessContext, viewer: Succes
   const base = {
     confirmedParticipants: readiness.confirmedParticipants,
     minimum: Math.max(0, Number(context.minParticipants ?? 0)),
+    pendingJoinRequests: Math.max(0, Math.trunc(Number.isFinite(context.pendingJoinRequests) ? context.pendingJoinRequests : 0)),
   }
   // Finalized freezes base contributions; it is deliberately NOT called event completion.
   if (context.isCanceled || context.isFinalized) {
@@ -87,6 +91,8 @@ export function deriveProjectSuccessPath(context: SuccessContext, viewer: Succes
     nextAction = 'choose_dates'
   } else if (viewer.isParticipant && dateReady && context.date.viewerNeedsConfirmation) {
     nextAction = 'confirm_attendance'
+  } else if (viewer.canManageJoinRequests && base.pendingJoinRequests > 0) {
+    nextAction = 'review_join_requests'
   } else if (!dateReady && context.date.votingOpen && context.date.hasOptions && context.date.allResponded && viewer.canManage) {
     nextAction = 'finalize_date_early'
   } else if (!dateReady && context.date.awaitingOrganizer && viewer.canManage) {
@@ -99,7 +105,8 @@ export function deriveProjectSuccessPath(context: SuccessContext, viewer: Succes
   }
 
   return { ...base, stage, visibleStages, blockers, nextAction, ready,
-    health: context.date.awaitingOrganizer || (dateReady && !readiness.participationReady
+    health: nextAction === 'review_join_requests' ? 'needs_attention'
+      : context.date.awaitingOrganizer || (dateReady && !readiness.participationReady
       && !context.capacityAvailable && context.date.awaitingAttendance === 0)
       ? 'blocked' : nextAction ? 'needs_attention' : ready ? 'ready' : 'on_track',
     waitingOn: {

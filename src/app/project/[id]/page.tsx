@@ -1015,7 +1015,8 @@ export default async function ProjectPage({
   if (pendingErr) {
     console.error('[ProjectPage] Error fetching pending requests:', pendingErr)
   }
-  console.log('[ProjectPage] Pending join requests for manager:', { count: pendingForOrganizer?.length ?? 0, requests: pendingForOrganizer })
+  const pendingJoinRequestsCount = pendingForOrganizer?.length ?? 0
+  console.log('[ProjectPage] Pending join requests for manager:', { count: pendingJoinRequestsCount, requests: pendingForOrganizer })
   const basePaidIds = countedPayments
     .filter(p => baseParticipantIds.has(p.participant_id))
     .map(p => p.participant_id)
@@ -1341,7 +1342,7 @@ export default async function ProjectPage({
     organizerId,
     organizerFound: organizer?.id,
     isCollector: viewerIsCollector,
-    pendingRequestsCount: pendingForOrganizer?.length ?? 0,
+    pendingRequestsCount: pendingJoinRequestsCount,
   })
 
   const successPath = deriveProjectSuccessPath({
@@ -1349,6 +1350,7 @@ export default async function ProjectPage({
     isFinalized,
     financeMode,
     confirmedParticipants: projectDateData?.confirmedCount ?? participantsCount,
+    pendingJoinRequests: pendingJoinRequestsCount,
     minParticipants,
     capacityAvailable: !maxParticipants || capacityParticipantCount < maxParticipants,
     joinsAllowed: !isAborted && !isFinalized,
@@ -1370,6 +1372,7 @@ export default async function ProjectPage({
   }, {
     isParticipant: isMeParticipant,
     canManage: viewerIsCollector,
+    canManageJoinRequests: viewerCanManageJoinRequests,
     canPay: isMeParticipant && financialParticipantIds.has(myParticipantId ?? '')
       && paymentsOpen && minParticipantsReached && !dateSelectionBlocksPayments
       && !viewerPaid && !viewerHasPendingSignal && perPersonCents > 0,
@@ -1728,7 +1731,7 @@ export default async function ProjectPage({
         counts={{
           participants: membersCount,
           activity: unreadCount,
-          adminPending: viewerCanManageJoinRequests ? (pendingForOrganizer ?? []).length : 0,
+          adminPending: viewerCanManageJoinRequests ? pendingJoinRequestsCount : 0,
           paymentsPending: financeManaged ? (pendingPaymentsCountWithExtras || undefined) : undefined,
         }}
         sections={{
@@ -2640,7 +2643,7 @@ export default async function ProjectPage({
               collectorId={collectorId}
               myParticipantId={myParticipantId}
               pendingRequests={pendingForOrganizer ?? []}
-              pendingCount={(pendingForOrganizer ?? []).length}
+              pendingCount={pendingJoinRequestsCount}
               canManage={viewerIsCollector}
               canManageJoinRequests={viewerCanManageJoinRequests}
               canCancel={!isAborted && !isFinalized}

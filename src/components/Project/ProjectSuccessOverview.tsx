@@ -6,6 +6,7 @@ import { getProjectSuccessOverviewStrings } from '@/lib/projectSuccessOverviewSt
 const destinations: Record<SuccessAction, string> = {
   choose_dates: '#date-availability',
   confirm_attendance: '#project-date-finder',
+  review_join_requests: '?tab=admin&adminModal=requests',
   finalize_date_early: '#early-date-finalization',
   resolve_date: '#project-date-finder',
   invite_people: '?tab=people',
@@ -19,7 +20,11 @@ export function ProjectSuccessOverview({ model, projectId, locale = 'en' }: {
   locale?: ProjectDateLocale
 }) {
   const strings = getProjectSuccessOverviewStrings(locale)
-  const action = model.nextAction ? { ...strings.actions[model.nextAction], destination: destinations[model.nextAction] } : null
+  const action = model.nextAction ? {
+    ...strings.actions[model.nextAction],
+    detail: strings.actions[model.nextAction].detail(model),
+    destination: destinations[model.nextAction],
+  } : null
   const terminal = model.stage === 'canceled' || model.stage === 'finalized'
   const participantDetail = model.minimum > 0
     ? strings.participantMinimum(model.confirmedParticipants, model.minimum)

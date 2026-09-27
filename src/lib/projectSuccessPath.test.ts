@@ -10,11 +10,11 @@ import * as successStrings from './projectSuccessOverviewStrings.ts'
 import type { ProjectDateLocale } from './projectDateStrings.ts'
 import { countConfirmedParticipants } from './projectDateSelection.ts'
 
-const viewer: SuccessViewer = { isParticipant: true, canManage: false, canPay: false }
-const manager = { ...viewer, canManage: true }
+const viewer: SuccessViewer = { isParticipant: true, canManage: false, canManageJoinRequests: false, canPay: false }
+const manager = { ...viewer, canManage: true, canManageJoinRequests: true }
 function context(changes: Partial<SuccessContext> = {}): SuccessContext {
   return {
-    isCanceled: false, isFinalized: false, financeMode: 'none', confirmedParticipants: 6,
+    isCanceled: false, isFinalized: false, financeMode: 'none', confirmedParticipants: 6, pendingJoinRequests: 0,
     minParticipants: 6, capacityAvailable: true, joinsAllowed: true, managedFinanceReady: false,
     date: { selecting: false, votingOpen: false, hasOptions: true, allResponded: false, awaitingOrganizer: false,
       viewerResponded: false, viewerNeedsConfirmation: false, missingResponses: 0, awaitingAttendance: 0 },
@@ -163,6 +163,65 @@ test('34. awaiting confirmations at capacity remain a waiting state', () => {
   assert.equal(result.health, 'on_track')
 })
 
+test('35. authorized manager reviews one or multiple pending join requests with count preserved', () => {
+  const one = derive(context({ pendingJoinRequests: 1 }), manager)
+  assert.equal(one.nextAction, 'review_join_requests')
+  assert.equal(one.pendingJoinRequests, 1)
+  const multiple = derive(context({ pendingJoinRequests: 3 }), manager)
+  assert.equal(multiple.nextAction, 'review_join_requests')
+  assert.equal(multiple.pendingJoinRequests, 3)
+})
+
+test('36. no pending requests and unauthorized viewers preserve existing behavior', () => {
+  assert.equal(derive(context(), manager).nextAction, null)
+  assert.equal(derive(context({ pendingJoinRequests: 2 }), viewer).nextAction, null)
+})
+
+test('37. join-request permission is independent from generic project management permission', () => {
+  const publicCollector = { ...viewer, canManage: false, canManageJoinRequests: true }
+  assert.equal(derive(context({ pendingJoinRequests: 1 }), publicCollector).nextAction, 'review_join_requests')
+  assert.equal(derive(context({ pendingJoinRequests: 1 }), manager).nextAction, 'review_join_requests')
+})
+
+test('38. personal date and attendance requirements outrank pending join requests', () => {
+  assert.equal(derive({ ...selecting(), pendingJoinRequests: 1 }, manager).nextAction, 'choose_dates')
+  assert.equal(derive(context({ pendingJoinRequests: 1,
+    date: { ...context().date, viewerNeedsConfirmation: true } }), manager).nextAction, 'confirm_attendance')
+})
+
+test('39. pending join requests outrank organizer date, participant, and Finance actions', () => {
+  assert.equal(derive({ ...selecting({ viewerResponded: true, allResponded: true, missingResponses: 0 }), pendingJoinRequests: 1 }, manager).nextAction, 'review_join_requests')
+  assert.equal(derive({ ...selecting({ votingOpen: false, awaitingOrganizer: true, viewerResponded: true }), pendingJoinRequests: 1 }, manager).nextAction, 'review_join_requests')
+  assert.equal(derive(context({ confirmedParticipants: 2, pendingJoinRequests: 1 }), manager).nextAction, 'review_join_requests')
+  assert.equal(derive(context({ financeMode: 'managed', pendingJoinRequests: 1 }), manager).nextAction, 'review_join_requests')
+})
+
+test('40. capacity does not hide pending requests and ready semantics stay unchanged', () => {
+  const full = derive(context({ confirmedParticipants: 2, capacityAvailable: false, pendingJoinRequests: 1 }), manager)
+  assert.equal(full.nextAction, 'review_join_requests')
+  const ready = derive(context({ pendingJoinRequests: 1 }), manager)
+  assert.equal(ready.ready, true)
+  assert.deepEqual(ready.blockers, [])
+  assert.equal(ready.nextAction, 'review_join_requests')
+  assert.equal(ready.health, 'needs_attention')
+})
+
+test('41. terminal projects suppress stale pending-request actions', () => {
+  assert.equal(derive(context({ isCanceled: true, pendingJoinRequests: 2 }), manager).nextAction, null)
+  assert.equal(derive(context({ isFinalized: true, pendingJoinRequests: 2 }), manager).nextAction, null)
+})
+
+test('42. invalid pending counts normalize safely and derivation remains deterministic', () => {
+  for (const pendingJoinRequests of [-2, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const result = derive(context({ pendingJoinRequests }), manager)
+    assert.equal(result.pendingJoinRequests, 0)
+    assert.notEqual(result.nextAction, 'review_join_requests')
+  }
+  assert.equal(derive(context({ pendingJoinRequests: 2.9 }), manager).pendingJoinRequests, 2)
+  const input = context({ pendingJoinRequests: 2 })
+  assert.deepEqual(derive(input, manager), derive(input, manager))
+})
+
 // Render the actual component with the repository's existing TypeScript/React test harness.
 const nodeRequire = createRequire(import.meta.url)
 const componentSource = readFileSync(new URL('../components/Project/ProjectSuccessOverview.tsx', import.meta.url), 'utf8')
@@ -223,6 +282,27 @@ test('UI: all-responded participant gets passive status in EN and LT', () => {
   assert.doesNotMatch(en, /href="#early-date-finalization"/)
 })
 
+test('UI: join-request action has localized count copy, one CTA, and the existing Admin modal destination', () => {
+  const singular = render(context({ pendingJoinRequests: 1 }), manager)
+  assert.match(singular, /Review join requests/)
+  assert.match(singular, /1 person is waiting to join this project\./)
+  assert.match(singular, />Review requests<\/a>/)
+  assert.match(singular, /href="\/project\/fixture\?tab=admin&amp;adminModal=requests"/)
+  assert.equal((singular.match(/<a /g) ?? []).length, 1)
+
+  const plural = render(context({ pendingJoinRequests: 2 }), manager)
+  assert.match(plural, /2 people are waiting to join this project\./)
+  assert.equal((plural.match(/<a /g) ?? []).length, 1)
+
+  const lt = render(context({ pendingJoinRequests: 2 }), manager, 'lt')
+  assert.match(lt, /Peržiūrėkite prisijungimo prašymus/)
+  assert.match(lt, /Laukiančių prisijungimo prašymų: 2\./)
+  assert.match(lt, />Peržiūrėti prašymus<\/a>/)
+  assert.doesNotMatch(lt, /Review join requests|people are waiting|Review requests/)
+
+  assert.doesNotMatch(render(context({ pendingJoinRequests: 0 }), manager), /Review join requests|Review requests/)
+})
+
 // Evaluate the actual page JSX guard, then render the real Date Finder. Only I/O
 // and unrelated leaf controls are stubbed; no production actions are invoked.
 const pageSource = readFileSync(new URL('../app/project/[id]/page.tsx', import.meta.url), 'utf8')
@@ -237,6 +317,19 @@ function findDateFinder(node: ts.Node) {
 }
 findDateFinder(pageAst)
 assert.ok(dateFinderExpression, 'Actual page Date Finder expression must be found')
+
+test('Page integration: one authorized pending snapshot feeds Success Path, Admin badge, and existing modal', () => {
+  assert.equal((pageSource.match(/\.select\('id, requester_user_id, created_at, status'\)/g) ?? []).length, 1)
+  assert.match(pageSource, /const shouldLoadPendingRequests = viewerCanManageJoinRequests/)
+  assert.match(pageSource, /const pendingJoinRequestsCount = pendingForOrganizer\?\.length \?\? 0/)
+  assert.match(pageSource, /pendingJoinRequests: pendingJoinRequestsCount/)
+  assert.match(pageSource, /canManageJoinRequests: viewerCanManageJoinRequests/)
+  assert.match(pageSource, /adminPending: viewerCanManageJoinRequests \? pendingJoinRequestsCount : 0/)
+  assert.match(pageSource, /pendingRequests=\{pendingForOrganizer \?\? \[\]\}/)
+  assert.match(pageSource, /pendingCount=\{pendingJoinRequestsCount\}/)
+  assert.match(pageSource, /const openRequestsOnLoad = defaultProjectTab === 'admin' && adminModalKey === 'requests'/)
+  assert.match(pageSource, /openRequestsOnMount=\{openRequestsOnLoad\}/)
+})
 const compileFixture = (source: string) => ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
   fileName: 'fixture.tsx',
@@ -759,6 +852,7 @@ for (const locale of ['en', 'lt'] as const) {
     const strings = successStrings.getProjectSuccessOverviewStrings(locale)
     const scenarios = [
       { input: context({ date: { ...context().date, viewerNeedsConfirmation: true } }), actor: viewer, action: 'confirm_attendance', target: '#project-date-finder' },
+      { input: context({ pendingJoinRequests: 2 }), actor: manager, action: 'review_join_requests', target: '/project/fixture?tab=admin&amp;adminModal=requests' },
       { input: selecting({ votingOpen: false, awaitingOrganizer: true }), actor: manager, action: 'resolve_date', target: '#project-date-finder' },
       { input: context({ confirmedParticipants: 0 }), actor: manager, action: 'invite_people', target: '/project/fixture?tab=people' },
       { input: context({ financeMode: 'managed' }), actor: manager, action: 'review_finance', target: '/project/fixture?tab=payments' },
@@ -766,10 +860,15 @@ for (const locale of ['en', 'lt'] as const) {
     ] as const
     for (const { input, actor, action, target } of scenarios) {
       const html = render(input, actor, locale)
-      assert.equal(derive(input, actor).nextAction, action)
-      for (const text of Object.values(strings.actions[action])) assert.ok(html.includes(text), text)
+      const model = derive(input, actor)
+      assert.equal(model.nextAction, action)
+      const actionStrings = strings.actions[action]
+      for (const text of [actionStrings.title, actionStrings.detail(model), actionStrings.label]) assert.ok(html.includes(text), text)
       assert.ok(html.includes(`href="${target}"`))
-      if (locale === 'lt') for (const text of Object.values(successStrings.getProjectSuccessOverviewStrings('en').actions[action])) assert.ok(!html.includes(text))
+      if (locale === 'lt') {
+        const enAction = successStrings.getProjectSuccessOverviewStrings('en').actions[action]
+        for (const text of [enAction.title, enAction.detail(model), enAction.label]) assert.ok(!html.includes(text))
+      }
     }
   })
 
