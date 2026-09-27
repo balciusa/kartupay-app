@@ -9,8 +9,11 @@ import {
   canRemoveDateOption,
   confirmationStatusAfterDeadline,
   dateAvailabilityTaskForParticipant,
+  dateRangeNightCount,
   deriveProjectDatePresentationState,
   financeReadiness,
+  formatDateRangeDuration,
+  formatProjectDateRange,
   fullyRespondedDateParticipantIds,
   haveAllActiveParticipantsResponded,
   isDuplicateDateOption,
@@ -18,6 +21,7 @@ import {
   normalizeDateOnlyOption,
   rankDateOptions,
   reenterViaLateJoinFlow,
+  selectDateRangeDay,
   type DateOptionLike,
   type DateResponseLike,
 } from './projectDateSelection.ts'
@@ -264,4 +268,59 @@ test('26. early-selection RPC is service-only and preserves the existing lifecyc
   assert.match(atomicMigration, /revoke all on function public\.select_project_date_early\(uuid, uuid, timestamptz\)[\s\S]*from public, anon, authenticated/)
   assert.match(atomicMigration, /grant execute on function public\.select_project_date_early\(uuid, uuid, timestamptz\)[\s\S]*to service_role/)
   assert.match(atomicMigration, /perform public\.apply_project_date_selection\([\s\S]*p_project_id,[\s\S]*p_option_id,[\s\S]*p_confirmation_deadline/)
+})
+
+test('27. calendar-day duration handles single-day and common night ranges', () => {
+  assert.equal(dateRangeNightCount('2026-10-09', null), 0)
+  assert.equal(dateRangeNightCount('2026-10-09', '2026-10-10'), 1)
+  assert.equal(dateRangeNightCount('2026-10-09', '2026-10-11'), 2)
+  assert.equal(dateRangeNightCount('2026-10-09', '2026-10-12'), 3)
+  assert.equal(formatDateRangeDuration('2026-10-09', null, 'en'), '1 day')
+  assert.equal(formatDateRangeDuration('2026-10-09', '2026-10-10', 'en'), '1 night')
+  assert.equal(formatDateRangeDuration('2026-10-09', '2026-10-12', 'en'), '3 nights')
+})
+
+test('28. duration uses date boundaries across DST, month, year, and leap-day boundaries', () => {
+  assert.equal(dateRangeNightCount('2026-03-28T18:00:00.000Z', '2026-03-30T10:00:00.000Z'), 2)
+  assert.equal(dateRangeNightCount('2026-10-31T18:00:00.000Z', '2026-11-02T10:00:00.000Z'), 2)
+  assert.equal(dateRangeNightCount('2026-01-31', '2026-02-02'), 2)
+  assert.equal(dateRangeNightCount('2026-12-31', '2027-01-02'), 2)
+  assert.equal(dateRangeNightCount('2028-02-28', '2028-03-01'), 2)
+})
+
+test('29. Lithuanian duration grammar is natural for required count families', () => {
+  for (const [nights, expected] of [
+    [1, '1 naktis'], [2, '2 naktys'], [9, '9 naktys'], [10, '10 naktų'],
+    [11, '11 naktų'], [20, '20 naktų'], [21, '21 naktis'], [22, '22 naktys'],
+  ] as const) {
+    assert.equal(formatDateRangeDuration('2026-01-01', `2026-01-${String(1 + nights).padStart(2, '0')}`, 'lt'), expected)
+  }
+  assert.equal(formatDateRangeDuration('2026-10-09', null, 'lt'), '1 diena')
+})
+
+test('30. range-click state starts, completes, restarts earlier, and begins anew after completion', () => {
+  const empty = { startDate: '', endDate: null, complete: false }
+  const started = selectDateRangeDay(empty, '2026-10-09')
+  assert.deepEqual(started, { startDate: '2026-10-09', endDate: null, complete: false })
+  const completed = selectDateRangeDay(started, '2026-10-12')
+  assert.deepEqual(completed, { startDate: '2026-10-09', endDate: '2026-10-12', complete: true })
+  assert.deepEqual(selectDateRangeDay(started, '2026-10-08'), { startDate: '2026-10-08', endDate: null, complete: false })
+  assert.deepEqual(selectDateRangeDay(completed, '2026-10-20'), { startDate: '2026-10-20', endDate: null, complete: false })
+})
+
+test('31. display helper keeps date-only and timed range presentation stable', () => {
+  assert.match(formatProjectDateRange('2026-10-09T00:00:00.000Z', '2026-10-12T00:00:00.000Z', 'en'), /9 Oct 2026.*12 Oct 2026/)
+  assert.match(formatProjectDateRange('2026-10-09T18:00:00.000Z', '2026-10-12T10:00:00.000Z', 'en'), /18:00.*10:00/)
+  assert.equal(formatDateRangeDuration('2026-10-09T18:00:00.000Z', '2026-10-12T10:00:00.000Z', 'en'), '3 nights')
+})
+
+test('32. single-day submission remains endsAt null and multi-day submission keeps the boundary', () => {
+  assert.deepEqual(normalizeDateOnlyOption('2026-10-09', null), {
+    startsAt: '2026-10-09T00:00:00.000Z',
+    endsAt: null,
+  })
+  assert.deepEqual(normalizeDateOnlyOption('2026-10-09', '2026-10-12'), {
+    startsAt: '2026-10-09T00:00:00.000Z',
+    endsAt: '2026-10-12T00:00:00.000Z',
+  })
 })
