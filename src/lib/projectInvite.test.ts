@@ -162,7 +162,7 @@ test('private nonmember returns before full and related project data queries', (
 
   for (const protectedQuery of [
     ".from('messages')", ".from('polls')", ".from('payments')", ".from('extras')",
-    ".select('id, user_id, role, short_code", 'loadProjectDateFinderData', ".from('activity_logs')",
+    ".select('id, user_id, role, short_code", 'loadProjectDateFinderData', 'loadProjectNotifications', ".from('activity_logs')",
   ]) {
     const queryIndex = pageSource.indexOf(protectedQuery, pageSource.indexOf('export default async function ProjectPage'))
     assert.ok(queryIndex === -1 || queryIndex > relatedDataLoad, `${protectedQuery} must stay after the invite return`)

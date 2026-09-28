@@ -367,7 +367,7 @@ const fixedDateFixture = {
   confirmationDeadlineAt: '2099-01-01T00:00:00Z', eventStartAt: '2099-02-01T00:00:00Z', eventEndAt: null,
   minParticipants: 2, maxParticipants: 10, options: [], respondedCount: 2, memberCount: 3,
   confirmedCount: 2, awaitingCount: 1, cannotAttendCount: 0, missingResponseNames: [], awaitingNames: ['Member'],
-  viewerAttendanceStatus: 'confirmed', viewerTaskComplete: true, unreadNotificationCount: 0,
+  viewerAttendanceStatus: 'confirmed', viewerTaskComplete: true,
 }
 function renderPageDate(status = 'confirmed', finalized = true, canceled = false, manager = false, overrides = {}) {
   return renderToStaticMarkup(pageFixture.render!({ ...fixedDateFixture, viewerAttendanceStatus: status, ...overrides }, canceled, finalized, manager))

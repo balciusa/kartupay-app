@@ -36,7 +36,7 @@ function fixture() {
       { id: 'option-b', poll_id: 'poll', label: 'B', created_at: '2026-01-01' },
     ],
     poll_votes: [{ id: 'vote', poll_id: 'poll', option_id: 'option-a', user_id: 'voter' }],
-    project_date_options: [], project_date_responses: [],
+    project_date_options: [], project_date_responses: [], project_notifications: [],
     messages: [], chat_reads: [], join_requests: [],
   }
   const writes: string[] = []
@@ -45,9 +45,14 @@ function fixture() {
   const selects: Array<{ table: string; fields?: string }> = []
   const appliedDateSelections: Array<{ projectId: string; optionId: string; actorUserId: string; actorParticipantId: string }> = []
   const syncedDateProjects: string[] = []
+  const enqueuedJoinNotifications: Array<Record<string, unknown>> = []
+  const resolvedJoinNotifications: Array<{ projectId: string; requestId: string }> = []
+  const resolvedAvailabilityNotifications: Array<{ projectId: string; userId: string }> = []
+  const resolvedNotificationTypes: Array<{ projectId: string; recipientUserId: string; types: string[] }> = []
   let beforeEarlySelection: (() => void | Promise<void>) | null = null
   let currentUserId = 'user'
   const db = {
+    async rpc() { return { data: null, error: null } },
     from(table: string) {
       const filters: Array<(row: Row) => boolean> = []
       const orders: string[] = []
@@ -67,6 +72,7 @@ function fixture() {
         eq(key: string, value: unknown) { filters.push(row => row[key] === value); return query },
         neq(key: string, value: unknown) { filters.push(row => row[key] !== value); return query },
         is(key: string, value: unknown) { filters.push(row => row[key] === value); return query },
+        in(key: string, values: unknown[]) { filters.push(row => values.includes(row[key])); return query },
         order(key: string) { orders.push(key); return query },
         limit(value: number) { limit = value; return query },
         single() { single = true; return query },
@@ -171,6 +177,29 @@ function fixture() {
       },
       syncProjectDateSelection: async (projectId: string) => { syncedDateProjects.push(projectId) },
     },
+    '@/lib/projectNotifications': {
+      enqueueJoinRequestNotifications: async (input: Record<string, unknown>) => { enqueuedJoinNotifications.push(input) },
+      markJoinRequestNotificationsResolved: async (projectId: string, requestId: string) => {
+        resolvedJoinNotifications.push({ projectId, requestId })
+      },
+      resolveCompletedDateAvailabilityNotifications: async (projectId: string, userId: string) => {
+        resolvedAvailabilityNotifications.push({ projectId, userId })
+      },
+      markProjectNotificationTypesRead: async (input: { projectId: string; recipientUserId: string; types: string[] }) => {
+        resolvedNotificationTypes.push(input)
+      },
+      markProjectNotificationReadForUser: async (projectId: string, notificationId: string, userId: string) => {
+        const row = tables.project_notifications.find(item =>
+          item.id === notificationId && item.project_id === projectId && item.recipient_user_id === userId
+        )
+        if (row && !row.read_at) row.read_at = '2026-09-28T12:00:00.000Z'
+      },
+      markAllProjectNotificationsReadForUser: async (projectId: string, userId: string) => {
+        tables.project_notifications
+          .filter(item => item.project_id === projectId && item.recipient_user_id === userId && !item.read_at)
+          .forEach(item => { item.read_at = '2026-09-28T12:00:00.000Z' })
+      },
+    },
     'next/cache': { revalidatePath: () => {} },
     'next/navigation': { redirect: () => { throw new Error('NEXT_REDIRECT') } },
   }
@@ -184,6 +213,10 @@ function fixture() {
     selects,
     appliedDateSelections,
     syncedDateProjects,
+    enqueuedJoinNotifications,
+    resolvedJoinNotifications,
+    resolvedAvailabilityNotifications,
+    resolvedNotificationTypes,
     actions: exports as typeof import('../app/project/[id]/actions'),
     setCurrentUserId(userId: string) {
       currentUserId = userId
@@ -539,6 +572,26 @@ test('private managed join creates a pending request and rejected requests can b
   assert.equal(f.tables.join_requests[0].status, 'pending')
 })
 
+test('pending join retries keep one occurrence while a later re-request gets a new occurrence identity', async () => {
+  const f = fixture()
+  f.tables.projects[0].is_public = false
+  f.tables.projects[0].finance_mode = 'managed'
+  f.tables.participants = []
+
+  await f.actions.requestJoin('project')
+  const firstOccurrence = String(f.tables.join_requests[0].created_at)
+  await f.actions.requestJoin('project')
+  assert.equal(f.tables.join_requests[0].created_at, firstOccurrence)
+  assert.equal(f.enqueuedJoinNotifications.length, 2)
+  assert.equal(f.enqueuedJoinNotifications[0].requestedAt, f.enqueuedJoinNotifications[1].requestedAt)
+
+  f.tables.join_requests[0].status = 'rejected'
+  f.tables.join_requests[0].created_at = '2020-01-01T00:00:00.000Z'
+  await f.actions.requestJoin('project')
+  assert.notEqual(f.tables.join_requests[0].created_at, '2020-01-01T00:00:00.000Z')
+  assert.notEqual(f.enqueuedJoinNotifications[2].requestedAt, firstOccurrence)
+})
+
 test('public managed join keeps the existing pending approval behavior', async () => {
   const f = fixture()
   f.tables.projects[0].finance_mode = 'managed'
@@ -583,6 +636,7 @@ test('private organizer can approve a pending request when aborted_at exists', a
   assert.equal(requester.left_at, null)
   assert.equal(requester.role, 'member')
   assert.equal(f.tables.join_requests[0].status, 'approved')
+  assert.deepEqual(f.resolvedJoinNotifications, [{ projectId: 'project', requestId: 'request' }])
 })
 
 test('private organizer can approve when legacy schema has no aborted_at', async () => {
@@ -606,6 +660,7 @@ test('private organizer can reject when legacy schema has no aborted_at', async 
   await assert.rejects(f.actions.rejectJoinRequest('request'), /NEXT_REDIRECT/)
 
   assert.equal(f.tables.join_requests[0].status, 'rejected')
+  assert.deepEqual(f.resolvedJoinNotifications, [{ projectId: 'project', requestId: 'request' }])
 })
 
 test('collector-only private participant stays denied when legacy schema has no aborted_at', async () => {
@@ -642,6 +697,50 @@ test('collector-only participant cannot approve a private pending request', asyn
   await assert.rejects(f.actions.approveJoinRequest('request'), /Not authorized/)
   assert.equal(f.tables.join_requests[0].status, 'pending')
   assert.equal(f.tables.participants.some(row => row.user_id === 'requester'), false)
+})
+
+test('notification read actions derive the recipient from authentication and resist ID/project tampering', async () => {
+  const f = fixture()
+  f.tables.project_notifications = [
+    { id: 'mine', project_id: 'project', recipient_user_id: 'user', read_at: null },
+    { id: 'theirs', project_id: 'project', recipient_user_id: 'other-user', read_at: null },
+    { id: 'other-project', project_id: 'other', recipient_user_id: 'user', read_at: null },
+  ]
+
+  await f.actions.markProjectNotificationRead('project', 'mine')
+  await f.actions.markProjectNotificationRead('project', 'theirs')
+  await f.actions.markProjectNotificationRead('project', 'other-project')
+  assert.ok(f.tables.project_notifications[0].read_at)
+  assert.equal(f.tables.project_notifications[1].read_at, null)
+  assert.equal(f.tables.project_notifications[2].read_at, null)
+
+  f.tables.project_notifications[0].read_at = null
+  await f.actions.markAllProjectNotificationsRead('project')
+  assert.ok(f.tables.project_notifications[0].read_at)
+  assert.equal(f.tables.project_notifications[1].read_at, null)
+  assert.equal(f.tables.project_notifications[2].read_at, null)
+})
+
+test('date availability and final attendance actions resolve their notification groups', async () => {
+  const availability = fixture()
+  availability.tables.project_date_options.push({ id: 'date', project_id: 'project', status: 'active' })
+  await availability.actions.setProjectDateResponse('project', 'date', 'available', false)
+  assert.deepEqual(availability.resolvedAvailabilityNotifications, [{ projectId: 'project', userId: 'user' }])
+
+  const attendance = fixture()
+  Object.assign(attendance.tables.projects[0], {
+    date_mode: 'fixed',
+    date_selection_status: 'confirmation_open',
+    selected_date_option_id: 'date',
+    confirmation_deadline_at: '2099-10-01T00:00:00.000Z',
+  })
+  attendance.tables.participants[0].attendance_status = 'awaiting_confirmation'
+  await attendance.actions.respondToDateConfirmation('project', 'yes')
+  assert.deepEqual(attendance.resolvedNotificationTypes, [{
+    projectId: 'project',
+    recipientUserId: 'user',
+    types: ['date_confirmation_24h', 'date_confirmation_2h'],
+  }])
 })
 
 test('pending join request can still be canceled', async () => {

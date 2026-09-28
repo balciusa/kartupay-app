@@ -360,11 +360,6 @@ export function ProjectDateFinder({
             <div className="flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800">
               <Check className="h-4 w-4" /> {strings.dateConfirmed}
             </div>
-            {data.unreadNotificationCount > 0 && (
-              <div className="rounded-full bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-800">
-                {strings.notifications}: {data.unreadNotificationCount}
-              </div>
-            )}
           </div>
         </div>
 
@@ -540,11 +535,6 @@ export function ProjectDateFinder({
                 ? strings.organizerDecision
                 : strings.chooseProjectDate}
           </h2>
-          {data.unreadNotificationCount > 0 && (
-            <span className="inline-flex rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-800">
-              {strings.notifications}: {data.unreadNotificationCount}
-            </span>
-          )}
         </div>
         <div className="space-y-1 text-sm text-slate-600 sm:text-right">
           <div className="font-medium text-slate-900">{data.respondedCount} / {data.memberCount} {strings.responded}</div>
