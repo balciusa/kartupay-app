@@ -25,6 +25,15 @@ import {
 } from '@/lib/projectDateSelection'
 import { applyEarlySelectedProjectDate, applySelectedProjectDate, syncProjectDateSelection } from '@/lib/projectDateService'
 import {
+  DATE_CONFIRMATION_NOTIFICATION_TYPES,
+  enqueueJoinRequestNotifications,
+  markAllProjectNotificationsReadForUser,
+  markJoinRequestNotificationsResolved,
+  markProjectNotificationReadForUser,
+  markProjectNotificationTypesRead,
+  resolveCompletedDateAvailabilityNotifications,
+} from '@/lib/projectNotifications'
+import {
   FINANCE_HISTORY_ERROR,
   assertManagedFinance,
   getProjectJoinStrategy,
@@ -33,6 +42,11 @@ import {
   validateProjectFinanceInput,
   type ProjectFinanceMode,
 } from '@/lib/projectFinance'
+
+const nextJoinRequestOccurrenceAt = (previousCreatedAt: string | null | undefined) => {
+  const previousTime = previousCreatedAt ? new Date(previousCreatedAt).getTime() : Number.NaN
+  return new Date(Number.isNaN(previousTime) ? Date.now() : Math.max(Date.now(), previousTime + 1)).toISOString()
+}
 
 export async function setCollector(projectId: string, participantId: string) {
   'use server'
@@ -1753,7 +1767,7 @@ export async function requestJoin(projectId: string) {
   console.log('[requestJoin] start', { projectId, uid })
 
   const baseProjectFields = 'id, status, canceled_at'
-  const optionalProjectFields = ['is_public', 'finance_mode', 'max_participants', 'date_mode', 'selected_date_option_id', 'aborted_at'] as const
+  const optionalProjectFields = ['is_public', 'finance_mode', 'max_participants', 'date_mode', 'selected_date_option_id', 'aborted_at', 'collector_participant_id'] as const
   let optionalFields = [...optionalProjectFields]
   type JoinProjectRow = {
     id: string
@@ -1765,6 +1779,7 @@ export async function requestJoin(projectId: string) {
     date_mode?: 'fixed' | 'selecting' | null
     selected_date_option_id?: string | null
     aborted_at?: string | null
+    collector_participant_id?: string | null
   }
   let project: JoinProjectRow | null = null
   let pErr: { message?: string; details?: string | null; hint?: string | null; code?: string } | null = null
@@ -1793,6 +1808,7 @@ export async function requestJoin(projectId: string) {
           date_mode: 'date_mode' in row ? row.date_mode ?? 'fixed' : 'fixed',
           selected_date_option_id: 'selected_date_option_id' in row ? row.selected_date_option_id ?? null : null,
           aborted_at: 'aborted_at' in row ? row.aborted_at ?? null : null,
+          collector_participant_id: 'collector_participant_id' in row ? row.collector_participant_id ?? null : null,
         }
       : null
     pErr = result.error
@@ -1885,11 +1901,12 @@ export async function requestJoin(projectId: string) {
   // Check if there's an existing request (including rejected ones)
   const { data: existingReq, error: checkErr } = await supabaseAdmin
     .from('join_requests')
-    .select('id, status')
+    .select('id, status, created_at')
     .eq('project_id', projectId)
     .eq('requester_user_id', uid)
     .maybeSingle()
   let resultingRequestId: string | null = null
+  let pendingOccurrenceAt: string | null = null
   
   if (checkErr) {
     console.error('[requestJoin] check existing request error', checkErr)
@@ -1897,35 +1914,42 @@ export async function requestJoin(projectId: string) {
   }
 
   if (existingReq && !checkErr) {
-    // Update existing request (whether pending, rejected, or approved)
-    const { error: upErr } = await supabaseAdmin
-      .from('join_requests')
-      .update({
-        status: 'pending',
-        created_at: new Date().toISOString(), // Reset created_at for new request
-      })
-      .eq('id', existingReq.id)
-    
-    if (upErr) {
-      console.error('[requestJoin] update join_requests error', upErr, { requestId: existingReq.id })
-      revalidatePath(`/project/${projectId}`)
-      return { ok: false, reason: 'update_failed' as const }
-    }
     resultingRequestId = existingReq.id
-    console.log('[requestJoin] updated existing request to pending', { requestId: existingReq.id, oldStatus: existingReq.status })
+    if (existingReq.status === 'pending') {
+      pendingOccurrenceAt = existingReq.created_at
+      console.log('[requestJoin] existing request is already pending', { requestId: existingReq.id })
+    } else {
+      const requestedAt = nextJoinRequestOccurrenceAt(existingReq.created_at)
+      const { data: updated, error: upErr } = await supabaseAdmin
+        .from('join_requests')
+        .update({ status: 'pending', created_at: requestedAt })
+        .eq('id', existingReq.id)
+        .select('id, created_at')
+        .single()
+
+      if (upErr) {
+        console.error('[requestJoin] update join_requests error', upErr, { requestId: existingReq.id })
+        revalidatePath(`/project/${projectId}`)
+        return { ok: false, reason: 'update_failed' as const }
+      }
+      pendingOccurrenceAt = updated?.created_at ?? requestedAt
+      console.log('[requestJoin] updated existing request to pending', { requestId: existingReq.id, oldStatus: existingReq.status })
+    }
   } else {
     // Create new request (or upsert if check failed)
     // Try insert first, if it fails due to conflict, then update
+    const requestedAt = new Date().toISOString()
     const insertData = {
       project_id: projectId,
       requester_user_id: uid,
       status: 'pending' as const,
+      created_at: requestedAt,
     }
     
     const { data: inserted, error: insErr } = await supabaseAdmin
       .from('join_requests')
       .insert(insertData)
-      .select()
+      .select('id, created_at')
       .single()
     
     if (insErr) {
@@ -1936,7 +1960,7 @@ export async function requestJoin(projectId: string) {
         // Find the existing request and update it
         const { data: existingForUpdate, error: findErr } = await supabaseAdmin
           .from('join_requests')
-          .select('id')
+          .select('id, status, created_at')
           .eq('project_id', projectId)
           .eq('requester_user_id', uid)
           .maybeSingle()
@@ -1947,21 +1971,25 @@ export async function requestJoin(projectId: string) {
           return { ok: false, reason: 'upsert_failed' as const, error: insErr.message }
         }
         
-        const { error: upErr } = await supabaseAdmin
-          .from('join_requests')
-          .update({
-            status: 'pending',
-            created_at: new Date().toISOString(),
-          })
-          .eq('id', existingForUpdate.id)
-        
-        if (upErr) {
-          console.error('[requestJoin] Update after conflict failed', upErr)
-          revalidatePath(`/project/${projectId}`)
-          return { ok: false, reason: 'upsert_failed' as const, error: upErr.message }
-        }
         resultingRequestId = existingForUpdate.id
-        
+        if (existingForUpdate.status === 'pending') {
+          pendingOccurrenceAt = existingForUpdate.created_at
+        } else {
+          const requestedAt = nextJoinRequestOccurrenceAt(existingForUpdate.created_at)
+          const { data: updated, error: upErr } = await supabaseAdmin
+            .from('join_requests')
+            .update({ status: 'pending', created_at: requestedAt })
+            .eq('id', existingForUpdate.id)
+            .select('id, created_at')
+            .single()
+
+          if (upErr) {
+            console.error('[requestJoin] Update after conflict failed', upErr)
+            revalidatePath(`/project/${projectId}`)
+            return { ok: false, reason: 'upsert_failed' as const, error: upErr.message }
+          }
+          pendingOccurrenceAt = updated?.created_at ?? requestedAt
+        }
         console.log('[requestJoin] Updated existing request after conflict')
       } else {
         console.error('[requestJoin] insert join_requests error', insErr)
@@ -1970,7 +1998,22 @@ export async function requestJoin(projectId: string) {
       }
     } else {
       resultingRequestId = inserted?.id ?? null
+      pendingOccurrenceAt = inserted?.created_at ?? requestedAt
       console.log('[requestJoin] created new pending request', inserted?.id)
+    }
+  }
+
+  if (resultingRequestId && pendingOccurrenceAt) {
+    try {
+      await enqueueJoinRequestNotifications({
+        projectId,
+        joinRequestId: resultingRequestId,
+        requestedAt: pendingOccurrenceAt,
+        isPublic: project.is_public === true,
+        collectorParticipantId: project.collector_participant_id ?? null,
+      })
+    } catch (error) {
+      console.error('[requestJoin] Failed to enqueue manager notifications', { projectId, requestId: resultingRequestId, error })
     }
   }
 
@@ -2189,6 +2232,11 @@ export async function approveJoinRequest(requestId: string) {
     console.error('[approveJoinRequest] Failed to update request status:', updErr)
     throw updErr
   }
+  try {
+    await markJoinRequestNotificationsResolved(req.project_id, req.id)
+  } catch (error) {
+    console.error('[approveJoinRequest] Failed to resolve join notifications', { requestId: req.id, error })
+  }
 
   await recordProjectActivity({
     projectId: req.project_id,
@@ -2277,6 +2325,12 @@ export async function rejectJoinRequest(requestId: string) {
     })
     .eq('id', requestId)
   if (updErr) throw updErr
+
+  try {
+    await markJoinRequestNotificationsResolved(req.project_id, req.id)
+  } catch (error) {
+    console.error('[rejectJoinRequest] Failed to resolve join notifications', { requestId: req.id, error })
+  }
 
   await recordProjectActivity({
     projectId: req.project_id,
@@ -3181,6 +3235,11 @@ export async function setProjectDateResponse(
     actorParticipantId: participant.id,
     metadata: { date_option_id: optionId, availability, is_preferred: isPreferred },
   })
+  try {
+    await resolveCompletedDateAvailabilityNotifications(projectId, uid)
+  } catch (error) {
+    console.error('[setProjectDateResponse] Failed to resolve availability notifications', { projectId, error })
+  }
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -3444,6 +3503,17 @@ export async function respondToDateConfirmation(
     actorParticipantId: participant.id,
     metadata: { response, attendance_status: attendanceStatus },
   })
+  if (response !== 'still_dont_know') {
+    try {
+      await markProjectNotificationTypesRead({
+        projectId,
+        recipientUserId: uid,
+        types: DATE_CONFIRMATION_NOTIFICATION_TYPES,
+      })
+    } catch (error) {
+      console.error('[respondToDateConfirmation] Failed to resolve attendance notifications', { projectId, error })
+    }
+  }
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -3457,6 +3527,15 @@ export async function stayProjectObserver(projectId: string) {
     .update({ attendance_status: 'observer', attendance_updated_at: new Date().toISOString() })
     .eq('id', participant.id)
   if (error) throw error
+  try {
+    await markProjectNotificationTypesRead({
+      projectId,
+      recipientUserId: uid,
+      types: DATE_CONFIRMATION_NOTIFICATION_TYPES,
+    })
+  } catch (notificationError) {
+    console.error('[stayProjectObserver] Failed to resolve attendance notifications', { projectId, error: notificationError })
+  }
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -3501,6 +3580,31 @@ export async function lateConfirmProjectAttendance(projectId: string) {
       }
     }
   )
+  try {
+    await markProjectNotificationTypesRead({
+      projectId,
+      recipientUserId: uid,
+      types: DATE_CONFIRMATION_NOTIFICATION_TYPES,
+    })
+  } catch (error) {
+    console.error('[lateConfirmProjectAttendance] Failed to resolve attendance notifications', { projectId, error })
+  }
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function markProjectNotificationRead(projectId: string, notificationId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  await markProjectNotificationReadForUser(projectId, notificationId, uid)
+  revalidatePath(`/project/${projectId}`)
+}
+
+export async function markAllProjectNotificationsRead(projectId: string) {
+  'use server'
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
+  await markAllProjectNotificationsReadForUser(projectId, uid)
   revalidatePath(`/project/${projectId}`)
 }
 
@@ -5142,7 +5246,7 @@ export async function cancelJoinRequest(projectId: string) {
 
   const { data: requestsToCancel, error: requestsErr } = await supabaseAdmin
     .from('join_requests')
-    .select('id, status')
+    .select('id, project_id, status')
     .eq('project_id', projectId)
     .eq('requester_user_id', uid)
     .neq('status', 'canceled')
@@ -5163,8 +5267,16 @@ export async function cancelJoinRequest(projectId: string) {
   }
 
   for (const request of requestsToCancel ?? []) {
+    try {
+      await markJoinRequestNotificationsResolved(request.project_id, request.id)
+    } catch {
+      console.error('[cancelJoinRequest] Failed to resolve join notifications', {
+        projectId: request.project_id,
+        requestId: request.id,
+      })
+    }
     await recordProjectActivity({
-      projectId,
+      projectId: request.project_id,
       entryType: 'join_request_canceled',
       actorUserId,
       actorParticipantId,

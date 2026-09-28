@@ -20,12 +20,14 @@ import { LocationLinkMenu } from '@/components/Project/LocationLinkMenu'
 import { ProjectFlowBar } from '@/components/Project/ProjectFlowBar'
 import { BaseItineraryEditor } from '@/components/Project/BaseItineraryEditor'
 import { ProjectDateFinder } from '@/components/Project/ProjectDateFinder'
+import { ProjectNotificationCenter } from '@/components/Project/ProjectNotificationCenter'
 import { getActivityCategory } from '@/lib/activityLog'
 import { buildExtraDueRows, extraDueKey } from '@/lib/extraPayments'
 import { calculateProjectPricing, describeBundlePricing } from '@/lib/projectPricing'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { loadProjectDateFinderData } from '@/lib/projectDateService'
+import { loadProjectNotifications, type ProjectNotificationSnapshot } from '@/lib/projectNotifications'
 import { resolveProjectDateLocale } from '@/lib/projectDateStrings'
 import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { shouldShowProjectShare } from '@/lib/projectShare'
@@ -1016,6 +1018,20 @@ export default async function ProjectPage({
     console.error('[ProjectPage] Error fetching pending requests:', pendingErr)
   }
   const pendingJoinRequestsCount = pendingForOrganizer?.length ?? 0
+  const notificationSnapshot: ProjectNotificationSnapshot = uid
+    ? await loadProjectNotifications(projectId, uid, projectDateLocale, {
+        pendingJoinRequestIds: (pendingForOrganizer ?? []).map(request => request.id),
+        dateAvailabilityRequired: isMeParticipant
+          && projectDateData?.dateMode === 'selecting'
+          && projectDateData.selectionStatus === 'open'
+          && !projectDateData.viewerTaskComplete,
+        attendanceConfirmationRequired: isMeParticipant
+          && projectDateData?.dateMode === 'fixed'
+          && projectDateData.selectionStatus === 'confirmation_open'
+          && (projectDateData.viewerAttendanceStatus === 'awaiting_confirmation'
+            || projectDateData.viewerAttendanceStatus === 'unconfirmed'),
+      })
+    : { items: [], unreadCount: 0 }
   console.log('[ProjectPage] Pending join requests for manager:', { count: pendingJoinRequestsCount, requests: pendingForOrganizer })
   const basePaidIds = countedPayments
     .filter(p => baseParticipantIds.has(p.participant_id))
@@ -1684,6 +1700,14 @@ export default async function ProjectPage({
             )}
           </div>
           <div className="flex flex-wrap items-start justify-end gap-2 md:items-center">
+            {uid && (
+              <ProjectNotificationCenter
+                projectId={projectId}
+                initialItems={notificationSnapshot.items}
+                initialUnreadCount={notificationSnapshot.unreadCount}
+                locale={projectDateLocale}
+              />
+            )}
             {showProjectShare && (
               <ShareProjectButton
                 projectId={projectId}

@@ -9,6 +9,7 @@ import {
   type ParticipantAttendanceStatus,
 } from '@/lib/projectDateSelection'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
+import { enqueueProjectNotifications, type ProjectNotificationType } from '@/lib/projectNotifications'
 
 type DateProjectRow = {
   id: string
@@ -62,7 +63,6 @@ export type ProjectDateFinderData = {
   awaitingNames: string[]
   viewerAttendanceStatus: ParticipantAttendanceStatus | null
   viewerTaskComplete: boolean
-  unreadNotificationCount: number
 }
 
 const dateFields =
@@ -166,7 +166,7 @@ async function enqueueConfirmationReminders(project: DateProjectRow, now: Date) 
   if (!project.confirmation_deadline_at || project.date_selection_status !== 'confirmation_open') return
   const deadline = new Date(project.confirmation_deadline_at)
   const hoursRemaining = (deadline.getTime() - now.getTime()) / (60 * 60 * 1000)
-  const reminderType = hoursRemaining <= 2
+  const reminderType: ProjectNotificationType | null = hoursRemaining <= 2
     ? 'date_confirmation_2h'
     : hoursRemaining <= 24
       ? 'date_confirmation_24h'
@@ -194,13 +194,71 @@ async function enqueueConfirmationReminders(project: DateProjectRow, now: Date) 
     },
     dedupe_key: `${reminderType}:${project.id}:${row.user_id}`,
   }))
-  if (rows.length) {
-    const { error } = await supabaseAdmin.from('project_notifications').upsert(rows, {
-      onConflict: 'dedupe_key',
-      ignoreDuplicates: true,
-    })
-    if (error) throw error
+  await enqueueProjectNotifications(rows)
+}
+
+async function enqueueAvailabilityReminders(project: DateProjectRow, now: Date) {
+  if (
+    project.date_mode !== 'selecting'
+    || project.date_selection_status !== 'open'
+    || !project.date_voting_deadline_at
+  ) return
+
+  const deadline = new Date(project.date_voting_deadline_at)
+  const hoursRemaining = (deadline.getTime() - now.getTime()) / (60 * 60 * 1000)
+  const reminderType = hoursRemaining <= 2
+    ? 'date_availability_2h' as const
+    : hoursRemaining <= 24
+      ? 'date_availability_24h' as const
+      : null
+  if (!reminderType || hoursRemaining <= 0) return
+
+  const [optionsResult, participantsResult, responsesResult] = await Promise.all([
+    supabaseAdmin
+      .from('project_date_options')
+      .select('id')
+      .eq('project_id', project.id)
+      .eq('status', 'active'),
+    supabaseAdmin
+      .from('participants')
+      .select('user_id')
+      .eq('project_id', project.id)
+      .is('left_at', null),
+    supabaseAdmin
+      .from('project_date_responses')
+      .select('date_option_id, user_id')
+      .eq('project_id', project.id),
+  ])
+  if (optionsResult.error || participantsResult.error || responsesResult.error) {
+    throw optionsResult.error || participantsResult.error || responsesResult.error
   }
+
+  const activeOptionIds = (optionsResult.data ?? []).map(option => option.id)
+  if (activeOptionIds.length === 0) return
+  const participantUserIds = (participantsResult.data ?? []).map(participant => participant.user_id)
+  const fullyResponded = new Set(fullyRespondedDateParticipantIds(
+    activeOptionIds,
+    (responsesResult.data ?? []) as DateResponseLike[],
+    participantUserIds
+  ))
+  const rows = participantUserIds
+    .filter(userId => !fullyResponded.has(userId))
+    .map(userId => ({
+      project_id: project.id,
+      recipient_user_id: userId,
+      notification_type: reminderType,
+      title: 'Choose your available dates',
+      body: reminderType === 'date_availability_2h'
+        ? 'Final reminder: choose your available dates before voting closes.'
+        : 'Date voting closes soon. Add your availability.',
+      metadata: {
+        message_key: reminderType,
+        date_voting_deadline_at: project.date_voting_deadline_at,
+      },
+      dedupe_key: `${reminderType}:${project.id}:${project.date_voting_deadline_at}:${userId}`,
+    }))
+
+  await enqueueProjectNotifications(rows)
 }
 
 export async function syncProjectDateSelection(projectId: string, now = new Date()) {
@@ -215,6 +273,20 @@ export async function syncProjectDateSelection(projectId: string, now = new Date
   }
   if (!data) return false
   const project = data as DateProjectRow
+
+  if (
+    project.date_mode === 'selecting'
+    && project.date_selection_status === 'open'
+    && project.date_voting_deadline_at
+    && new Date(project.date_voting_deadline_at) > now
+  ) {
+    try {
+      await enqueueAvailabilityReminders(project, now)
+    } catch (error) {
+      console.error('[project-date-service] Failed to enqueue availability reminders', { projectId, error })
+    }
+    return false
+  }
 
   if (
     project.date_mode === 'selecting'
@@ -262,7 +334,11 @@ export async function syncProjectDateSelection(projectId: string, now = new Date
     && project.date_selection_status === 'confirmation_open'
     && project.confirmation_deadline_at
   ) {
-    await enqueueConfirmationReminders(project, now)
+    try {
+      await enqueueConfirmationReminders(project, now)
+    } catch (error) {
+      console.error('[project-date-service] Failed to enqueue confirmation reminders', { projectId, error })
+    }
     if (new Date(project.confirmation_deadline_at) <= now) {
       const { error: participantsError } = await supabaseAdmin
         .from('participants')
@@ -299,7 +375,7 @@ export async function processDueProjectDateWork(now = new Date()) {
         .select('id')
         .eq('date_mode', 'selecting')
         .eq('date_selection_status', 'open')
-        .lte('date_voting_deadline_at', now.toISOString()),
+        .lte('date_voting_deadline_at', confirmationWindowEnd),
       supabaseAdmin
         .from('projects')
         .select('id')
@@ -400,15 +476,6 @@ export async function loadProjectDateFinderData(
         .eq('task_type', project.date_mode === 'selecting' ? 'date_availability' : 'date_confirmation')
         .maybeSingle()
     : { data: null, error: null }
-  const unreadResult = viewerUserId
-    ? await supabaseAdmin
-        .from('project_notifications')
-        .select('id', { count: 'exact', head: true })
-        .eq('project_id', projectId)
-        .eq('recipient_user_id', viewerUserId)
-        .is('read_at', null)
-    : { count: 0, error: null }
-
   const tallyById = new Map(ranking.tallies.map(tally => [tally.id, tally]))
   return {
     available: true,
@@ -463,6 +530,5 @@ export async function loadProjectDateFinderData(
     viewerAttendanceStatus:
       participants.find(participant => participant.user_id === viewerUserId)?.attendance_status ?? null,
     viewerTaskComplete: viewerTaskResult.data?.status === 'completed' || viewerTaskComplete,
-    unreadNotificationCount: unreadResult.count ?? 0,
   }
 }
