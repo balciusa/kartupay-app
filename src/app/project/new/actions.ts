@@ -42,6 +42,7 @@ const schema = z.object({
   description: z.string().max(2000).optional().nullable(),
   visibility: z.enum(['private', 'public']),
   finance_mode: z.enum(['none', 'managed']),
+  transport_enabled: z.enum(['true', 'false']),
   totalEur: z.string().optional().nullable(),
   total_is_per_person: z.enum(['true', 'false']).optional(),
   bundle_size: z.string().optional().nullable(),
@@ -100,6 +101,7 @@ export async function createProject(formData: FormData) {
     description: (formData.get('description') as string) || null,
     visibility: (formData.get('visibility') as string) ?? 'private',
     finance_mode: (formData.get('finance_mode') as string) ?? 'managed',
+    transport_enabled: formData.get('transport_enabled') === 'true' ? 'true' : 'false',
     totalEur: (formData.get('totalEur') as string) ?? null,
     total_is_per_person: (formData.get('total_is_per_person') as 'true' | 'false' | null) ?? undefined,
     bundle_size: (formData.get('bundle_size') as string) ?? null,
@@ -129,6 +131,7 @@ export async function createProject(formData: FormData) {
     description,
     visibility,
     finance_mode,
+    transport_enabled,
     totalEur,
     total_is_per_person,
     bundle_size,
@@ -173,6 +176,7 @@ export async function createProject(formData: FormData) {
   const total_cents = financeInput.totalCents
   const totalIsPerPerson = financeInput.totalIsPerPerson
   const isPublic = visibility === 'public'
+  const transportEnabled = transport_enabled === 'true'
   const { bundleSize, bundlePayFor } = finance_mode === 'managed'
     ? validateBundlePricingConfig(totalIsPerPerson, bundle_size, bundle_pay_for)
     : { bundleSize: null, bundlePayFor: null }
@@ -250,6 +254,7 @@ export async function createProject(formData: FormData) {
     title,
     description,
     finance_mode,
+    transport_enabled: transportEnabled,
     total_cents,
     total_is_per_person: totalIsPerPerson,
     bundle_size: bundleSize,
@@ -280,6 +285,9 @@ export async function createProject(formData: FormData) {
 
   if (missingColumn(pErr, 'finance_mode')) {
     throw new Error('Shared cost management is unavailable until the latest database migration is applied.')
+  }
+  if (missingColumn(pErr, 'transport_enabled')) {
+    throw new Error('Transport coordination is unavailable until the latest database migration is applied.')
   }
 
   const dateColumnsMissing =
@@ -412,6 +420,7 @@ export async function createProject(formData: FormData) {
     metadata: {
       title,
       finance_mode,
+      transport_enabled: transportEnabled,
       total_cents,
       is_public: isPublic,
       total_is_per_person: totalIsPerPerson,

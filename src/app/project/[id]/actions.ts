@@ -10,6 +10,7 @@ import { getCurrentUserId } from '@/lib/supabaseServer'
 import { getProjectStatusUiKey } from '@/lib/projectStatusUi'
 import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { isProjectCanceled } from '@/lib/projectInvite'
+import { cleanupParticipantTransport } from '@/lib/projectTransportServer'
 import { buildExtraDueRows } from '@/lib/extraPayments'
 import {
   applyTimeToDateOption,
@@ -1483,6 +1484,14 @@ const markParticipantLeftWithActivity = async ({
     .maybeSingle()
   if (updErr) throw updErr
   if (!updated?.id) return false
+
+  try {
+    await cleanupParticipantTransport(projectId, participantId)
+  } catch (error) {
+    // Membership remains authoritative. On migrated schemas the participant
+    // trigger already performed this cleanup atomically; this call is repair-only.
+    console.error('[markParticipantLeftWithActivity] transport cleanup repair failed', { projectId, participantId, error })
+  }
 
   await recordProjectActivity({
     projectId,
@@ -3478,6 +3487,13 @@ export async function respondToDateConfirmation(
     .update({ attendance_status: attendanceStatus, attendance_updated_at: now })
     .eq('id', participant.id)
   if (error) throw new Error(error.message ?? 'Failed to save attendance confirmation')
+  if (attendanceStatus === 'cannot_attend') {
+    try {
+      await cleanupParticipantTransport(projectId, participant.id)
+    } catch (cleanupError) {
+      console.error('[respondToDateConfirmation] transport cleanup repair failed', { projectId, participantId: participant.id, error: cleanupError })
+    }
+  }
   if (response !== 'still_dont_know') {
     await supabaseAdmin
       .from('project_priority_tasks')
@@ -3527,6 +3543,11 @@ export async function stayProjectObserver(projectId: string) {
     .update({ attendance_status: 'observer', attendance_updated_at: new Date().toISOString() })
     .eq('id', participant.id)
   if (error) throw error
+  try {
+    await cleanupParticipantTransport(projectId, participant.id)
+  } catch (cleanupError) {
+    console.error('[stayProjectObserver] transport cleanup repair failed', { projectId, participantId: participant.id, error: cleanupError })
+  }
   try {
     await markProjectNotificationTypesRead({
       projectId,
@@ -4730,7 +4751,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
 
   const baseProjectFields =
     'id, collector_participant_id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at, event_location_label, event_location_address, event_location_lat, event_location_lng, event_location_place_id, date_mode'
-  const optionalProjectFields = ['is_public', 'bundle_size', 'bundle_pay_for', 'finance_mode'] as const
+  const optionalProjectFields = ['is_public', 'bundle_size', 'bundle_pay_for', 'finance_mode', 'transport_enabled'] as const
   let optionalFields = [...optionalProjectFields]
   const missingFields = new Set<string>()
   let projectData: {
@@ -4744,6 +4765,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     bundle_size: number | null
     bundle_pay_for: number | null
     finance_mode: ProjectFinanceMode | null
+    transport_enabled: boolean | null
     min_participants: number | null
     max_participants: number | null
     event_start_at: string | null
@@ -4772,7 +4794,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
       if (optionalFields.length === 0) {
         const row = result.data as NonNullable<typeof projectData> | null
         projectData = row
-          ? { ...row, is_public: true, bundle_size: null, bundle_pay_for: null, finance_mode: 'managed' }
+          ? { ...row, is_public: true, bundle_size: null, bundle_pay_for: null, finance_mode: 'managed', transport_enabled: false }
           : null
         projectErr = result.error
         break
@@ -4787,6 +4809,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
           bundle_size: 'bundle_size' in row ? row.bundle_size ?? null : null,
           bundle_pay_for: 'bundle_pay_for' in row ? row.bundle_pay_for ?? null : null,
           finance_mode: 'finance_mode' in row ? normalizeProjectFinanceMode(row.finance_mode) : 'managed',
+          transport_enabled: 'transport_enabled' in row ? row.transport_enabled === true : false,
         }
       : null
     projectErr = result.error
@@ -4827,6 +4850,10 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   }
   const visibility = String(formData.get('visibility') ?? (project.is_public === true ? 'public' : 'private')).trim().toLowerCase()
   const isPublic = visibility === 'public'
+  const transportEnabled = formData.get('transport_enabled') === 'true'
+  if (transportEnabled !== (project.transport_enabled === true) && missingFields.has('transport_enabled')) {
+    throw new Error('Transport coordination is unavailable until the latest database migration is applied.')
+  }
   const totalIsPerPerson = (formData.get('total_is_per_person') as string) === 'true'
   const bundleSizeRaw = String(formData.get('bundle_size') ?? '').trim()
   const bundlePayForRaw = String(formData.get('bundle_pay_for') ?? '').trim()
@@ -4978,6 +5005,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     event_location_lat: eventLocationLat,
     event_location_lng: eventLocationLng,
     event_location_place_id: eventLocationPlaceId,
+    ...(!missingFields.has('transport_enabled') ? { transport_enabled: transportEnabled } : {}),
   }
 
   if (currentFinanceMode === 'managed' && requestedFinanceMode === 'none') {
@@ -5080,6 +5108,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   if (Number(project.total_cents ?? 0) !== total_cents) changedFields.push('total_cents')
   if (!!project.total_is_per_person !== effectiveTotalIsPerPerson) changedFields.push('total_is_per_person')
   if (currentFinanceMode !== requestedFinanceMode) changedFields.push('finance_mode')
+  if ((project.transport_enabled === true) !== transportEnabled) changedFields.push('transport_enabled')
   if (!!project.is_public !== isPublic) changedFields.push('is_public')
   if ((project.bundle_size ?? null) !== bundleSize) changedFields.push('bundle_size')
   if ((project.bundle_pay_for ?? null) !== bundlePayFor) changedFields.push('bundle_pay_for')

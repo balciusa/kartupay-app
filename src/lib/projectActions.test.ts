@@ -144,6 +144,7 @@ function fixture() {
     '@/lib/projectFinance': finance,
     '@/lib/projectJoinRequests': joinRequests,
     '@/lib/projectInvite': projectInvite,
+    '@/lib/projectTransportServer': { cleanupParticipantTransport: async () => true },
     '@/lib/projectStatusUi': statusUi,
     '@/lib/projectDateSelection': dateSelection,
     '@/lib/projectDateService': {
