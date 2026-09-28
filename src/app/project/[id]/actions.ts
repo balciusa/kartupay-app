@@ -25,6 +25,7 @@ import {
 } from '@/lib/projectDateSelection'
 import { applyEarlySelectedProjectDate, applySelectedProjectDate, syncProjectDateSelection } from '@/lib/projectDateService'
 import {
+  DATE_CONFIRMATION_NOTIFICATION_TYPES,
   enqueueJoinRequestNotifications,
   markAllProjectNotificationsReadForUser,
   markJoinRequestNotificationsResolved,
@@ -3507,7 +3508,7 @@ export async function respondToDateConfirmation(
       await markProjectNotificationTypesRead({
         projectId,
         recipientUserId: uid,
-        types: ['date_confirmation_24h', 'date_confirmation_2h'],
+        types: DATE_CONFIRMATION_NOTIFICATION_TYPES,
       })
     } catch (error) {
       console.error('[respondToDateConfirmation] Failed to resolve attendance notifications', { projectId, error })
@@ -3530,7 +3531,7 @@ export async function stayProjectObserver(projectId: string) {
     await markProjectNotificationTypesRead({
       projectId,
       recipientUserId: uid,
-      types: ['date_confirmation_24h', 'date_confirmation_2h'],
+      types: DATE_CONFIRMATION_NOTIFICATION_TYPES,
     })
   } catch (notificationError) {
     console.error('[stayProjectObserver] Failed to resolve attendance notifications', { projectId, error: notificationError })
@@ -3583,7 +3584,7 @@ export async function lateConfirmProjectAttendance(projectId: string) {
     await markProjectNotificationTypesRead({
       projectId,
       recipientUserId: uid,
-      types: ['date_confirmation_24h', 'date_confirmation_2h'],
+      types: DATE_CONFIRMATION_NOTIFICATION_TYPES,
     })
   } catch (error) {
     console.error('[lateConfirmProjectAttendance] Failed to resolve attendance notifications', { projectId, error })
@@ -5245,7 +5246,7 @@ export async function cancelJoinRequest(projectId: string) {
 
   const { data: requestsToCancel, error: requestsErr } = await supabaseAdmin
     .from('join_requests')
-    .select('id, status')
+    .select('id, project_id, status')
     .eq('project_id', projectId)
     .eq('requester_user_id', uid)
     .neq('status', 'canceled')
@@ -5266,8 +5267,16 @@ export async function cancelJoinRequest(projectId: string) {
   }
 
   for (const request of requestsToCancel ?? []) {
+    try {
+      await markJoinRequestNotificationsResolved(request.project_id, request.id)
+    } catch {
+      console.error('[cancelJoinRequest] Failed to resolve join notifications', {
+        projectId: request.project_id,
+        requestId: request.id,
+      })
+    }
     await recordProjectActivity({
-      projectId,
+      projectId: request.project_id,
       entryType: 'join_request_canceled',
       actorUserId,
       actorParticipantId,

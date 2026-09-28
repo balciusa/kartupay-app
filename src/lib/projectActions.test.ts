@@ -49,6 +49,7 @@ function fixture() {
   const resolvedJoinNotifications: Array<{ projectId: string; requestId: string }> = []
   const resolvedAvailabilityNotifications: Array<{ projectId: string; userId: string }> = []
   const resolvedNotificationTypes: Array<{ projectId: string; recipientUserId: string; types: string[] }> = []
+  let joinNotificationResolutionError: Error | null = null
   let beforeEarlySelection: (() => void | Promise<void>) | null = null
   let currentUserId = 'user'
   const db = {
@@ -178,9 +179,20 @@ function fixture() {
       syncProjectDateSelection: async (projectId: string) => { syncedDateProjects.push(projectId) },
     },
     '@/lib/projectNotifications': {
+      DATE_CONFIRMATION_NOTIFICATION_TYPES: [
+        'date_selected_confirmation_required',
+        'date_confirmation_manual',
+        'date_confirmation_24h',
+        'date_confirmation_2h',
+      ],
       enqueueJoinRequestNotifications: async (input: Record<string, unknown>) => { enqueuedJoinNotifications.push(input) },
       markJoinRequestNotificationsResolved: async (projectId: string, requestId: string) => {
+        if (joinNotificationResolutionError) throw joinNotificationResolutionError
         resolvedJoinNotifications.push({ projectId, requestId })
+        tables.project_notifications
+          .filter(row => row.project_id === projectId
+            && (row.metadata as Record<string, unknown> | undefined)?.join_request_id === requestId)
+          .forEach(row => { row.read_at = '2026-09-28T12:00:00.000Z' })
       },
       resolveCompletedDateAvailabilityNotifications: async (projectId: string, userId: string) => {
         resolvedAvailabilityNotifications.push({ projectId, userId })
@@ -223,6 +235,9 @@ function fixture() {
     },
     setBeforeEarlySelection(callback: (() => void | Promise<void>) | null) {
       beforeEarlySelection = callback
+    },
+    setJoinNotificationResolutionError(error: Error | null) {
+      joinNotificationResolutionError = error
     },
   }
 }
@@ -721,38 +736,105 @@ test('notification read actions derive the recipient from authentication and res
   assert.equal(f.tables.project_notifications[2].read_at, null)
 })
 
-test('date availability and final attendance actions resolve their notification groups', async () => {
+const confirmationNotificationTypes = [
+  'date_selected_confirmation_required',
+  'date_confirmation_manual',
+  'date_confirmation_24h',
+  'date_confirmation_2h',
+]
+
+test('date availability and final yes/no attendance actions resolve their notification groups', async () => {
   const availability = fixture()
   availability.tables.project_date_options.push({ id: 'date', project_id: 'project', status: 'active' })
   await availability.actions.setProjectDateResponse('project', 'date', 'available', false)
   assert.deepEqual(availability.resolvedAvailabilityNotifications, [{ projectId: 'project', userId: 'user' }])
 
-  const attendance = fixture()
-  Object.assign(attendance.tables.projects[0], {
+  for (const response of ['yes', 'no'] as const) {
+    const attendance = fixture()
+    Object.assign(attendance.tables.projects[0], {
+      date_mode: 'fixed',
+      date_selection_status: 'confirmation_open',
+      selected_date_option_id: 'date',
+      confirmation_deadline_at: '2099-10-01T00:00:00.000Z',
+    })
+    attendance.tables.participants[0].attendance_status = 'awaiting_confirmation'
+    await attendance.actions.respondToDateConfirmation('project', response)
+    assert.deepEqual(attendance.resolvedNotificationTypes, [{
+      projectId: 'project',
+      recipientUserId: 'user',
+      types: confirmationNotificationTypes,
+    }])
+  }
+})
+
+test('still-dont-know keeps confirmation notifications open while observer and late-confirm paths resolve them', async () => {
+  const undecided = fixture()
+  Object.assign(undecided.tables.projects[0], {
     date_mode: 'fixed',
     date_selection_status: 'confirmation_open',
     selected_date_option_id: 'date',
     confirmation_deadline_at: '2099-10-01T00:00:00.000Z',
   })
-  attendance.tables.participants[0].attendance_status = 'awaiting_confirmation'
-  await attendance.actions.respondToDateConfirmation('project', 'yes')
-  assert.deepEqual(attendance.resolvedNotificationTypes, [{
-    projectId: 'project',
-    recipientUserId: 'user',
-    types: ['date_confirmation_24h', 'date_confirmation_2h'],
+  undecided.tables.participants[0].attendance_status = 'awaiting_confirmation'
+  await undecided.actions.respondToDateConfirmation('project', 'still_dont_know')
+  assert.deepEqual(undecided.resolvedNotificationTypes, [])
+
+  const observer = fixture()
+  await observer.actions.stayProjectObserver('project')
+  assert.deepEqual(observer.resolvedNotificationTypes, [{
+    projectId: 'project', recipientUserId: 'user', types: confirmationNotificationTypes,
+  }])
+
+  const late = fixture()
+  Object.assign(late.tables.projects[0], {
+    date_mode: 'fixed',
+    selected_date_option_id: 'date',
+    max_participants: null,
+  })
+  late.tables.participants[0].attendance_status = 'cannot_attend'
+  await late.actions.lateConfirmProjectAttendance('project')
+  assert.deepEqual(late.resolvedNotificationTypes, [{
+    projectId: 'project', recipientUserId: 'user', types: confirmationNotificationTypes,
   }])
 })
 
-test('pending join request can still be canceled', async () => {
+test('canceling a pending join request resolves linked notification history and is idempotent', async () => {
   const f = fixture()
   f.tables.projects[0].finance_mode = 'managed'
   f.tables.participants = []
   f.tables.join_requests = [{
     id: 'request', project_id: 'project', requester_user_id: 'user', status: 'pending',
   }]
+  f.tables.project_notifications = [{
+    id: 'notification',
+    project_id: 'project',
+    recipient_user_id: 'manager',
+    notification_type: 'join_request_pending',
+    metadata: { join_request_id: 'request' },
+    read_at: null,
+  }]
 
   assert.deepEqual(await f.actions.cancelJoinRequest('project'), { ok: true })
   assert.equal(f.tables.join_requests[0].status, 'canceled')
+  assert.deepEqual(f.resolvedJoinNotifications, [{ projectId: 'project', requestId: 'request' }])
+  assert.ok(f.tables.project_notifications[0].read_at)
+  assert.equal(f.tables.project_notifications.length, 1)
+
+  assert.deepEqual(await f.actions.cancelJoinRequest('project'), { ok: true })
+  assert.deepEqual(f.resolvedJoinNotifications, [{ projectId: 'project', requestId: 'request' }])
+})
+
+test('join notification cleanup failure does not reverse a successful cancellation', async () => {
+  const f = fixture()
+  f.tables.participants = []
+  f.tables.join_requests = [{
+    id: 'request', project_id: 'project', requester_user_id: 'user', status: 'pending',
+  }]
+  f.setJoinNotificationResolutionError(new Error('notification cleanup unavailable'))
+
+  assert.deepEqual(await f.actions.cancelJoinRequest('project'), { ok: true })
+  assert.equal(f.tables.join_requests[0].status, 'canceled')
+  assert.deepEqual(f.resolvedJoinNotifications, [])
 })
 
 test('public finance-none direct join remains blocked at project capacity', async () => {

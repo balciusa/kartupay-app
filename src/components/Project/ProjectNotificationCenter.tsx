@@ -57,10 +57,10 @@ export function ProjectNotificationCenter({
       setError(null)
       try {
         await markProjectNotificationRead(projectId, notificationId)
-        setItems(current => current.map(item => item.id === notificationId && !item.readAt
-          ? { ...item, readAt: new Date().toISOString() }
+        setItems(current => current.map(item => item.id === notificationId && item.unread
+          ? { ...item, readAt: new Date().toISOString(), unread: false }
           : item))
-        setUnreadCount(current => Math.max(0, current - (items.some(item => item.id === notificationId && !item.readAt) ? 1 : 0)))
+        setUnreadCount(current => Math.max(0, current - (items.some(item => item.id === notificationId && item.unread) ? 1 : 0)))
       } catch {
         setError(copy.error)
       } finally {
@@ -75,7 +75,7 @@ export function ProjectNotificationCenter({
       try {
         await markAllProjectNotificationsRead(projectId)
         const readAt = new Date().toISOString()
-        setItems(current => current.map(item => item.readAt ? item : { ...item, readAt }))
+        setItems(current => current.map(item => item.readAt ? { ...item, unread: false } : { ...item, readAt, unread: false }))
         setUnreadCount(0)
       } catch {
         setError(copy.error)
@@ -141,7 +141,7 @@ export function ProjectNotificationCenter({
             ) : (
               <ul className="divide-y divide-slate-100">
                 {items.map(item => {
-                  const unread = !item.readAt
+                  const unread = item.unread
                   return (
                     <li key={item.id} className={`relative px-4 py-4 ${unread ? 'bg-indigo-50/60' : 'bg-white'}`}>
                       <div className="flex min-w-0 gap-3">

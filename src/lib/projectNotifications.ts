@@ -6,12 +6,28 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin'
 
 export const PROJECT_NOTIFICATION_LIMIT = 20
 
+export const DATE_AVAILABILITY_NOTIFICATION_TYPES = [
+  'date_selection_required',
+  'date_voting_reminder',
+  'date_availability_24h',
+  'date_availability_2h',
+] as const
+
+export const DATE_CONFIRMATION_NOTIFICATION_TYPES = [
+  'date_selected_confirmation_required',
+  'date_confirmation_manual',
+  'date_confirmation_24h',
+  'date_confirmation_2h',
+] as const
+
+export const JOIN_REQUEST_NOTIFICATION_TYPES = [
+  'join_request_pending',
+] as const
+
 export type ProjectNotificationType =
-  | 'join_request_pending'
-  | 'date_availability_24h'
-  | 'date_availability_2h'
-  | 'date_confirmation_24h'
-  | 'date_confirmation_2h'
+  | typeof DATE_AVAILABILITY_NOTIFICATION_TYPES[number]
+  | typeof DATE_CONFIRMATION_NOTIFICATION_TYPES[number]
+  | typeof JOIN_REQUEST_NOTIFICATION_TYPES[number]
 
 export type ProjectNotificationRow = {
   id: string
@@ -33,6 +49,7 @@ export type ProjectNotificationItem = {
   createdAt: string
   createdAtLabel: string
   readAt: string | null
+  unread: boolean
   href: string | null
   actionLabel: string | null
   resolvedLabel: string | null
@@ -74,11 +91,15 @@ const uiStrings = {
     joinResolvedBody: 'This join request has already been reviewed.',
     joinAction: 'Review request',
     availabilityTitle: 'Choose your available dates',
+    availabilityRequiredBody: 'Project date has not been decided yet. Choose the dates when you can participate.',
+    availabilityReminderBody: 'Please respond to every current project date option.',
     availability24hBody: 'Date voting closes soon. Add your availability.',
     availability2hBody: 'Final reminder: choose your available dates before voting closes.',
     availabilityResolvedBody: 'Your date availability is complete.',
     availabilityAction: 'Choose dates',
     confirmationTitle: 'Confirm your attendance',
+    confirmationRequiredBody: 'A final project date was selected. Confirm whether you can attend.',
+    confirmationManualBody: 'Please confirm whether you can attend the selected project date.',
     confirmation24hBody: 'Please confirm whether you can attend the selected project date.',
     confirmation2hBody: 'Final reminder: confirm whether you can attend the selected project date.',
     confirmationResolvedBody: 'Your attendance response is recorded.',
@@ -91,11 +112,15 @@ const uiStrings = {
     joinResolvedBody: 'Šis prisijungimo prašymas jau peržiūrėtas.',
     joinAction: 'Peržiūrėti prašymą',
     availabilityTitle: 'Pasirinkite tinkamas datas',
+    availabilityRequiredBody: 'Projekto data dar nenustatyta. Pasirinkite datas, kada galite dalyvauti.',
+    availabilityReminderBody: 'Atsakykite dėl kiekvienos siūlomos projekto datos.',
     availability24hBody: 'Datų pasirinkimas netrukus baigsis. Pažymėkite, kada galite.',
     availability2hBody: 'Paskutinis priminimas: pasirinkite tinkamas datas iki balsavimo pabaigos.',
     availabilityResolvedBody: 'Jūsų pasirinkimai dėl datų užpildyti.',
     availabilityAction: 'Pasirinkti datas',
     confirmationTitle: 'Patvirtinkite dalyvavimą',
+    confirmationRequiredBody: 'Pasirinkta galutinė projekto data. Patvirtinkite, ar galėsite dalyvauti.',
+    confirmationManualBody: 'Patvirtinkite, ar galėsite dalyvauti pasirinktą projekto datą.',
     confirmation24hBody: 'Patvirtinkite, ar galėsite dalyvauti pasirinktą projekto datą.',
     confirmation2hBody: 'Paskutinis priminimas: patvirtinkite, ar galėsite dalyvauti pasirinktą projekto datą.',
     confirmationResolvedBody: 'Jūsų dalyvavimo atsakymas išsaugotas.',
@@ -119,6 +144,10 @@ function formatCreatedAt(value: string, locale: ProjectDateLocale) {
   }).format(date)
 }
 
+function includesNotificationType(types: readonly string[], type: string) {
+  return types.includes(type)
+}
+
 export function presentProjectNotification(
   row: ProjectNotificationRow,
   locale: ProjectDateLocale,
@@ -139,6 +168,7 @@ export function presentProjectNotification(
     const actionable = !!requestId && context.pendingJoinRequestIds.includes(requestId)
     return {
       ...base,
+      unread: !row.read_at && actionable,
       title: strings.joinTitle,
       body: actionable ? strings.joinBody : strings.joinResolvedBody,
       href: actionable ? `/project/${row.project_id}?tab=admin&adminModal=requests` : null,
@@ -147,32 +177,40 @@ export function presentProjectNotification(
     }
   }
 
-  if (row.notification_type === 'date_availability_24h' || row.notification_type === 'date_availability_2h') {
+  if (includesNotificationType(DATE_AVAILABILITY_NOTIFICATION_TYPES, row.notification_type)) {
     const actionable = context.dateAvailabilityRequired
-    return {
-      ...base,
-      title: strings.availabilityTitle,
-      body: actionable
-        ? row.notification_type === 'date_availability_2h'
+    const body = row.notification_type === 'date_selection_required'
+      ? strings.availabilityRequiredBody
+      : row.notification_type === 'date_voting_reminder'
+        ? strings.availabilityReminderBody
+        : row.notification_type === 'date_availability_2h'
           ? strings.availability2hBody
           : strings.availability24hBody
-        : strings.availabilityResolvedBody,
+    return {
+      ...base,
+      unread: !row.read_at && actionable,
+      title: strings.availabilityTitle,
+      body: actionable ? body : strings.availabilityResolvedBody,
       href: actionable ? `/project/${row.project_id}#date-availability` : null,
       actionLabel: actionable ? strings.availabilityAction : null,
       resolvedLabel: actionable ? null : strings.resolved,
     }
   }
 
-  if (row.notification_type === 'date_confirmation_24h' || row.notification_type === 'date_confirmation_2h') {
+  if (includesNotificationType(DATE_CONFIRMATION_NOTIFICATION_TYPES, row.notification_type)) {
     const actionable = context.attendanceConfirmationRequired
-    return {
-      ...base,
-      title: strings.confirmationTitle,
-      body: actionable
-        ? row.notification_type === 'date_confirmation_2h'
+    const body = row.notification_type === 'date_selected_confirmation_required'
+      ? strings.confirmationRequiredBody
+      : row.notification_type === 'date_confirmation_manual'
+        ? strings.confirmationManualBody
+        : row.notification_type === 'date_confirmation_2h'
           ? strings.confirmation2hBody
           : strings.confirmation24hBody
-        : strings.confirmationResolvedBody,
+    return {
+      ...base,
+      unread: !row.read_at && actionable,
+      title: strings.confirmationTitle,
+      body: actionable ? body : strings.confirmationResolvedBody,
       href: actionable ? `/project/${row.project_id}#project-date-finder` : null,
       actionLabel: actionable ? strings.confirmationAction : null,
       resolvedLabel: actionable ? null : strings.resolved,
@@ -181,6 +219,7 @@ export function presentProjectNotification(
 
   return {
     ...base,
+    unread: !row.read_at,
     title: row.title,
     body: row.body,
     href: null,
@@ -206,9 +245,10 @@ export async function loadProjectNotifications(
 
   if (error) throw error
   const rows = (data ?? []) as ProjectNotificationRow[]
+  const items = rows.map(row => presentProjectNotification(row, locale, context))
   return {
-    items: rows.map(row => presentProjectNotification(row, locale, context)),
-    unreadCount: rows.filter(row => !row.read_at).length,
+    items,
+    unreadCount: items.filter(item => item.unread).length,
   }
 }
 
@@ -292,7 +332,7 @@ export async function markAllProjectNotificationsReadForUser(
 export async function markProjectNotificationTypesRead(input: {
   projectId: string
   recipientUserId: string
-  types: ProjectNotificationType[]
+  types: readonly ProjectNotificationType[]
 }, db: NotificationDb = supabaseAdmin) {
   const { error } = await db
     .from('project_notifications')
@@ -337,7 +377,7 @@ export async function resolveCompletedDateAvailabilityNotifications(
   await markProjectNotificationTypesRead({
     projectId,
     recipientUserId,
-    types: ['date_availability_24h', 'date_availability_2h'],
+    types: DATE_AVAILABILITY_NOTIFICATION_TYPES,
   }, db)
   return true
 }

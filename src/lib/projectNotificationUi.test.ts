@@ -21,6 +21,8 @@ test('opening the panel only toggles visibility and does not implicitly mark not
 })
 
 test('notification panel includes unread/read styling, EN/LT copy, and the compact empty state', () => {
+  assert.match(component, /const unread = item\.unread/)
+  assert.doesNotMatch(component, /const unread = !item\.readAt/)
   assert.match(component, /unread \? 'bg-indigo-50\/60' : 'bg-white'/)
   assert.match(component, /No notifications yet\./)
   assert.match(component, /Pranešimų nėra\./)
