@@ -56,7 +56,8 @@ const parseOfferFields = (formData: FormData) => {
   }
   const localDeparture = String(formData.get('departure_local') ?? '')
   const timezoneOffset = Number(formData.get('timezone_offset_minutes'))
-  const departureAt = parseTransportDeparture(localDeparture, timezoneOffset)
+  const timeZone = String(formData.get('timezone_name') ?? '')
+  const departureAt = parseTransportDeparture(localDeparture, timezoneOffset, timeZone)
   return { locationText, note: noteRaw || null, seatCapacity, departureAt }
 }
 

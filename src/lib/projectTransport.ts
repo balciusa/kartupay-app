@@ -165,27 +165,119 @@ export function sortTransportOffers(offers: TransportOffer[]) {
   })
 }
 
-export function parseTransportDeparture(localValue: string, timezoneOffsetMinutes: number) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(localValue.trim())
-  if (!match) throw new Error('Choose a departure date and time')
-  if (!Number.isFinite(timezoneOffsetMinutes) || timezoneOffsetMinutes < -840 || timezoneOffsetMinutes > 840) {
-    throw new Error('Invalid timezone')
+type TransportDepartureParts = {
+  year: number
+  month: number
+  day: number
+  hours: number
+  minutes: number
+}
+
+export class TransportDepartureTimeError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'invalid' | 'nonexistent_local_time'
+  ) {
+    super(message)
+    this.name = 'TransportDepartureTimeError'
   }
+}
+
+const parseTransportDepartureParts = (localValue: string): TransportDepartureParts => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(localValue.trim())
+  if (!match) throw new TransportDepartureTimeError('Choose a departure date and time', 'invalid')
   const [, year, month, day, hours, minutes] = match
-  const wallTime = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hours), Number(minutes))
+  const parts = {
+    year: Number(year), month: Number(month), day: Number(day),
+    hours: Number(hours), minutes: Number(minutes),
+  }
+  const wallTime = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hours, parts.minutes)
   const wallDate = new Date(wallTime)
   if (
-    wallDate.getUTCFullYear() !== Number(year) || wallDate.getUTCMonth() !== Number(month) - 1 ||
-    wallDate.getUTCDate() !== Number(day) || wallDate.getUTCHours() !== Number(hours) ||
-    wallDate.getUTCMinutes() !== Number(minutes)
-  ) throw new Error('Invalid departure date or time')
+    wallDate.getUTCFullYear() !== parts.year || wallDate.getUTCMonth() !== parts.month - 1 ||
+    wallDate.getUTCDate() !== parts.day || wallDate.getUTCHours() !== parts.hours ||
+    wallDate.getUTCMinutes() !== parts.minutes
+  ) throw new TransportDepartureTimeError('Invalid departure date or time', 'invalid')
+  return parts
+}
+
+const transportDateTimePartsInZone = (date: Date, timeZone: string): TransportDepartureParts => {
+  let formattedParts: Intl.DateTimeFormatPart[]
+  try {
+    formattedParts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).formatToParts(date)
+  } catch {
+    throw new TransportDepartureTimeError('Invalid timezone', 'invalid')
+  }
+  const values = new Map(formattedParts.map(part => [part.type, part.value]))
+  return {
+    year: Number(values.get('year')),
+    month: Number(values.get('month')),
+    day: Number(values.get('day')),
+    hours: Number(values.get('hour')),
+    minutes: Number(values.get('minute')),
+  }
+}
+
+const sameTransportDepartureParts = (left: TransportDepartureParts, right: TransportDepartureParts) =>
+  left.year === right.year && left.month === right.month && left.day === right.day &&
+  left.hours === right.hours && left.minutes === right.minutes
+
+export function getTransportDepartureSubmission(localValue: string) {
+  const parts = parseTransportDepartureParts(localValue)
+  const selected = new Date(parts.year, parts.month - 1, parts.day, parts.hours, parts.minutes, 0, 0)
+  const selectedParts = {
+    year: selected.getFullYear(), month: selected.getMonth() + 1, day: selected.getDate(),
+    hours: selected.getHours(), minutes: selected.getMinutes(),
+  }
+  if (!sameTransportDepartureParts(parts, selectedParts)) {
+    throw new TransportDepartureTimeError(
+      'This departure time does not exist because of a daylight-saving time change. Choose another time.',
+      'nonexistent_local_time'
+    )
+  }
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const timezoneOffsetMinutes = selected.getTimezoneOffset()
+  if (!timeZone || !Number.isInteger(timezoneOffsetMinutes)) {
+    throw new TransportDepartureTimeError('Invalid timezone', 'invalid')
+  }
+  return { timezoneOffsetMinutes, timeZone }
+}
+
+export function parseTransportDeparture(
+  localValue: string,
+  timezoneOffsetMinutes: number,
+  timeZone: string
+) {
+  const parts = parseTransportDepartureParts(localValue)
+  if (!Number.isInteger(timezoneOffsetMinutes) || timezoneOffsetMinutes < -840 || timezoneOffsetMinutes > 840) {
+    throw new TransportDepartureTimeError('Invalid timezone', 'invalid')
+  }
+  if (!timeZone || timeZone.length > 100) {
+    throw new TransportDepartureTimeError('Invalid timezone', 'invalid')
+  }
+  const wallTime = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hours, parts.minutes)
   const timestamp = wallTime + timezoneOffsetMinutes * 60 * 1000
   const date = new Date(timestamp)
-  if (
-    Number.isNaN(date.getTime()) || Number(month) < 1 || Number(month) > 12 ||
-    Number(day) < 1 || Number(day) > 31 || Number(hours) > 23 || Number(minutes) > 59
-  ) {
-    throw new Error('Invalid departure date or time')
+  if (Number.isNaN(date.getTime())) {
+    throw new TransportDepartureTimeError('Invalid departure date or time', 'invalid')
+  }
+  const zonedParts = transportDateTimePartsInZone(date, timeZone)
+  if (!sameTransportDepartureParts(parts, zonedParts)) {
+    throw new TransportDepartureTimeError(
+      'This departure time does not exist or does not match the submitted timezone. Choose another time.',
+      'nonexistent_local_time'
+    )
+  }
+  const zonedWallTime = Date.UTC(
+    zonedParts.year, zonedParts.month - 1, zonedParts.day, zonedParts.hours, zonedParts.minutes
+  )
+  const zonedOffsetMinutes = (date.getTime() - zonedWallTime) / (60 * 1000)
+  if (zonedOffsetMinutes !== timezoneOffsetMinutes) {
+    throw new TransportDepartureTimeError('Invalid timezone offset for departure time', 'invalid')
   }
   return date.toISOString()
 }

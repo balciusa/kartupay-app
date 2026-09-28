@@ -1,8 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import {
   deriveTransportStatuses,
+  getTransportDepartureSubmission,
   parseTransportDeparture,
   remainingTransportSeats,
   summarizeTransport,
@@ -103,10 +105,113 @@ test('summary counts every eligible participant exactly once', () => {
   assert.equal(statuses.length, 10)
 })
 
-test('departure parsing preserves the submitted local wall time via its explicit offset', () => {
-  assert.equal(parseTransportDeparture('2026-10-09T08:00', -180), '2026-10-09T05:00:00.000Z')
-  assert.throws(() => parseTransportDeparture('2026-10-09', -180), /departure date and time/)
-  assert.throws(() => parseTransportDeparture('2026-02-31T08:00', -120), /Invalid departure/)
+const runInVilnius = (body: string) => JSON.parse(execFileSync(process.execPath, [
+  '--experimental-transform-types', '--input-type=module', '--eval', `
+    const transportModule = await import('./src/lib/projectTransport.ts')
+    const { getTransportDepartureSubmission, parseTransportDeparture } = transportModule.default ?? transportModule
+    const wallTime = (iso) => {
+      const date = new Date(iso)
+      const pad = value => String(value).padStart(2, '0')
+      return \`${'${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}'}\`
+    }
+    ${body}
+  `,
+], {
+  cwd: process.cwd(),
+  env: { ...process.env, TZ: 'Europe/Vilnius' },
+  encoding: 'utf8',
+}))
+
+test('departure parsing preserves a same-offset selected local wall time', () => {
+  const result = runInVilnius(`
+    const local = '2026-09-30T08:00'
+    const submission = getTransportDepartureSubmission(local)
+    const iso = parseTransportDeparture(local, submission.timezoneOffsetMinutes, submission.timeZone)
+    console.log(JSON.stringify({ ...submission, iso, wall: wallTime(iso) }))
+  `)
+  assert.deepEqual(result, {
+    timezoneOffsetMinutes: -180, timeZone: 'Europe/Vilnius',
+    iso: '2026-09-30T05:00:00.000Z', wall: '2026-09-30T08:00',
+  })
+})
+
+test('selected winter date uses winter offset even from a summer context', () => {
+  const result = runInVilnius(`
+    const local = '2026-12-15T08:00'
+    const contextOffset = new Date(2026, 6, 15, 12, 0).getTimezoneOffset()
+    const submission = getTransportDepartureSubmission(local)
+    const iso = parseTransportDeparture(local, submission.timezoneOffsetMinutes, submission.timeZone)
+    console.log(JSON.stringify({ contextOffset, ...submission, iso, wall: wallTime(iso) }))
+  `)
+  assert.equal(result.contextOffset, -180)
+  assert.equal(result.timezoneOffsetMinutes, -120)
+  assert.equal(result.iso, '2026-12-15T06:00:00.000Z')
+  assert.equal(result.wall, '2026-12-15T08:00')
+})
+
+test('selected summer date uses summer offset even from a winter context', () => {
+  const result = runInVilnius(`
+    const local = '2026-07-15T08:00'
+    const contextOffset = new Date(2026, 11, 15, 12, 0).getTimezoneOffset()
+    const submission = getTransportDepartureSubmission(local)
+    const iso = parseTransportDeparture(local, submission.timezoneOffsetMinutes, submission.timeZone)
+    console.log(JSON.stringify({ contextOffset, ...submission, iso, wall: wallTime(iso) }))
+  `)
+  assert.equal(result.contextOffset, -120)
+  assert.equal(result.timezoneOffsetMinutes, -180)
+  assert.equal(result.iso, '2026-07-15T05:00:00.000Z')
+  assert.equal(result.wall, '2026-07-15T08:00')
+})
+
+test('spring-forward gap is rejected by the client helper and server parser', () => {
+  const result = runInVilnius(`
+    const local = '2026-03-29T03:30'
+    let clientCode = null
+    let serverCode = null
+    try { getTransportDepartureSubmission(local) } catch (error) { clientCode = error.code }
+    try { parseTransportDeparture(local, -180, 'Europe/Vilnius') } catch (error) { serverCode = error.code }
+    console.log(JSON.stringify({ clientCode, serverCode }))
+  `)
+  assert.deepEqual(result, {
+    clientCode: 'nonexistent_local_time',
+    serverCode: 'nonexistent_local_time',
+  })
+})
+
+test('fall-back repeated time uses the native occurrence and preserves the wall time', () => {
+  const result = runInVilnius(`
+    const local = '2026-10-25T03:30'
+    const submission = getTransportDepartureSubmission(local)
+    const iso = parseTransportDeparture(local, submission.timezoneOffsetMinutes, submission.timeZone)
+    console.log(JSON.stringify({ ...submission, iso, wall: wallTime(iso) }))
+  `)
+  assert.ok([-180, -120].includes(result.timezoneOffsetMinutes))
+  assert.equal(result.wall, '2026-10-25T03:30')
+})
+
+test('editing without changing departure preserves the stored instant', () => {
+  const result = runInVilnius(`
+    const stored = '2026-12-15T06:00:00.000Z'
+    const local = wallTime(stored)
+    const submission = getTransportDepartureSubmission(local)
+    const saved = parseTransportDeparture(local, submission.timezoneOffsetMinutes, submission.timeZone)
+    console.log(JSON.stringify({ stored, local, saved }))
+  `)
+  assert.deepEqual(result, {
+    stored: '2026-12-15T06:00:00.000Z',
+    local: '2026-12-15T08:00',
+    saved: '2026-12-15T06:00:00.000Z',
+  })
+})
+
+test('server departure parser rejects malformed values and mismatched offsets', () => {
+  assert.equal(parseTransportDeparture('2026-10-09T08:00', -180, 'Europe/Vilnius'), '2026-10-09T05:00:00.000Z')
+  assert.throws(() => parseTransportDeparture('2026-10-09', -180, 'Europe/Vilnius'), /departure date and time/)
+  assert.throws(() => parseTransportDeparture('2026-02-31T08:00', -120, 'Europe/Vilnius'), /Invalid departure/)
+  assert.throws(() => parseTransportDeparture('2026-12-15T08:00', -180, 'Europe/Vilnius'), /timezone/)
+  assert.throws(() => parseTransportDeparture('2026-12-15T08:00', -120.5, 'Europe/Vilnius'), /timezone/)
+  assert.throws(() => parseTransportDeparture('2026-12-15T08:00', -120, 'Not/A_Timezone'), /timezone/)
+  assert.equal(getTransportDepartureSubmission('2026-09-30T08:00').timezoneOffsetMinutes, new Date(2026, 8, 30, 8, 0).getTimezoneOffset())
 })
 
 test('migration mutation RPCs enforce state, ownership, project, and canceled/toggle/date gates', () => {
@@ -156,9 +261,14 @@ test('tab and form sources contain the gated transport surface and default-off t
   const tabs = readFileSync('src/components/Project/ProjectTabs.tsx', 'utf8')
   const page = readFileSync('src/app/project/[id]/page.tsx', 'utf8')
   const form = readFileSync('src/components/Project/NewProjectForm.tsx', 'utf8')
+  const transport = readFileSync('src/components/Project/ProjectTransport.tsx', 'utf8')
   assert.match(tabs, /key: 'transport'[\s\S]*enabled: !!sections\.transport/)
   assert.match(page, /project\.transport_enabled === true && uid && isMeParticipant/)
   assert.match(page, /transport: transportSnapshot \? <ProjectTransport/)
   assert.match(form, /name="transport_enabled" value="true"/)
   assert.doesNotMatch(form, /name="transport_enabled"[^>]*defaultChecked/)
+  assert.match(transport, /getTransportDepartureSubmission\(departureLocal\)/)
+  assert.match(transport, /departureDstGap/)
+  assert.match(transport, /role="alert"/)
+  assert.doesNotMatch(transport, /new Date\(\)\.getTimezoneOffset\(\)/)
 })

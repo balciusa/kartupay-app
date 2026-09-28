@@ -5,9 +5,11 @@ import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import {
   deriveTransportStatuses,
+  getTransportDepartureSubmission,
   remainingTransportSeats,
   sortTransportOffers,
   summarizeTransport,
+  TransportDepartureTimeError,
   type ProjectTransportSnapshot,
   type TransportDirection,
   type TransportOffer,
@@ -61,12 +63,27 @@ function RideForm({
     : snapshot.eventStartAt
   const [date, setDate] = useState(localDate(offer?.departureAt ?? defaultIso))
   const [time, setTime] = useState(offer ? localTime(offer.departureAt) : '')
+  const [departureError, setDepartureError] = useState<string | null>(null)
+  const departureErrorId = `transport-departure-error-${offer?.id ?? direction}`
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const formData = new FormData(event.currentTarget)
-    formData.set('departure_local', date && time ? `${date}T${time}` : '')
-    formData.set('timezone_offset_minutes', String(new Date().getTimezoneOffset()))
+    const departureLocal = date && time ? `${date}T${time}` : ''
+    try {
+      const departure = getTransportDepartureSubmission(departureLocal)
+      formData.set('departure_local', departureLocal)
+      formData.set('timezone_offset_minutes', String(departure.timezoneOffsetMinutes))
+      formData.set('timezone_name', departure.timeZone)
+      setDepartureError(null)
+    } catch (error) {
+      setDepartureError(
+        error instanceof TransportDepartureTimeError && error.code === 'nonexistent_local_time'
+          ? strings.departureDstGap
+          : strings.departureInvalid
+      )
+      return
+    }
     onSubmit(formData)
   }
 
@@ -97,7 +114,12 @@ function RideForm({
             type="date"
             className="control-input"
             value={date}
-            onChange={event => setDate(event.target.value)}
+            onChange={event => {
+              setDate(event.target.value)
+              setDepartureError(null)
+            }}
+            aria-describedby={departureError ? departureErrorId : undefined}
+            aria-invalid={departureError ? true : undefined}
             required
             disabled={passengerCount > 0}
           />
@@ -108,12 +130,18 @@ function RideForm({
             type="time"
             className="control-input"
             value={time}
-            onChange={event => setTime(event.target.value)}
+            onChange={event => {
+              setTime(event.target.value)
+              setDepartureError(null)
+            }}
+            aria-describedby={departureError ? departureErrorId : undefined}
+            aria-invalid={departureError ? true : undefined}
             required
             disabled={passengerCount > 0}
           />
         </div>
       </div>
+      {departureError && <p id={departureErrorId} role="alert" className="text-sm text-red-700">{departureError}</p>}
       <div className="space-y-1.5">
         <label className="text-sm font-medium" htmlFor={`transport-seats-${offer?.id ?? direction}`}>{strings.passengerSeats}</label>
         <input
