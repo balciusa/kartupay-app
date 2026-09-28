@@ -21,6 +21,7 @@ import { ProjectFlowBar } from '@/components/Project/ProjectFlowBar'
 import { BaseItineraryEditor } from '@/components/Project/BaseItineraryEditor'
 import { ProjectDateFinder } from '@/components/Project/ProjectDateFinder'
 import { ProjectNotificationCenter } from '@/components/Project/ProjectNotificationCenter'
+import { ProjectTransport } from '@/components/Project/ProjectTransport'
 import { getActivityCategory } from '@/lib/activityLog'
 import { buildExtraDueRows, extraDueKey } from '@/lib/extraPayments'
 import { calculateProjectPricing, describeBundlePricing } from '@/lib/projectPricing'
@@ -33,6 +34,7 @@ import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { shouldShowProjectShare } from '@/lib/projectShare'
 import { getProjectJoinStrategy, getProjectReadiness, normalizeProjectFinanceMode, type ProjectFinanceMode } from '@/lib/projectFinance'
 import { isProjectCanceled } from '@/lib/projectInvite'
+import { loadProjectTransport } from '@/lib/projectTransportServer'
 import { headers } from 'next/headers'
 import {
   approveParticipantRefund,
@@ -157,6 +159,7 @@ type ProjectRow = {
   selected_date_option_id?: string | null
   confirmation_deadline_at?: string | null
   finance_mode?: ProjectFinanceMode | null
+  transport_enabled?: boolean | null
   is_public?: boolean | null
   closed_at?: string | null
   aborted_at?: string | null
@@ -174,6 +177,7 @@ type ProjectTabKey =
   | 'overview'
   | 'people'
   | 'participants'
+  | 'transport'
   | 'payments'
   | 'activity'
   | 'profile'
@@ -190,6 +194,7 @@ const resolveProjectTab = (value: string | undefined): ProjectTabKey => {
   switch (normalized) {
     case 'people':
     case 'participants':
+    case 'transport':
     case 'payments':
     case 'activity':
     case 'profile':
@@ -428,6 +433,7 @@ export default async function ProjectPage({
     'date_selection_status',
     'selected_date_option_id',
     'confirmation_deadline_at',
+    'transport_enabled',
   ] as const
   let fullOptionalFields = [...fullOptionalProjectFields]
   const missingFullFields = new Set<string>()
@@ -813,6 +819,19 @@ export default async function ProjectPage({
       myParticipantRole,
       participantData: mine 
     })
+  }
+
+  let transportSnapshot = null
+  if (project.transport_enabled === true && uid && isMeParticipant) {
+    try {
+      transportSnapshot = await loadProjectTransport({
+        projectId,
+        viewerUserId: uid,
+        locale: projectDateLocale,
+      })
+    } catch (error) {
+      console.error('[ProjectPage] transport load error', error)
+    }
   }
 
   const participantsClean = (rawParticipants ?? []).map(participant => ({
@@ -1752,6 +1771,7 @@ export default async function ProjectPage({
 
       <ProjectTabs
         defaultTab={defaultProjectTab}
+        transportLabel={projectDateLocale === 'lt' ? 'Transportas' : 'Transport'}
         counts={{
           participants: membersCount,
           activity: unreadCount,
@@ -1847,6 +1867,7 @@ export default async function ProjectPage({
               </section>
             </div>
           ),
+          transport: transportSnapshot ? <ProjectTransport snapshot={transportSnapshot} /> : null,
           payments: financeManaged ? (
             <div className="space-y-6">
               <ProjectFlowBar

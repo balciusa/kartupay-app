@@ -455,6 +455,23 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
         </div>
       </section>
 
+      <section className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold text-slate-900">
+            {locale === 'lt' ? 'Transporto organizavimas' : 'Transport coordination'}
+          </h3>
+          <p className="text-xs text-slate-600">
+            {locale === 'lt'
+              ? 'Padėkite grupei susitarti, kas ir su kuo važiuos į renginį ir iš jo.'
+              : 'Help your group arrange rides to and from the event.'}
+          </p>
+        </div>
+        <label className="flex min-h-11 items-center gap-3 text-sm text-slate-800">
+          <input type="checkbox" name="transport_enabled" value="true" />
+          <span>{locale === 'lt' ? 'Įjungti transporto organizavimą' : 'Enable transport coordination'}</span>
+        </label>
+      </section>
+
       {financeMode === 'managed' && <>
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">

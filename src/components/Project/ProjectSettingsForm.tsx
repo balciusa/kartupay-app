@@ -17,6 +17,8 @@ type ProjectSettingsFormProps = {
     visibilityAvailable: boolean
     financeMode: ProjectFinanceMode
     financeModeAvailable: boolean
+    transportEnabled: boolean
+    transportAvailable: boolean
     totalEur: string
     totalIsPerPerson: boolean
     bundleSize: number | null
@@ -408,6 +410,27 @@ export function ProjectSettingsForm({ action, initial, locale = 'en' }: ProjectS
           <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
             Shared cost management is unavailable until the latest database migration is applied.
           </div>
+        )}
+      </section>
+
+      <section className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold text-slate-900">
+            {locale === 'lt' ? 'Transporto organizavimas' : 'Transport coordination'}
+          </h3>
+          <p className="text-xs text-slate-600">
+            {locale === 'lt'
+              ? 'Padėkite grupei susitarti, kas ir su kuo važiuos į renginį ir iš jo.'
+              : 'Help your group arrange rides to and from the event.'}
+          </p>
+        </div>
+        {initial.transportAvailable ? (
+          <label className="flex min-h-11 items-center gap-3 text-sm text-slate-800">
+            <input type="checkbox" name="transport_enabled" value="true" defaultChecked={initial.transportEnabled} />
+            <span>{locale === 'lt' ? 'Įjungti transporto organizavimą' : 'Enable transport coordination'}</span>
+          </label>
+        ) : (
+          <p className="text-xs text-slate-500">Transport coordination requires the latest database migration.</p>
         )}
       </section>
 

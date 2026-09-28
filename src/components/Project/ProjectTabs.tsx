@@ -5,6 +5,7 @@ import { ReactNode, useEffect, useMemo, useState } from 'react'
 type TabKey =
   | 'overview'
   | 'people'
+  | 'transport'
   | 'participants'
   | 'payments'
   | 'activity'
@@ -40,10 +41,12 @@ export function ProjectTabs({
   sections,
   counts,
   defaultTab = 'overview',
+  transportLabel = 'Transport',
 }: {
   sections: TabSectionMap
   counts?: TabCounts
   defaultTab?: TabKey
+  transportLabel?: string
 }) {
   const [active, setActive] = useState<TabKey>(defaultTab)
   const [peopleSeen, setPeopleSeen] = useState(false)
@@ -64,6 +67,7 @@ export function ProjectTabs({
         badgeStyle: peopleBadgeStyle,
         enabled: !!sections.people,
       },
+      { key: 'transport' as const, label: transportLabel, enabled: !!sections.transport },
       {
         key: 'payments' as const,
         label: 'Payments',
@@ -91,7 +95,7 @@ export function ProjectTabs({
     }
 
     return baseTabs.filter(tab => tab.enabled)
-  }, [counts, peopleBadge, peopleBadgeStyle, sections])
+  }, [counts, peopleBadge, peopleBadgeStyle, sections, transportLabel])
 
   const resolvedActive = tabs.some(tab => tab.key === active) ? active : (tabs[0]?.key ?? defaultTab)
 
