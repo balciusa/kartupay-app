@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import {
+  canViewProjectTransport,
   deriveTransportStatuses,
   getTransportDepartureSubmission,
   parseTransportDeparture,
@@ -11,6 +12,13 @@ import {
   type TransportOffer,
   type TransportParticipant,
 } from './projectTransport.ts'
+
+test('transport tab eligibility requires enablement, authentication, and active participation', () => {
+  assert.equal(canViewProjectTransport({ transportEnabled: true, isAuthenticated: true, isActiveParticipant: true }), true)
+  assert.equal(canViewProjectTransport({ transportEnabled: false, isAuthenticated: true, isActiveParticipant: true }), false)
+  assert.equal(canViewProjectTransport({ transportEnabled: true, isAuthenticated: true, isActiveParticipant: false }), false)
+  assert.equal(canViewProjectTransport({ transportEnabled: true, isAuthenticated: false, isActiveParticipant: false }), false)
+})
 
 const participants: TransportParticipant[] = Array.from({ length: 10 }, (_, index) => ({
   id: `p${index + 1}`,
@@ -263,12 +271,28 @@ test('tab and form sources contain the gated transport surface and default-off t
   const form = readFileSync('src/components/Project/NewProjectForm.tsx', 'utf8')
   const transport = readFileSync('src/components/Project/ProjectTransport.tsx', 'utf8')
   assert.match(tabs, /key: 'transport'[\s\S]*enabled: !!sections\.transport/)
-  assert.match(page, /project\.transport_enabled === true && uid && isMeParticipant/)
-  assert.match(page, /transport: transportSnapshot \? <ProjectTransport/)
+  assert.match(page, /transportEnabled: project\.transport_enabled === true/)
+  assert.match(page, /isActiveParticipant: isMeParticipant/)
+  assert.match(page, /transport: transportVisible \?/)
+  assert.match(page, /Transport could not be loaded\. Please refresh and try again\./)
+  assert.match(page, /Nepavyko įkelti transporto informacijos\. Atnaujinkite puslapį ir bandykite dar kartą\./)
+  assert.match(page, /transportLoadFailed = true/)
   assert.match(form, /name="transport_enabled" value="true"/)
   assert.doesNotMatch(form, /name="transport_enabled"[^>]*defaultChecked/)
   assert.match(transport, /getTransportDepartureSubmission\(departureLocal\)/)
   assert.match(transport, /departureDstGap/)
   assert.match(transport, /role="alert"/)
   assert.doesNotMatch(transport, /new Date\(\)\.getTimezoneOffset\(\)/)
+  assert.match(transport, /!snapshot\.planningReady/)
+  assert.match(transport, /strings\.planningLocked/)
+})
+
+test('private requesters return to the invite surface before full project and transport loading', () => {
+  const page = readFileSync('src/app/project/[id]/page.tsx', 'utf8')
+  const privateInviteReturn = page.indexOf('<PrivateProjectInvite')
+  const fullProjectLoad = page.indexOf("const fullBaseProjectFields")
+  const transportLoad = page.indexOf('loadProjectTransport({')
+  assert.ok(privateInviteReturn >= 0)
+  assert.ok(privateInviteReturn < fullProjectLoad)
+  assert.ok(fullProjectLoad < transportLoad)
 })
