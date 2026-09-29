@@ -3,6 +3,12 @@ export const TRANSPORT_INTENTS = ['needs_ride', 'own_arrangement'] as const
 
 export type TransportDirection = (typeof TRANSPORT_DIRECTIONS)[number]
 export type TransportIntent = (typeof TRANSPORT_INTENTS)[number]
+
+export const canViewProjectTransport = (input: {
+  transportEnabled: boolean
+  isAuthenticated: boolean
+  isActiveParticipant: boolean
+}) => input.transportEnabled && input.isAuthenticated && input.isActiveParticipant
 export type TransportParticipantState =
   | 'driver'
   | 'passenger'

@@ -11,6 +11,75 @@ import {
 } from './projectTransport'
 import { supabaseAdmin } from './supabaseAdmin'
 
+type TransportProjectRow = {
+  id: string
+  transport_enabled: boolean | null
+  date_mode: string | null
+  event_start_at: string | null
+  event_end_at: string | null
+  status: string | null
+  canceled_at: string | null
+  aborted_at: string | null
+  event_location_label: string | null
+  event_location_address: string | null
+}
+
+const missingColumn = (
+  error: { message?: string; details?: string | null; hint?: string | null; code?: string } | null,
+  column: string
+) => {
+  const haystack = `${error?.message ?? ''} ${error?.details ?? ''} ${error?.hint ?? ''}`.toLowerCase()
+  const columnName = column.toLowerCase()
+  if (!haystack.includes(columnName)) return false
+  return (
+    haystack.includes('does not exist') ||
+    haystack.includes('could not find') ||
+    haystack.includes('schema cache') ||
+    haystack.includes('unknown column') ||
+    error?.code === 'PGRST204'
+  )
+}
+
+const loadTransportProject = async (projectId: string): Promise<TransportProjectRow | null> => {
+  const baseFields = [
+    'id',
+    'transport_enabled',
+    'date_mode',
+    'event_start_at',
+    'event_end_at',
+    'status',
+    'canceled_at',
+  ] as const
+  const optionalFields = ['aborted_at', 'event_location_label', 'event_location_address'] as const
+  let selectedOptionalFields: Array<(typeof optionalFields)[number]> = [...optionalFields]
+  const missingFields = new Set<string>()
+
+  while (true) {
+    const { data, error } = await supabaseAdmin
+      .from('projects')
+      .select([...baseFields, ...selectedOptionalFields].join(', '))
+      .eq('id', projectId)
+      .maybeSingle()
+
+    const missingField = selectedOptionalFields.find(field => missingColumn(error, field))
+    if (missingField) {
+      missingFields.add(missingField)
+      selectedOptionalFields = selectedOptionalFields.filter(field => field !== missingField)
+      continue
+    }
+    if (error) throw error
+    if (!data) return null
+
+    const project = data as Partial<TransportProjectRow>
+    return {
+      ...project,
+      aborted_at: missingFields.has('aborted_at') ? null : project.aborted_at ?? null,
+      event_location_label: missingFields.has('event_location_label') ? null : project.event_location_label ?? null,
+      event_location_address: missingFields.has('event_location_address') ? null : project.event_location_address ?? null,
+    } as TransportProjectRow
+  }
+}
+
 const memberName = (participant: {
   short_code?: string | null
   users?: { display_name?: string | null; email?: string | null } | Array<{ display_name?: string | null; email?: string | null }> | null
@@ -26,12 +95,8 @@ export async function loadProjectTransport(input: {
   viewerUserId: string
   locale: 'en' | 'lt'
 }): Promise<ProjectTransportSnapshot | null> {
-  const [{ data: project, error: projectError }, { data: viewer, error: viewerError }] = await Promise.all([
-    supabaseAdmin
-      .from('projects')
-      .select('id, transport_enabled, date_mode, event_start_at, event_end_at, event_location_label, event_location_address, status, canceled_at, aborted_at')
-      .eq('id', input.projectId)
-      .maybeSingle(),
+  const [project, { data: viewer, error: viewerError }] = await Promise.all([
+    loadTransportProject(input.projectId),
     supabaseAdmin
       .from('participants')
       .select('id')
@@ -40,7 +105,6 @@ export async function loadProjectTransport(input: {
       .is('left_at', null)
       .maybeSingle(),
   ])
-  if (projectError) throw projectError
   if (viewerError) throw viewerError
   if (!project || !viewer || project.transport_enabled !== true) return null
 

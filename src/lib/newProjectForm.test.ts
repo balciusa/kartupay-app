@@ -86,6 +86,19 @@ test('server independently validates modes, participants, dates, deadline and du
   }
 })
 
+test('new project persists the transport checkbox as an explicit boolean', async () => {
+  for (const enabled of [true, false]) {
+    const f = fixture()
+    const data = form('fixed')
+    data.set('event_start_date', '2099-06-01')
+    data.set('event_start_time', '10:00')
+    if (enabled) data.set('transport_enabled', 'true')
+    await assert.rejects(f.actions.createProjectWithState({ error: null }, data), (error: unknown) =>
+      String((error as { digest: string }).digest).includes('NEXT_REDIRECT;replace;/project/test-projects;'))
+    assert.equal(f.writes[0].values.transport_enabled, enabled)
+  }
+})
+
 test('server-rendered form retains POST action metadata and the bound creation redirect path', async () => {
   const f = fixture()
   type Action = (...args: unknown[]) => unknown

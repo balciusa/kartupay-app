@@ -34,6 +34,7 @@ import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { shouldShowProjectShare } from '@/lib/projectShare'
 import { getProjectJoinStrategy, getProjectReadiness, normalizeProjectFinanceMode, type ProjectFinanceMode } from '@/lib/projectFinance'
 import { isProjectCanceled } from '@/lib/projectInvite'
+import { canViewProjectTransport } from '@/lib/projectTransport'
 import { loadProjectTransport } from '@/lib/projectTransportServer'
 import { headers } from 'next/headers'
 import {
@@ -821,16 +822,30 @@ export default async function ProjectPage({
     })
   }
 
+  const transportVisible = canViewProjectTransport({
+    transportEnabled: project.transport_enabled === true,
+    isAuthenticated: !!uid,
+    isActiveParticipant: isMeParticipant,
+  })
   let transportSnapshot = null
-  if (project.transport_enabled === true && uid && isMeParticipant) {
+  let transportLoadFailed = false
+  if (transportVisible && uid) {
     try {
       transportSnapshot = await loadProjectTransport({
         projectId,
         viewerUserId: uid,
         locale: projectDateLocale,
       })
+      if (!transportSnapshot) {
+        transportLoadFailed = true
+        console.error('[ProjectPage] transport load error', { projectId, code: 'empty_snapshot' })
+      }
     } catch (error) {
-      console.error('[ProjectPage] transport load error', error)
+      transportLoadFailed = true
+      const code = error && typeof error === 'object' && 'code' in error
+        ? String(error.code)
+        : 'unknown'
+      console.error('[ProjectPage] transport load error', { projectId, code })
     }
   }
 
@@ -1867,7 +1882,17 @@ export default async function ProjectPage({
               </section>
             </div>
           ),
-          transport: transportSnapshot ? <ProjectTransport snapshot={transportSnapshot} /> : null,
+          transport: transportVisible ? (
+            transportSnapshot ? (
+              <ProjectTransport snapshot={transportSnapshot} />
+            ) : transportLoadFailed ? (
+              <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+                {projectDateLocale === 'lt'
+                  ? 'Nepavyko įkelti transporto informacijos. Atnaujinkite puslapį ir bandykite dar kartą.'
+                  : 'Transport could not be loaded. Please refresh and try again.'}
+              </div>
+            ) : null
+          ) : null,
           payments: financeManaged ? (
             <div className="space-y-6">
               <ProjectFlowBar
