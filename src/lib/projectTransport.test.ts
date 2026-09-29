@@ -4,14 +4,62 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import {
   canViewProjectTransport,
+  combineTransportTime,
   deriveTransportStatuses,
+  formatTransportDeparture,
   getTransportDepartureSubmission,
   parseTransportDeparture,
   remainingTransportSeats,
+  splitTransportTime,
   summarizeTransport,
+  TRANSPORT_HOURS,
+  TRANSPORT_MINUTES,
   type TransportOffer,
   type TransportParticipant,
 } from './projectTransport.ts'
+
+test('24-hour transport time parts preserve every hour and minute', () => {
+  assert.equal(TRANSPORT_HOURS.length, 24)
+  assert.equal(TRANSPORT_HOURS[0], '00')
+  assert.equal(TRANSPORT_HOURS[23], '23')
+  assert.equal(TRANSPORT_MINUTES.length, 60)
+  assert.equal(TRANSPORT_MINUTES[0], '00')
+  assert.equal(TRANSPORT_MINUTES[59], '59')
+  assert.equal(combineTransportTime('08', '05'), '08:05')
+  assert.equal(combineTransportTime('17', '45'), '17:45')
+  assert.equal(combineTransportTime('', '05'), '')
+  assert.equal(combineTransportTime('08', ''), '')
+  assert.deepEqual(splitTransportTime('17:08'), { hour: '17', minute: '08' })
+  for (const time of [combineTransportTime('', '05'), combineTransportTime('08', '')]) {
+    const departureLocal = time ? `2026-10-09T${time}` : ''
+    assert.throws(() => getTransportDepartureSubmission(departureLocal), /departure date and time/)
+  }
+})
+
+test('transport ride-card departure formatting is explicitly 24-hour', () => {
+  for (const [hour, minute] of [[8, 5], [13, 30], [17, 45], [23, 59]]) {
+    const departureAt = new Date(2026, 9, 9, hour, minute).toISOString()
+    const expectedTime = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+    for (const locale of ['en', 'lt'] as const) {
+      const formatted = formatTransportDeparture(departureAt, locale)
+      assert.match(formatted, new RegExp(expectedTime))
+      assert.doesNotMatch(formatted, /\b(?:AM|PM)\b/i)
+    }
+  }
+})
+
+test('Transport RideForm uses labeled hour/minute selects and no native time input', () => {
+  const transport = readFileSync('src/components/Project/ProjectTransport.tsx', 'utf8')
+  assert.doesNotMatch(transport, /type="time"/)
+  assert.match(transport, /TRANSPORT_HOURS\.map/)
+  assert.match(transport, /TRANSPORT_MINUTES\.map/)
+  assert.match(transport, /strings\.departureHour/)
+  assert.match(transport, /strings\.departureMinute/)
+  assert.match(transport, /const time = combineTransportTime\(hour, minute\)/)
+  assert.match(transport, /const departureLocal = date && time \? `\$\{date\}T\$\{time\}` : ''/)
+  assert.match(transport, /transport-hour-[\s\S]*disabled=\{passengerCount > 0\}/)
+  assert.match(transport, /transport-minute-[\s\S]*disabled=\{passengerCount > 0\}/)
+})
 
 test('transport tab eligibility requires enablement, authentication, and active participation', () => {
   assert.equal(canViewProjectTransport({ transportEnabled: true, isAuthenticated: true, isActiveParticipant: true }), true)
@@ -209,6 +257,21 @@ test('editing without changing departure preserves the stored instant', () => {
     stored: '2026-12-15T06:00:00.000Z',
     local: '2026-12-15T08:00',
     saved: '2026-12-15T06:00:00.000Z',
+  })
+})
+
+test('editing an existing 17:08 ride without changes preserves its exact instant', () => {
+  const result = runInVilnius(`
+    const stored = '2026-10-09T14:08:00.000Z'
+    const local = wallTime(stored)
+    const submission = getTransportDepartureSubmission(local)
+    const saved = parseTransportDeparture(local, submission.timezoneOffsetMinutes, submission.timeZone)
+    console.log(JSON.stringify({ stored, local, saved }))
+  `)
+  assert.deepEqual(result, {
+    stored: '2026-10-09T14:08:00.000Z',
+    local: '2026-10-09T17:08',
+    saved: '2026-10-09T14:08:00.000Z',
   })
 })
 
