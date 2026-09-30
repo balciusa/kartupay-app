@@ -1,9 +1,10 @@
 'use client'
 
-import { FormEvent, startTransition, useActionState, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, startTransition, useActionState, useEffect, useRef, useState } from 'react'
 import { createProjectWithState } from '@/app/project/new/actions'
 import { Button } from '@/components/ui/button'
 import { DateRangePicker } from '@/components/ui/DateRangePicker'
+import { TimePicker24 } from '@/components/ui/TimePicker24'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
 import { normalizeDateOnlyOption } from '@/lib/projectDateSelection'
@@ -91,6 +92,8 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   const [showServerError, setShowServerError] = useState(true)
   const [financeMode, setFinanceMode] = useState<'none' | 'managed'>('none')
   const [dateMode, setDateMode] = useState<'fixed' | 'selecting'>('fixed')
+  const [eventStartTime, setEventStartTime] = useState('')
+  const [eventEndTime, setEventEndTime] = useState('')
   const [dateOptions, setDateOptions] = useState<DraftDateOption[]>([{
     id: 'initial-date-option',
     startDate: '',
@@ -118,18 +121,6 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   const nextDateOptionIdRef = useRef(1)
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? ''
   const financeStrings = getProjectFinanceStrings(locale)
-
-  const timeOptions = useMemo(
-    () => [
-      '',
-      ...Array.from({ length: 48 }, (_, idx) => {
-        const hours = Math.floor(idx / 2)
-        const minutes = idx % 2 === 0 ? '00' : '30'
-        return `${String(hours).padStart(2, '0')}:${minutes}`
-      }),
-    ],
-    []
-  )
 
   useEffect(() => {
     let canceled = false
@@ -734,26 +725,37 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
               <label className="text-sm font-medium">
                 Event starts <span className="text-red-500">*</span>
               </label>
-              <div className="grid grid-cols-2 gap-2">
-                <input name="event_start_date" type="date" className="control-input" required />
-                <select name="event_start_time" className="control-select" required>
-                  {timeOptions.map(value => (
-                    <option key={value || 'blank'} value={value}>{value || 'Time'}</option>
-                  ))}
-                </select>
+              <div className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-2">
+                <label className="min-w-0 space-y-1.5 text-xs font-medium text-slate-600">
+                  <span className="block">{locale === 'lt' ? 'Data' : 'Date'}</span>
+                  <input name="event_start_date" type="date" className="control-input min-h-11 min-w-0" required />
+                </label>
+                <TimePicker24
+                  id="new-project-event-start-time"
+                  name="event_start_time"
+                  value={eventStartTime}
+                  onChange={setEventStartTime}
+                  locale={locale}
+                  required
+                />
               </div>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">
                 Event ends <span className="font-normal text-muted-foreground">(optional)</span>
               </label>
-              <div className="grid grid-cols-2 gap-2">
-                <input name="event_end_date" type="date" className="control-input" />
-                <select name="event_end_time" className="control-select">
-                  {timeOptions.map(value => (
-                    <option key={value || 'blank'} value={value}>{value || 'Time'}</option>
-                  ))}
-                </select>
+              <div className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-2">
+                <label className="min-w-0 space-y-1.5 text-xs font-medium text-slate-600">
+                  <span className="block">{locale === 'lt' ? 'Data' : 'Date'}</span>
+                  <input name="event_end_date" type="date" className="control-input min-h-11 min-w-0" />
+                </label>
+                <TimePicker24
+                  id="new-project-event-end-time"
+                  name="event_end_time"
+                  value={eventEndTime}
+                  onChange={setEventEndTime}
+                  locale={locale}
+                />
               </div>
             </div>
           </div>

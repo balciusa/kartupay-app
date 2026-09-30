@@ -358,9 +358,10 @@ export default async function ProjectPage({
   if (project.is_public !== true) {
     const inviteCanceled = isProjectCanceled(project)
     const inviteDate = project.event_start_at
-      ? new Intl.DateTimeFormat(projectDateLocale === 'lt' ? 'lt-LT' : 'en-US', {
+      ? new Intl.DateTimeFormat(projectDateLocale === 'lt' ? 'lt-LT' : 'en-GB', {
           dateStyle: 'medium',
           timeStyle: 'short',
+          hour12: false,
         }).format(new Date(project.event_start_at))
       : null
     const inviteProps = {

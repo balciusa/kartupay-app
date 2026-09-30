@@ -336,6 +336,13 @@ const compileFixture = (source: string) => ts.transpileModule(source, {
 }).outputText
 const dateSelection = await import('./projectDateSelection.ts')
 const dateStrings = await import('./projectDateStrings.ts')
+const time24 = await import('./time24.ts')
+const timePickerExports: Record<string, React.ComponentType<Record<string, unknown>>> = {}
+const timePickerRequire = (name: string) => {
+  if (name === '@/lib/time24') return time24
+  return nodeRequire(name)
+}
+new Function('require', 'exports', compileFixture(readFileSync(new URL('../components/ui/TimePicker24.tsx', import.meta.url), 'utf8')))(timePickerRequire, timePickerExports)
 const datePickerExports: Record<string, React.ComponentType<Record<string, unknown>>> = {}
 const datePickerRequire = (name: string) => {
   if (name === '@/lib/projectDateSelection') return dateSelection
@@ -349,6 +356,7 @@ const dateRequire = (name: string) => {
   if (name === '@/app/project/[id]/actions') return new Proxy({}, { get: () => () => { throw new Error('Unexpected action invocation') } })
   if (name === '@/components/Project/LeaveProjectButton') return { LeaveProjectButton: () => createElement('button', {}, 'Leave project') }
   if (name === '@/components/ui/DateRangePicker') return datePickerExports
+  if (name === '@/components/ui/TimePicker24') return timePickerExports
   if (name === '@/components/ui/button') return { Button: ({ variant, asChild, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; asChild?: boolean }) => { void variant; return asChild ? children : createElement('button', props, children) } }
   if (name === '@/lib/projectDateSelection') return dateSelection
   if (name === '@/lib/projectDateStrings') return dateStrings

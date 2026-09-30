@@ -3,16 +3,13 @@
 import { FormEvent, ReactNode, useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
+import { TimePicker24 } from '@/components/ui/TimePicker24'
 import {
-  combineTransportTime,
   deriveTransportStatuses,
   formatTransportDeparture,
   getTransportDepartureSubmission,
   remainingTransportSeats,
   sortTransportOffers,
-  splitTransportTime,
-  TRANSPORT_HOURS,
-  TRANSPORT_MINUTES,
   summarizeTransport,
   TransportDepartureTimeError,
   type ProjectTransportSnapshot,
@@ -68,10 +65,7 @@ function RideForm({
     : snapshot.eventStartAt
   const [date, setDate] = useState(localDate(offer?.departureAt ?? defaultIso))
   const initialTime = offer ? localTime(offer.departureAt) : ''
-  const initialTimeParts = splitTransportTime(initialTime)
-  const [hour, setHour] = useState(initialTimeParts.hour)
-  const [minute, setMinute] = useState(initialTimeParts.minute)
-  const time = combineTransportTime(hour, minute)
+  const [time, setTime] = useState(initialTime)
   const [departureError, setDepartureError] = useState<string | null>(null)
   const departureErrorId = `transport-departure-error-${offer?.id ?? direction}`
 
@@ -137,58 +131,20 @@ function RideForm({
               disabled={passengerCount > 0}
             />
           </div>
-          <div className="min-w-0 space-y-1.5" role="group" aria-labelledby={`transport-time-label-${offer?.id ?? direction}`}>
-            <div id={`transport-time-label-${offer?.id ?? direction}`} className="text-xs font-medium text-slate-600">
-              {strings.departureTime}
-            </div>
-            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-end gap-2">
-              <div className="min-w-0 space-y-1">
-                <label className="block text-xs text-slate-600" htmlFor={`transport-hour-${offer?.id ?? direction}`}>
-                  {strings.departureHour}
-                </label>
-                <select
-                  id={`transport-hour-${offer?.id ?? direction}`}
-                  aria-label={`${strings.departure} — ${strings.departureHour}`}
-                  className="control-input min-h-11 min-w-0"
-                  value={hour}
-                  onChange={event => {
-                    setHour(event.target.value)
-                    setDepartureError(null)
-                  }}
-                  aria-describedby={departureError ? departureErrorId : undefined}
-                  aria-invalid={departureError ? true : undefined}
-                  aria-required="true"
-                  disabled={passengerCount > 0}
-                >
-                  <option value="">--</option>
-                  {TRANSPORT_HOURS.map(value => <option key={value} value={value}>{value}</option>)}
-                </select>
-              </div>
-              <span className="pb-3 text-lg font-semibold leading-none text-slate-500" aria-hidden="true">:</span>
-              <div className="min-w-0 space-y-1">
-                <label className="block text-xs text-slate-600" htmlFor={`transport-minute-${offer?.id ?? direction}`}>
-                  {strings.departureMinute}
-                </label>
-                <select
-                  id={`transport-minute-${offer?.id ?? direction}`}
-                  aria-label={`${strings.departure} — ${strings.departureMinute}`}
-                  className="control-input min-h-11 min-w-0"
-                  value={minute}
-                  onChange={event => {
-                    setMinute(event.target.value)
-                    setDepartureError(null)
-                  }}
-                  aria-describedby={departureError ? departureErrorId : undefined}
-                  aria-invalid={departureError ? true : undefined}
-                  aria-required="true"
-                  disabled={passengerCount > 0}
-                >
-                  <option value="">--</option>
-                  {TRANSPORT_MINUTES.map(value => <option key={value} value={value}>{value}</option>)}
-                </select>
-              </div>
-            </div>
-          </div>
+          <TimePicker24
+            id={`transport-time-${offer?.id ?? direction}`}
+            value={time}
+            onChange={value => {
+              setTime(value)
+              setDepartureError(null)
+            }}
+            label={strings.departureTime}
+            locale={snapshot.locale}
+            required
+            disabled={passengerCount > 0}
+            aria-describedby={departureError ? departureErrorId : undefined}
+            aria-invalid={departureError ? true : undefined}
+          />
         </div>
       </fieldset>
       {departureError && <p id={departureErrorId} role="alert" className="text-sm text-red-700">{departureError}</p>}
