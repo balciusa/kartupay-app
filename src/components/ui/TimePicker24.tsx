@@ -5,6 +5,7 @@ import {
   changeTime24Part,
   combineTime24,
   getTime24MinuteOptions,
+  isPartialTime24,
   splitTime24,
   TIME_HOURS_24,
   type Time24Parts,
@@ -46,6 +47,8 @@ export function TimePicker24({
   const text = labels[locale]
   const groupLabel = label ?? text.time
   const minuteOptions = getTime24MinuteOptions(parts.minute)
+  const isPartial = isPartialTime24(parts)
+  const selectAriaInvalid = (ariaInvalid || isPartial) ? true : undefined
 
   useEffect(() => {
     setParts(splitTime24(value))
@@ -54,7 +57,9 @@ export function TimePicker24({
   const update = (part: keyof Time24Parts, nextValue: string) => {
     const next = changeTime24Part(parts, part, nextValue)
     setParts(next.parts)
-    onChange(next.value)
+    if (!isPartialTime24(next.parts)) {
+      onChange(next.value)
+    }
   }
 
   return (
@@ -75,10 +80,10 @@ export function TimePicker24({
             className="control-select min-h-11 min-w-0 w-full"
             value={parts.hour}
             onChange={event => update('hour', event.target.value)}
-            required={required}
+            required={required || isPartial}
             disabled={disabled}
             aria-describedby={ariaDescribedBy}
-            aria-invalid={ariaInvalid}
+            aria-invalid={selectAriaInvalid}
             aria-label={`${groupLabel} — ${text.hour}`}
           >
             <option value="">--</option>
@@ -93,10 +98,10 @@ export function TimePicker24({
             className="control-select min-h-11 min-w-0 w-full"
             value={parts.minute}
             onChange={event => update('minute', event.target.value)}
-            required={required}
+            required={required || isPartial}
             disabled={disabled}
             aria-describedby={ariaDescribedBy}
-            aria-invalid={ariaInvalid}
+            aria-invalid={selectAriaInvalid}
             aria-label={`${groupLabel} — ${text.minute}`}
           >
             <option value="">--</option>
