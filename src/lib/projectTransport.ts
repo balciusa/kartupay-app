@@ -1,5 +1,7 @@
 export const TRANSPORT_DIRECTIONS = ['to_event', 'from_event'] as const
 export const TRANSPORT_INTENTS = ['needs_ride', 'own_arrangement'] as const
+export const TRANSPORT_HOURS = Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, '0'))
+export const TRANSPORT_MINUTES = Array.from({ length: 60 }, (_, minute) => String(minute).padStart(2, '0'))
 
 export type TransportDirection = (typeof TRANSPORT_DIRECTIONS)[number]
 export type TransportIntent = (typeof TRANSPORT_INTENTS)[number]
@@ -9,6 +11,22 @@ export const canViewProjectTransport = (input: {
   isAuthenticated: boolean
   isActiveParticipant: boolean
 }) => input.transportEnabled && input.isAuthenticated && input.isActiveParticipant
+
+export const splitTransportTime = (time: string) => {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time)
+  return match ? { hour: match[1], minute: match[2] } : { hour: '', minute: '' }
+}
+
+export const combineTransportTime = (hour: string, minute: string) =>
+  TRANSPORT_HOURS.includes(hour) && TRANSPORT_MINUTES.includes(minute) ? `${hour}:${minute}` : ''
+
+export const formatTransportDeparture = (departureAt: string, locale: 'en' | 'lt') =>
+  new Intl.DateTimeFormat(locale === 'lt' ? 'lt-LT' : 'en-GB', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    hour12: false,
+  }).format(new Date(departureAt))
+
 export type TransportParticipantState =
   | 'driver'
   | 'passenger'
