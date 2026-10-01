@@ -4,33 +4,33 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import {
   canViewProjectTransport,
-  combineTransportTime,
   deriveTransportStatuses,
   formatTransportDeparture,
   getTransportDepartureSubmission,
   parseTransportDeparture,
   remainingTransportSeats,
-  splitTransportTime,
   summarizeTransport,
-  TRANSPORT_HOURS,
-  TRANSPORT_MINUTES,
   type TransportOffer,
   type TransportParticipant,
 } from './projectTransport.ts'
+import {
+  combineTime24,
+  splitTime24,
+  TIME_HOURS_24,
+  TIME_MINUTE_STEPS,
+} from './time24.ts'
 
-test('24-hour transport time parts preserve every hour and minute', () => {
-  assert.equal(TRANSPORT_HOURS.length, 24)
-  assert.equal(TRANSPORT_HOURS[0], '00')
-  assert.equal(TRANSPORT_HOURS[23], '23')
-  assert.equal(TRANSPORT_MINUTES.length, 60)
-  assert.equal(TRANSPORT_MINUTES[0], '00')
-  assert.equal(TRANSPORT_MINUTES[59], '59')
-  assert.equal(combineTransportTime('08', '05'), '08:05')
-  assert.equal(combineTransportTime('17', '45'), '17:45')
-  assert.equal(combineTransportTime('', '05'), '')
-  assert.equal(combineTransportTime('08', ''), '')
-  assert.deepEqual(splitTransportTime('17:08'), { hour: '17', minute: '08' })
-  for (const time of [combineTransportTime('', '05'), combineTransportTime('08', '')]) {
+test('24-hour transport time parts use the shared five-minute picker values', () => {
+  assert.equal(TIME_HOURS_24.length, 24)
+  assert.equal(TIME_HOURS_24[0], '00')
+  assert.equal(TIME_HOURS_24[23], '23')
+  assert.deepEqual(TIME_MINUTE_STEPS, ['00', '05', '10', '15', '20', '25', '30', '35', '40', '45', '50', '55'])
+  assert.equal(combineTime24('08', '05'), '08:05')
+  assert.equal(combineTime24('17', '45'), '17:45')
+  assert.equal(combineTime24('', '05'), '')
+  assert.equal(combineTime24('08', ''), '')
+  assert.deepEqual(splitTime24('17:08'), { hour: '17', minute: '08' })
+  for (const time of [combineTime24('', '05'), combineTime24('08', '')]) {
     const departureLocal = time ? `2026-10-09T${time}` : ''
     assert.throws(() => getTransportDepartureSubmission(departureLocal), /departure date and time/)
   }
@@ -48,17 +48,13 @@ test('transport ride-card departure formatting is explicitly 24-hour', () => {
   }
 })
 
-test('Transport RideForm uses labeled hour/minute selects and no native time input', () => {
+test('Transport RideForm uses the shared labeled picker and no native time input', () => {
   const transport = readFileSync('src/components/Project/ProjectTransport.tsx', 'utf8')
   assert.doesNotMatch(transport, /type="time"/)
-  assert.match(transport, /TRANSPORT_HOURS\.map/)
-  assert.match(transport, /TRANSPORT_MINUTES\.map/)
-  assert.match(transport, /strings\.departureHour/)
-  assert.match(transport, /strings\.departureMinute/)
-  assert.match(transport, /const time = combineTransportTime\(hour, minute\)/)
+  assert.match(transport, /<TimePicker24/)
+  assert.match(transport, /label=\{strings\.departureTime\}/)
   assert.match(transport, /const departureLocal = date && time \? `\$\{date\}T\$\{time\}` : ''/)
-  assert.match(transport, /transport-hour-[\s\S]*disabled=\{passengerCount > 0\}/)
-  assert.match(transport, /transport-minute-[\s\S]*disabled=\{passengerCount > 0\}/)
+  assert.match(transport, /disabled=\{passengerCount > 0\}/)
 })
 
 test('transport tab eligibility requires enablement, authentication, and active participation', () => {

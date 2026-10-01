@@ -19,6 +19,7 @@ import {
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
 import { Button } from '@/components/ui/button'
 import { DateRangePicker, type DateRangeValue } from '@/components/ui/DateRangePicker'
+import { TimePicker24 } from '@/components/ui/TimePicker24'
 import {
   deriveProjectDatePresentationState,
   formatDateRangeDuration,
@@ -169,6 +170,8 @@ export function ProjectDateFinder({
   const router = useRouter()
   const [suggesting, setSuggesting] = useState(false)
   const [editingTime, setEditingTime] = useState(false)
+  const [projectStartTime, setProjectStartTime] = useState(() => timeInputValue(data.eventStartAt))
+  const [projectEndTime, setProjectEndTime] = useState(() => timeInputValue(data.eventEndAt))
   const [selectingEarly, setSelectingEarly] = useState(false)
   const [earlyOptionId, setEarlyOptionId] = useState<string | null>(null)
   const [pendingKey, setPendingKey] = useState<string | null>(null)
@@ -390,7 +393,16 @@ export function ProjectDateFinder({
                 {!hasProjectTime && <p className="mt-1 text-sm text-slate-600">{strings.timeNotSet}</p>}
               </div>
               {!editingTime && (
-                <Button type="button" variant="outline" className="min-h-11 rounded-full" onClick={() => setEditingTime(true)}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="min-h-11 rounded-full"
+                  onClick={() => {
+                    setProjectStartTime(timeInputValue(data.eventStartAt))
+                    setProjectEndTime(timeInputValue(data.eventEndAt))
+                    setEditingTime(true)
+                  }}
+                >
                   <Clock3 className="mr-2 h-4 w-4" /> {hasProjectTime ? strings.editTime : strings.addTime}
                 </Button>
               )}
@@ -409,26 +421,24 @@ export function ProjectDateFinder({
                   })
                 }}
               >
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-1 text-sm font-medium text-slate-700">
-                    {strings.startTime}
-                    <input
-                      name="start_time"
-                      type="time"
-                      required
-                      className="control-input min-h-11"
-                      defaultValue={timeInputValue(data.eventStartAt)}
-                    />
-                  </label>
-                  <label className="space-y-1 text-sm font-medium text-slate-700">
-                    {strings.endTimeOptional}
-                    <input
-                      name="end_time"
-                      type="time"
-                      className="control-input min-h-11"
-                      defaultValue={timeInputValue(data.eventEndAt)}
-                    />
-                  </label>
+                <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+                  <TimePicker24
+                    id="date-finder-event-start-time"
+                    name="start_time"
+                    value={projectStartTime}
+                    onChange={setProjectStartTime}
+                    label={strings.startTime}
+                    locale={locale}
+                    required
+                  />
+                  <TimePicker24
+                    id="date-finder-event-end-time"
+                    name="end_time"
+                    value={projectEndTime}
+                    onChange={setProjectEndTime}
+                    label={strings.endTimeOptional}
+                    locale={locale}
+                  />
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
                   {hasProjectTime && (

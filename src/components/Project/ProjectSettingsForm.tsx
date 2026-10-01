@@ -1,7 +1,8 @@
 'use client'
 
-import { FormEvent, useActionState, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, useActionState, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { TimePicker24 } from '@/components/ui/TimePicker24'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
 import { FINANCE_HISTORY_ERROR, type ProjectFinanceMode } from '@/lib/projectFinance'
@@ -144,18 +145,6 @@ export function ProjectSettingsForm({ action, initial, locale = 'en' }: ProjectS
   const geocodeRequestCounterRef = useRef(0)
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? ''
   const financeStrings = getProjectFinanceStrings(locale)
-
-  const timeOptions = useMemo(() => {
-    const baseTimes = Array.from({ length: 48 }, (_, idx) => {
-      const hours = Math.floor(idx / 2)
-      const minutes = idx % 2 === 0 ? '00' : '30'
-      return `${String(hours).padStart(2, '0')}:${minutes}`
-    })
-    const timeSet = new Set(baseTimes)
-    if (startTime) timeSet.add(startTime)
-    if (endTime) timeSet.add(endTime)
-    return ['', ...Array.from(timeSet).sort()]
-  }, [startTime, endTime])
 
   useEffect(() => {
     let canceled = false
@@ -667,63 +656,61 @@ export function ProjectSettingsForm({ action, initial, locale = 'en' }: ProjectS
       ) : <div className="grid gap-3 md:grid-cols-2">
         <div>
           <label className="mb-1 block text-sm font-medium text-slate-700">Event starts (optional)</label>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              name="event_start_date"
-              type="date"
-              className="control-input"
-              defaultValue={initial.eventStartDate}
-              onChange={event => {
-                setStartDate(event.target.value)
-                setDateError(null)
-              }}
-            />
-            <select
+          <div className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-2">
+            <label className="min-w-0 space-y-1.5 text-xs font-medium text-slate-600">
+              <span className="block">{locale === 'lt' ? 'Data' : 'Date'}</span>
+              <input
+                name="event_start_date"
+                type="date"
+                className="control-input min-h-11 min-w-0"
+                defaultValue={initial.eventStartDate}
+                onChange={event => {
+                  setStartDate(event.target.value)
+                  setDateError(null)
+                }}
+              />
+            </label>
+            <TimePicker24
+              id="settings-event-start-time"
               name="event_start_time"
-              className="control-select"
-              defaultValue={initial.eventStartTime}
-              onChange={event => {
-                setStartTime(event.target.value)
+              value={startTime}
+              onChange={value => {
+                setStartTime(value)
                 setDateError(null)
               }}
-            >
-              {timeOptions.map(value => (
-                <option key={value || 'blank'} value={value}>
-                  {value || 'Time'}
-                </option>
-              ))}
-            </select>
+              locale={locale}
+              aria-invalid={dateError ? true : undefined}
+            />
           </div>
         </div>
         <div>
           <label className="mb-1 block text-sm font-medium text-slate-700">Event ends (optional)</label>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              name="event_end_date"
-              type="date"
-              min={startDate || undefined}
-              className="control-input"
-              defaultValue={initial.eventEndDate}
-              onChange={event => {
-                setEndDate(event.target.value)
-                setDateError(null)
-              }}
-            />
-            <select
+          <div className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-2">
+            <label className="min-w-0 space-y-1.5 text-xs font-medium text-slate-600">
+              <span className="block">{locale === 'lt' ? 'Data' : 'Date'}</span>
+              <input
+                name="event_end_date"
+                type="date"
+                min={startDate || undefined}
+                className="control-input min-h-11 min-w-0"
+                defaultValue={initial.eventEndDate}
+                onChange={event => {
+                  setEndDate(event.target.value)
+                  setDateError(null)
+                }}
+              />
+            </label>
+            <TimePicker24
+              id="settings-event-end-time"
               name="event_end_time"
-              className="control-select"
-              defaultValue={initial.eventEndTime}
-              onChange={event => {
-                setEndTime(event.target.value)
+              value={endTime}
+              onChange={value => {
+                setEndTime(value)
                 setDateError(null)
               }}
-            >
-              {timeOptions.map(value => (
-                <option key={value || 'blank'} value={value}>
-                  {value || 'Time'}
-                </option>
-              ))}
-            </select>
+              locale={locale}
+              aria-invalid={dateError ? true : undefined}
+            />
           </div>
         </div>
       </div>}
