@@ -334,6 +334,7 @@ const compileFixture = (source: string) => ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
   fileName: 'fixture.tsx',
 }).outputText
+const calendarRovingFocus = await import('./calendarRovingFocus.ts')
 const dateSelection = await import('./projectDateSelection.ts')
 const dateStrings = await import('./projectDateStrings.ts')
 const time24 = await import('./time24.ts')
@@ -345,6 +346,7 @@ const timePickerRequire = (name: string) => {
 new Function('require', 'exports', compileFixture(readFileSync(new URL('../components/ui/TimePicker24.tsx', import.meta.url), 'utf8')))(timePickerRequire, timePickerExports)
 const datePickerExports: Record<string, React.ComponentType<Record<string, unknown>>> = {}
 const datePickerRequire = (name: string) => {
+  if (name === '@/lib/calendarRovingFocus') return calendarRovingFocus
   if (name === '@/lib/projectDateSelection') return dateSelection
   if (name === '@/lib/projectDateStrings') return dateStrings
   return nodeRequire(name)

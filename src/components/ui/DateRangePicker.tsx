@@ -8,6 +8,12 @@ import {
   type DateRangeDraft,
 } from '@/lib/projectDateSelection'
 import { getProjectDateStrings, type ProjectDateLocale } from '@/lib/projectDateStrings'
+import {
+  findCalendarNavigationIndex,
+  findCalendarRovingFocusIndex,
+  getCalendarDayTabIndex,
+  type CalendarNavigationKey,
+} from '@/lib/calendarRovingFocus'
 
 export type DateRangeValue = {
   startDate: string
@@ -24,27 +30,141 @@ type DateRangePickerProps = {
 }
 
 const DAY_MS = 86_400_000
+const CALENDAR_NAVIGATION_KEYS: CalendarNavigationKey[] = [
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  'Home',
+  'End',
+]
 
-const dateKey = (date: Date) => date.toISOString().slice(0, 10)
+const isCalendarNavigationKey = (key: string): key is CalendarNavigationKey =>
+  CALENDAR_NAVIGATION_KEYS.includes(key as CalendarNavigationKey)
 
-const localDateKey = (date: Date) =>
+export const dateKey = (date: Date) => date.toISOString().slice(0, 10)
+
+export const localDateKey = (date: Date) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 
-const dateFromKey = (value: string) => {
+export const dateFromKey = (value: string) => {
   const date = new Date(`${value}T00:00:00.000Z`)
   return Number.isNaN(date.getTime()) ? null : date
 }
 
-const monthStart = (date: Date) => new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1))
+export const monthStart = (date: Date) => new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1))
 
-const shiftMonth = (date: Date, amount: number) =>
+export const shiftMonth = (date: Date, amount: number) =>
   new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + amount, 1))
 
-const calendarDays = (month: Date) => {
+export const calendarDays = (month: Date) => {
   const first = monthStart(month)
   const mondayOffset = (first.getUTCDay() + 6) % 7
   const gridStart = new Date(first.getTime() - mondayOffset * DAY_MS)
   return Array.from({ length: 42 }, (_, index) => new Date(gridStart.getTime() + index * DAY_MS))
+}
+
+type CalendarMonthProps = {
+  month: Date
+  locale: ProjectDateLocale
+  selectedStart?: string
+  selectedEnd?: string | null
+  onSelect: (day: Date) => void
+  startSelectedLabel?: string
+  endSelectedLabel?: string
+  isDayDisabled?: (date: Date) => boolean
+}
+
+export function CalendarMonth({
+  month,
+  locale,
+  selectedStart = '',
+  selectedEnd = null,
+  onSelect,
+  startSelectedLabel = '',
+  endSelectedLabel = '',
+  isDayDisabled,
+}: CalendarMonthProps) {
+  const localeName = locale === 'lt' ? 'lt-LT' : 'en-GB'
+  const days = calendarDays(month)
+  const startTimestamp = selectedStart ? dateFromKey(selectedStart)?.getTime() ?? null : null
+  const endTimestamp = selectedEnd ? dateFromKey(selectedEnd)?.getTime() ?? null : null
+  const todayKey = localDateKey(new Date())
+  const dayStates = days.map(day => ({
+    key: dateKey(day),
+    inCurrentMonth: day.getUTCFullYear() === month.getUTCFullYear()
+      && day.getUTCMonth() === month.getUTCMonth(),
+    disabled: isDayDisabled?.(day) ?? false,
+  }))
+  const focusIndex = findCalendarRovingFocusIndex(dayStates, selectedStart, todayKey)
+
+  const moveFocus = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!isCalendarNavigationKey(event.key)) return
+    event.preventDefault()
+    const nextIndex = findCalendarNavigationIndex(dayStates, index, event.key)
+    if (nextIndex === index) return
+    event.currentTarget
+      .closest('[role="grid"]')
+      ?.querySelector<HTMLButtonElement>(`button[data-calendar-index="${nextIndex}"]`)
+      ?.focus()
+  }
+
+  return (
+    <>
+      <div className="mt-3 grid grid-cols-7 text-center text-xs font-medium text-slate-500" aria-hidden="true">
+        {Array.from({ length: 7 }, (_, index) => {
+          const monday = new Date(Date.UTC(2024, 0, 1 + index))
+          return <span key={index} className="py-2">{new Intl.DateTimeFormat(localeName, { weekday: 'short', timeZone: 'UTC' }).format(monday)}</span>
+        })}
+      </div>
+      <div
+        className="grid grid-cols-7 gap-y-1"
+        role="grid"
+        aria-label={new Intl.DateTimeFormat(localeName, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(month)}
+      >
+        {days.map((day, index) => {
+          const { key, disabled } = dayStates[index]
+          const timestamp = day.getTime()
+          const isStart = key === selectedStart
+          const isEnd = key === selectedEnd
+          const isInRange = startTimestamp !== null && endTimestamp !== null
+            && timestamp >= startTimestamp && timestamp <= endTimestamp
+          const inCurrentMonth = day.getUTCMonth() === month.getUTCMonth()
+          const fullLabel = new Intl.DateTimeFormat(localeName, {
+            weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC',
+          }).format(day)
+          const selectionLabel = isStart && startSelectedLabel
+            ? `, ${startSelectedLabel}`
+            : isEnd && endSelectedLabel ? `, ${endSelectedLabel}` : ''
+          return (
+            <span key={key} role="gridcell" aria-selected={isStart || isEnd || isInRange} className="min-w-0">
+              <button
+                type="button"
+                aria-label={`${fullLabel}${selectionLabel}`}
+                aria-current={key === todayKey ? 'date' : undefined}
+                data-calendar-index={index}
+                tabIndex={getCalendarDayTabIndex(dayStates, index, focusIndex)}
+                disabled={disabled}
+                className={`relative flex min-h-11 w-full min-w-0 items-center justify-center text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 ${
+                  isStart || isEnd
+                    ? 'z-10 rounded-full bg-indigo-600 text-white ring-2 ring-indigo-200'
+                    : isInRange
+                      ? 'bg-indigo-100 text-indigo-900'
+                      : inCurrentMonth
+                        ? 'rounded-full text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent'
+                        : 'rounded-full text-slate-400 hover:bg-slate-50'
+                } ${key === todayKey && !isStart && !isEnd ? 'underline decoration-2 underline-offset-4' : ''}`}
+                onKeyDown={event => moveFocus(event, index)}
+                onClick={() => onSelect(day)}
+              >
+                {day.getUTCDate()}
+              </button>
+            </span>
+          )
+        })}
+      </div>
+    </>
+  )
 }
 
 const asIso = (value: string) => `${value}T00:00:00.000Z`
@@ -74,7 +194,6 @@ export function DateRangePicker({
 
   const localeName = locale === 'lt' ? 'lt-LT' : 'en-GB'
   const month = visibleMonth ?? new Date(Date.UTC(2000, 0, 1))
-  const days = open ? calendarDays(month) : []
   const committedSummary = compactRange(value, locale)
   const draftSummary = draft.startDate && draft.complete
     ? compactRange({ startDate: draft.startDate, endDate: draft.endDate }, locale)
@@ -110,10 +229,6 @@ export function DateRangePicker({
   const chooseDay = (day: Date) => {
     setDraft(current => selectDateRangeDay(current, dateKey(day)))
   }
-
-  const startTimestamp = draft.startDate ? dateFromKey(draft.startDate)?.getTime() ?? null : null
-  const endTimestamp = draft.endDate ? dateFromKey(draft.endDate)?.getTime() ?? null : null
-  const todayKey = open ? localDateKey(new Date()) : ''
 
   return (
     <div className="relative space-y-1.5" data-date-range-picker>
@@ -181,54 +296,15 @@ export function DateRangePicker({
             </button>
           </div>
 
-          <div className="mt-3 grid grid-cols-7 text-center text-xs font-medium text-slate-500" aria-hidden="true">
-            {Array.from({ length: 7 }, (_, index) => {
-              const monday = new Date(Date.UTC(2024, 0, 1 + index))
-              return <span key={index} className="py-2">{new Intl.DateTimeFormat(localeName, { weekday: 'short', timeZone: 'UTC' }).format(monday)}</span>
-            })}
-          </div>
-          <div
-            className="grid grid-cols-7 gap-y-1"
-            role="grid"
-            aria-label={new Intl.DateTimeFormat(localeName, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(month)}
-          >
-            {days.map(day => {
-              const key = dateKey(day)
-              const timestamp = day.getTime()
-              const isStart = key === draft.startDate
-              const isEnd = key === draft.endDate
-              const isInRange = startTimestamp !== null && endTimestamp !== null
-                && timestamp >= startTimestamp && timestamp <= endTimestamp
-              const inCurrentMonth = day.getUTCMonth() === month.getUTCMonth()
-              const fullLabel = new Intl.DateTimeFormat(localeName, {
-                weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC',
-              }).format(day)
-              const selectionLabel = isStart
-                ? `, ${strings.startDateSelected}`
-                : isEnd ? `, ${strings.endDateSelected}` : ''
-              return (
-                <span key={key} role="gridcell" aria-selected={isStart || isEnd || isInRange} className="min-w-0">
-                  <button
-                    type="button"
-                    aria-label={`${fullLabel}${selectionLabel}`}
-                    aria-current={key === todayKey ? 'date' : undefined}
-                    className={`relative flex min-h-11 w-full min-w-0 items-center justify-center text-sm font-medium transition-colors ${
-                      isStart || isEnd
-                        ? 'z-10 rounded-full bg-indigo-600 text-white ring-2 ring-indigo-200'
-                        : isInRange
-                          ? 'bg-indigo-100 text-indigo-900'
-                          : inCurrentMonth
-                            ? 'rounded-full text-slate-800 hover:bg-slate-100'
-                            : 'rounded-full text-slate-400 hover:bg-slate-50'
-                    } ${key === todayKey && !isStart && !isEnd ? 'underline decoration-2 underline-offset-4' : ''}`}
-                    onClick={() => chooseDay(day)}
-                  >
-                    {day.getUTCDate()}
-                  </button>
-                </span>
-              )
-            })}
-          </div>
+          <CalendarMonth
+            month={month}
+            locale={locale}
+            selectedStart={draft.startDate}
+            selectedEnd={draft.endDate}
+            onSelect={chooseDay}
+            startSelectedLabel={strings.startDateSelected}
+            endSelectedLabel={strings.endDateSelected}
+          />
 
           <div className="mt-3 min-h-16 rounded-xl bg-slate-50 p-3" aria-live="polite">
             {draft.startDate ? (

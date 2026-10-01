@@ -140,6 +140,7 @@ function RideForm({
             }}
             label={strings.departureTime}
             locale={snapshot.locale}
+            stepMinutes={5}
             required
             disabled={passengerCount > 0}
             aria-describedby={departureError ? departureErrorId : undefined}

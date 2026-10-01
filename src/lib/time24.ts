@@ -1,6 +1,23 @@
 export const TIME_HOURS_24 = Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, '0'))
 export const TIME_MINUTE_STEPS = Array.from({ length: 12 }, (_, step) => String(step * 5).padStart(2, '0'))
 
+export const isTime24 = (value: string) => /^([01]\d|2[0-3]):([0-5]\d)$/.test(value)
+
+export const getTime24Options = (stepMinutes = 5, currentValue = '') => {
+  if (!Number.isInteger(stepMinutes) || stepMinutes < 1 || stepMinutes > 60) {
+    throw new RangeError('stepMinutes must be an integer from 1 to 60')
+  }
+
+  const options = new Set<string>()
+  for (let minuteOfDay = 0; minuteOfDay < 24 * 60; minuteOfDay += stepMinutes) {
+    const hour = String(Math.floor(minuteOfDay / 60)).padStart(2, '0')
+    const minute = String(minuteOfDay % 60).padStart(2, '0')
+    options.add(`${hour}:${minute}`)
+  }
+  if (isTime24(currentValue)) options.add(currentValue)
+  return Array.from(options).sort()
+}
+
 export type Time24Parts = {
   hour: string
   minute: string

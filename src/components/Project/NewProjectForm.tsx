@@ -2,9 +2,9 @@
 
 import { FormEvent, startTransition, useActionState, useEffect, useRef, useState } from 'react'
 import { createProjectWithState } from '@/app/project/new/actions'
+import { EventDateTimeFields } from '@/components/Project/EventDateTimeFields'
 import { Button } from '@/components/ui/button'
 import { DateRangePicker } from '@/components/ui/DateRangePicker'
-import { TimePicker24 } from '@/components/ui/TimePicker24'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
 import { normalizeDateOnlyOption } from '@/lib/projectDateSelection'
@@ -92,7 +92,9 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   const [showServerError, setShowServerError] = useState(true)
   const [financeMode, setFinanceMode] = useState<'none' | 'managed'>('none')
   const [dateMode, setDateMode] = useState<'fixed' | 'selecting'>('fixed')
+  const [eventStartDate, setEventStartDate] = useState('')
   const [eventStartTime, setEventStartTime] = useState('')
+  const [eventEndDate, setEventEndDate] = useState('')
   const [eventEndTime, setEventEndTime] = useState('')
   const [dateOptions, setDateOptions] = useState<DraftDateOption[]>([{
     id: 'initial-date-option',
@@ -720,44 +722,20 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
         </div>
 
         {dateMode === 'fixed' ? (
-          <div className="grid gap-4 pt-1 md:grid-cols-2">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">
-                Event starts <span className="text-red-500">*</span>
-              </label>
-              <div className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-2">
-                <label className="min-w-0 space-y-1.5 text-xs font-medium text-slate-600">
-                  <span className="block">{locale === 'lt' ? 'Data' : 'Date'}</span>
-                  <input name="event_start_date" type="date" className="control-input min-h-11 min-w-0" required />
-                </label>
-                <TimePicker24
-                  id="new-project-event-start-time"
-                  name="event_start_time"
-                  value={eventStartTime}
-                  onChange={setEventStartTime}
-                  locale={locale}
-                  required
-                />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">
-                Event ends <span className="font-normal text-muted-foreground">(optional)</span>
-              </label>
-              <div className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-2">
-                <label className="min-w-0 space-y-1.5 text-xs font-medium text-slate-600">
-                  <span className="block">{locale === 'lt' ? 'Data' : 'Date'}</span>
-                  <input name="event_end_date" type="date" className="control-input min-h-11 min-w-0" />
-                </label>
-                <TimePicker24
-                  id="new-project-event-end-time"
-                  name="event_end_time"
-                  value={eventEndTime}
-                  onChange={setEventEndTime}
-                  locale={locale}
-                />
-              </div>
-            </div>
+          <div className="pt-1">
+            <EventDateTimeFields
+              idPrefix="new-project-event"
+              locale={locale}
+              startDate={eventStartDate}
+              startTime={eventStartTime}
+              endDate={eventEndDate}
+              endTime={eventEndTime}
+              onStartDateChange={setEventStartDate}
+              onStartTimeChange={setEventStartTime}
+              onEndDateChange={setEventEndDate}
+              onEndTimeChange={setEventEndTime}
+              startRequired
+            />
           </div>
         ) : (
           <div className="space-y-5 pt-1">
