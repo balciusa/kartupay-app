@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
-import { formatDateFieldValue, isIsoDate } from './dateField.ts'
+import {
+  formatDateFieldValue,
+  getDatePickerAnchorDateKey,
+  isIsoDate,
+} from './dateField.ts'
 
 const root = resolve(import.meta.dirname, '../..')
 
@@ -26,13 +30,27 @@ test('DatePickerField reuses the DateRangePicker calendar and keeps canonical hi
   assert.match(source, /max-h-\[calc\(100vh-2rem\)\]/)
 })
 
+test('empty DatePickerField opens on a future minimum month without changing its value', () => {
+  assert.equal(getDatePickerAnchorDateKey('', '2026-12-15', '2026-10-01'), '2026-12-15')
+  assert.equal(getDatePickerAnchorDateKey('', '2026-09-15', '2026-10-01'), '2026-10-01')
+  assert.equal(getDatePickerAnchorDateKey('', 'invalid', '2026-10-01'), '2026-10-01')
+})
+
+test('a valid selected value remains the DatePickerField opening month anchor', () => {
+  assert.equal(
+    getDatePickerAnchorDateKey('2026-10-10', '2026-12-15', '2026-10-01'),
+    '2026-10-10'
+  )
+})
+
 test('shared calendar provides roving keyboard navigation', () => {
   const source = readFileSync(join(root, 'src/components/ui/DateRangePicker.tsx'), 'utf8')
   for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']) {
     assert.match(source, new RegExp(key))
   }
   assert.match(source, /data-calendar-index=\{index\}/)
-  assert.match(source, /tabIndex=\{key === focusKey \? 0 : -1\}/)
+  assert.match(source, /tabIndex=\{getCalendarDayTabIndex\(dayStates, index, focusIndex\)\}/)
+  assert.match(source, /findCalendarNavigationIndex/)
 })
 
 test('Event date-time fields collapse empty End values and explicitly clear both values', () => {

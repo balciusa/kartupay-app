@@ -8,6 +8,12 @@ import {
   type DateRangeDraft,
 } from '@/lib/projectDateSelection'
 import { getProjectDateStrings, type ProjectDateLocale } from '@/lib/projectDateStrings'
+import {
+  findCalendarNavigationIndex,
+  findCalendarRovingFocusIndex,
+  getCalendarDayTabIndex,
+  type CalendarNavigationKey,
+} from '@/lib/calendarRovingFocus'
 
 export type DateRangeValue = {
   startDate: string
@@ -24,6 +30,17 @@ type DateRangePickerProps = {
 }
 
 const DAY_MS = 86_400_000
+const CALENDAR_NAVIGATION_KEYS: CalendarNavigationKey[] = [
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  'Home',
+  'End',
+]
+
+const isCalendarNavigationKey = (key: string): key is CalendarNavigationKey =>
+  CALENDAR_NAVIGATION_KEYS.includes(key as CalendarNavigationKey)
 
 export const dateKey = (date: Date) => date.toISOString().slice(0, 10)
 
@@ -73,32 +90,22 @@ export function CalendarMonth({
   const startTimestamp = selectedStart ? dateFromKey(selectedStart)?.getTime() ?? null : null
   const endTimestamp = selectedEnd ? dateFromKey(selectedEnd)?.getTime() ?? null : null
   const todayKey = localDateKey(new Date())
-  const selectedIsVisible = days.some(day => dateKey(day) === selectedStart)
-  const todayIsVisible = days.some(day => dateKey(day) === todayKey)
-  const firstCurrentMonth = days.find(day => day.getUTCMonth() === month.getUTCMonth())
-  const focusKey = selectedIsVisible
-    ? selectedStart
-    : todayIsVisible
-      ? todayKey
-      : firstCurrentMonth ? dateKey(firstCurrentMonth) : dateKey(days[0])
+  const dayStates = days.map(day => ({
+    key: dateKey(day),
+    inCurrentMonth: day.getUTCFullYear() === month.getUTCFullYear()
+      && day.getUTCMonth() === month.getUTCMonth(),
+    disabled: isDayDisabled?.(day) ?? false,
+  }))
+  const focusIndex = findCalendarRovingFocusIndex(dayStates, selectedStart, todayKey)
 
   const moveFocus = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
-    const offsets: Record<string, number> = {
-      ArrowLeft: -1,
-      ArrowRight: 1,
-      ArrowUp: -7,
-      ArrowDown: 7,
-    }
-    let nextIndex = index
-    if (event.key in offsets) nextIndex = index + offsets[event.key]
-    else if (event.key === 'Home') nextIndex = index - (index % 7)
-    else if (event.key === 'End') nextIndex = index + (6 - (index % 7))
-    else return
+    if (!isCalendarNavigationKey(event.key)) return
     event.preventDefault()
-    const boundedIndex = Math.max(0, Math.min(days.length - 1, nextIndex))
+    const nextIndex = findCalendarNavigationIndex(dayStates, index, event.key)
+    if (nextIndex === index) return
     event.currentTarget
       .closest('[role="grid"]')
-      ?.querySelector<HTMLButtonElement>(`button[data-calendar-index="${boundedIndex}"]`)
+      ?.querySelector<HTMLButtonElement>(`button[data-calendar-index="${nextIndex}"]`)
       ?.focus()
   }
 
@@ -116,14 +123,13 @@ export function CalendarMonth({
         aria-label={new Intl.DateTimeFormat(localeName, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(month)}
       >
         {days.map((day, index) => {
-          const key = dateKey(day)
+          const { key, disabled } = dayStates[index]
           const timestamp = day.getTime()
           const isStart = key === selectedStart
           const isEnd = key === selectedEnd
           const isInRange = startTimestamp !== null && endTimestamp !== null
             && timestamp >= startTimestamp && timestamp <= endTimestamp
           const inCurrentMonth = day.getUTCMonth() === month.getUTCMonth()
-          const disabled = isDayDisabled?.(day) ?? false
           const fullLabel = new Intl.DateTimeFormat(localeName, {
             weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC',
           }).format(day)
@@ -137,7 +143,7 @@ export function CalendarMonth({
                 aria-label={`${fullLabel}${selectionLabel}`}
                 aria-current={key === todayKey ? 'date' : undefined}
                 data-calendar-index={index}
-                tabIndex={key === focusKey ? 0 : -1}
+                tabIndex={getCalendarDayTabIndex(dayStates, index, focusIndex)}
                 disabled={disabled}
                 className={`relative flex min-h-11 w-full min-w-0 items-center justify-center text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 ${
                   isStart || isEnd

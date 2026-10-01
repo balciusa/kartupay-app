@@ -6,10 +6,15 @@ import {
   CalendarMonth,
   dateFromKey,
   dateKey,
+  localDateKey,
   monthStart,
   shiftMonth,
 } from '@/components/ui/DateRangePicker'
-import { formatDateFieldValue, isIsoDate } from '@/lib/dateField'
+import {
+  formatDateFieldValue,
+  getDatePickerAnchorDateKey,
+  isIsoDate,
+} from '@/lib/dateField'
 import type { ProjectDateLocale } from '@/lib/projectDateStrings'
 
 type DatePickerFieldProps = {
@@ -87,9 +92,10 @@ export function DatePickerField({
   }
 
   const openPicker = () => {
-    const selected = canonicalValue ? dateFromKey(canonicalValue) : null
     const today = new Date()
-    setVisibleMonth(monthStart(selected ?? new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1))))
+    const anchorKey = getDatePickerAnchorDateKey(canonicalValue, min, localDateKey(today))
+    const anchorDate = dateFromKey(anchorKey) ?? new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1))
+    setVisibleMonth(monthStart(anchorDate))
     setOpen(true)
   }
 
