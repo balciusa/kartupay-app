@@ -1,8 +1,8 @@
 'use client'
 
 import { FormEvent, useActionState, useEffect, useRef, useState } from 'react'
+import { EventDateTimeFields } from '@/components/Project/EventDateTimeFields'
 import { Button } from '@/components/ui/button'
-import { TimePicker24 } from '@/components/ui/TimePicker24'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
 import { FINANCE_HISTORY_ERROR, type ProjectFinanceMode } from '@/lib/projectFinance'
@@ -653,67 +653,33 @@ export function ProjectSettingsForm({ action, initial, locale = 'en' }: ProjectS
         <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4 text-sm text-indigo-900">
           The final event date is controlled by Date Finder in Overview while voting is in progress.
         </div>
-      ) : <div className="grid gap-3 md:grid-cols-2">
-        <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Event starts (optional)</label>
-          <div className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-2">
-            <label className="min-w-0 space-y-1.5 text-xs font-medium text-slate-600">
-              <span className="block">{locale === 'lt' ? 'Data' : 'Date'}</span>
-              <input
-                name="event_start_date"
-                type="date"
-                className="control-input min-h-11 min-w-0"
-                defaultValue={initial.eventStartDate}
-                onChange={event => {
-                  setStartDate(event.target.value)
-                  setDateError(null)
-                }}
-              />
-            </label>
-            <TimePicker24
-              id="settings-event-start-time"
-              name="event_start_time"
-              value={startTime}
-              onChange={value => {
-                setStartTime(value)
-                setDateError(null)
-              }}
-              locale={locale}
-              aria-invalid={dateError ? true : undefined}
-            />
-          </div>
-        </div>
-        <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Event ends (optional)</label>
-          <div className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-2">
-            <label className="min-w-0 space-y-1.5 text-xs font-medium text-slate-600">
-              <span className="block">{locale === 'lt' ? 'Data' : 'Date'}</span>
-              <input
-                name="event_end_date"
-                type="date"
-                min={startDate || undefined}
-                className="control-input min-h-11 min-w-0"
-                defaultValue={initial.eventEndDate}
-                onChange={event => {
-                  setEndDate(event.target.value)
-                  setDateError(null)
-                }}
-              />
-            </label>
-            <TimePicker24
-              id="settings-event-end-time"
-              name="event_end_time"
-              value={endTime}
-              onChange={value => {
-                setEndTime(value)
-                setDateError(null)
-              }}
-              locale={locale}
-              aria-invalid={dateError ? true : undefined}
-            />
-          </div>
-        </div>
-      </div>}
+      ) : (
+        <EventDateTimeFields
+          idPrefix="settings-event"
+          locale={locale}
+          startDate={startDate}
+          startTime={startTime}
+          endDate={endDate}
+          endTime={endTime}
+          onStartDateChange={value => {
+            setStartDate(value)
+            setDateError(null)
+          }}
+          onStartTimeChange={value => {
+            setStartTime(value)
+            setDateError(null)
+          }}
+          onEndDateChange={value => {
+            setEndDate(value)
+            setDateError(null)
+          }}
+          onEndTimeChange={value => {
+            setEndTime(value)
+            setDateError(null)
+          }}
+          aria-invalid={dateError ? true : undefined}
+        />
+      )}
 
       {dateError && (
         <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">

@@ -429,6 +429,7 @@ export function ProjectDateFinder({
                     onChange={setProjectStartTime}
                     label={strings.startTime}
                     locale={locale}
+                    stepMinutes={15}
                     required
                   />
                   <TimePicker24
@@ -438,6 +439,7 @@ export function ProjectDateFinder({
                     onChange={setProjectEndTime}
                     label={strings.endTimeOptional}
                     locale={locale}
+                    stepMinutes={15}
                   />
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">

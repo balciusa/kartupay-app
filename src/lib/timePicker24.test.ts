@@ -10,7 +10,9 @@ import {
   changeTime24Part,
   combineTime24,
   getTime24MinuteOptions,
+  getTime24Options,
   isPartialTime24,
+  isTime24,
   splitTime24,
   TIME_HOURS_24,
   TIME_MINUTE_STEPS,
@@ -18,16 +20,6 @@ import {
 
 const require = createRequire(import.meta.url)
 const root = resolve(import.meta.dirname, '../..')
-
-const getTimePickerProps = (source: string, id: string) => {
-  const idIndex = source.indexOf(`id="${id}"`)
-  assert.notEqual(idIndex, -1, `Missing TimePicker24 with id ${id}`)
-  const start = source.lastIndexOf('<TimePicker24', idIndex)
-  const end = source.indexOf('/>', idIndex)
-  assert.notEqual(start, -1, `Missing TimePicker24 start for ${id}`)
-  assert.notEqual(end, -1, `Missing TimePicker24 end for ${id}`)
-  return source.slice(start, end + 2)
-}
 
 function compile(path: string) {
   return ts.transpileModule(readFileSync(join(root, path), 'utf8'), {
@@ -44,14 +36,7 @@ function loadTimePicker() {
   const exports = {}
   const load = (name: string): unknown => {
     if (name === '@/lib/time24') {
-      return {
-        changeTime24Part,
-        combineTime24,
-        getTime24MinuteOptions,
-        isPartialTime24,
-        splitTime24,
-        TIME_HOURS_24,
-      }
+      return { getTime24Options, isTime24 }
     }
     return require(name)
   }
@@ -70,168 +55,136 @@ function render(value: string, props: Record<string, unknown> = {}) {
   }))
 }
 
-function selectedOptions(html: string) {
-  return Array.from(html.matchAll(/<option value="([^"]*)" selected="">/g), match => match[1])
-}
+test('Event options use 15-minute HH:mm values across the complete day', () => {
+  const options = getTime24Options(15)
+  assert.equal(options.length, 96)
+  assert.deepEqual(options.slice(0, 4), ['00:00', '00:15', '00:30', '00:45'])
+  assert.equal(options.at(-1), '23:45')
+  assert.equal(options.includes('17:05'), false)
+  assert.equal(options.some(value => /(?:AM|PM)/i.test(value)), false)
+})
 
-test('TimePicker24 renders empty and representative HH:mm values deterministically', () => {
-  assert.deepEqual(selectedOptions(render('')), ['', ''])
-  assert.deepEqual(selectedOptions(render('08:05')), ['08', '05'])
-  assert.deepEqual(selectedOptions(render('17:30')), ['17', '30'])
-  assert.deepEqual(selectedOptions(render('23:55')), ['23', '55'])
-  assert.equal(TIME_HOURS_24.length, 24)
+test('Transport options use 5-minute HH:mm values', () => {
+  const options = getTime24Options(5)
+  assert.equal(options.length, 288)
+  assert.equal(options.includes('17:00'), true)
+  assert.equal(options.includes('17:05'), true)
+  assert.equal(options.includes('23:55'), true)
   assert.deepEqual(TIME_MINUTE_STEPS, ['00', '05', '10', '15', '20', '25', '30', '35', '40', '45', '50', '55'])
 })
 
-test('TimePicker24 inserts and selects existing non-step minutes in numeric order', () => {
-  for (const minute of ['08', '37']) {
-    const html = render(`17:${minute}`)
-    assert.deepEqual(selectedOptions(html), ['17', minute])
-    const before = String(Number(minute) - (Number(minute) % 5)).padStart(2, '0')
-    const after = String(Number(before) + 5).padStart(2, '0')
-    assert.ok(html.indexOf(`value="${before}"`) < html.indexOf(`value="${minute}"`))
-    assert.ok(html.indexOf(`value="${minute}"`) < html.indexOf(`value="${after}"`))
-    assert.deepEqual(getTime24MinuteOptions(minute).filter(value => [before, minute, after].includes(value)), [before, minute, after])
-  }
+test('custom values are inserted in sorted position and never rounded', () => {
+  assert.deepEqual(
+    getTime24Options(15, '17:08').filter(value => value >= '17:00' && value <= '17:30'),
+    ['17:00', '17:08', '17:15', '17:30']
+  )
+  assert.deepEqual(
+    getTime24Options(5, '17:37').filter(value => value >= '17:30' && value <= '17:40'),
+    ['17:30', '17:35', '17:37', '17:40']
+  )
+  assert.throws(() => getTime24Options(0), /stepMinutes/)
+  assert.throws(() => getTime24Options(61), /stepMinutes/)
 })
 
-test('TimePicker24 changes one part without changing the other and emits padded HH:mm', () => {
-  const changedHour = changeTime24Part({ hour: '08', minute: '05' }, 'hour', '17')
-  assert.deepEqual(changedHour, { parts: { hour: '17', minute: '05' }, value: '17:05' })
-  const changedMinute = changeTime24Part({ hour: '17', minute: '05' }, 'minute', '30')
-  assert.deepEqual(changedMinute, { parts: { hour: '17', minute: '30' }, value: '17:30' })
-  assert.equal(combineTime24('08', '05'), '08:05')
-  assert.equal(combineTime24('17', '08'), '17:08')
-  assert.equal(combineTime24('23', '55'), '23:55')
-})
-
-test('TimePicker24 native constraints accept only empty optional or complete selections', () => {
+test('legacy time-part validation still accepts only empty optional or complete selections', () => {
   const states = {
     empty: { hour: '', minute: '' },
     complete: { hour: '18', minute: '30' },
     hourOnly: { hour: '18', minute: '' },
     minuteOnly: { hour: '', minute: '30' },
   }
-  const constraint = (parts: { hour: string; minute: string }, required: boolean) => {
-    const selectRequired = required || isPartialTime24(parts)
-    const valid = !selectRequired || (parts.hour !== '' && parts.minute !== '')
-    return { selectRequired, valid }
-  }
+  const valid = (parts: { hour: string; minute: string }, required: boolean) =>
+    !(required || isPartialTime24(parts)) || (parts.hour !== '' && parts.minute !== '')
 
-  assert.deepEqual(constraint(states.empty, false), { selectRequired: false, valid: true })
-  assert.deepEqual(constraint(states.complete, false), { selectRequired: false, valid: true })
-  assert.deepEqual(constraint(states.hourOnly, false), { selectRequired: true, valid: false })
-  assert.deepEqual(constraint(states.minuteOnly, false), { selectRequired: true, valid: false })
-  assert.deepEqual(constraint(states.empty, true), { selectRequired: true, valid: false })
-  assert.deepEqual(constraint(states.hourOnly, true), { selectRequired: true, valid: false })
-  assert.deepEqual(constraint(states.minuteOnly, true), { selectRequired: true, valid: false })
-  assert.deepEqual(constraint(states.complete, true), { selectRequired: true, valid: true })
-  assert.equal(isPartialTime24(states.empty), false, 'clearing both parts restores optional validity')
+  assert.equal(valid(states.empty, false), true)
+  assert.equal(valid(states.complete, false), true)
+  assert.equal(valid(states.hourOnly, false), false)
+  assert.equal(valid(states.minuteOnly, false), false)
+  assert.equal(valid(states.empty, true), false)
+  assert.equal(valid(states.hourOnly, true), false)
+  assert.equal(valid(states.minuteOnly, true), false)
+  assert.equal(valid(states.complete, true), true)
 })
 
-test('TimePicker24 keeps canonical hidden values empty or complete, never malformed', () => {
-  assert.equal(combineTime24('18', '30'), '18:30')
-  assert.equal(combineTime24('08', '05'), '08:05')
-  assert.equal(combineTime24('', ''), '')
-  assert.equal(combineTime24('18', ''), '')
-  assert.equal(combineTime24('', '30'), '')
-  const component = readFileSync(join(root, 'src/components/ui/TimePicker24.tsx'), 'utf8')
-  assert.match(component, /required=\{required \|\| isPartial\}/)
-  assert.match(component, /if \(!isPartialTime24\(next\.parts\)\) \{\s*onChange\(next\.value\)/)
-})
-
-test('TimePicker24 preserves partial edits until the user completes or clears them', () => {
-  const transition = (parts: { hour: string; minute: string }, part: 'hour' | 'minute', value: string) => {
-    const next = changeTime24Part(parts, part, value)
-    return {
-      parts: next.parts,
-      emitted: isPartialTime24(next.parts) ? undefined : next.value,
-    }
-  }
-
-  assert.deepEqual(transition({ hour: '17', minute: '08' }, 'hour', '18'), {
+test('canonical time utilities preserve exact HH:mm values and partial edits', () => {
+  assert.equal(TIME_HOURS_24.length, 24)
+  assert.deepEqual(splitTime24('17:08'), { hour: '17', minute: '08' })
+  assert.equal(combineTime24('17', '08'), '17:08')
+  assert.equal(combineTime24('17', ''), '')
+  assert.equal(isTime24('17:37'), true)
+  assert.equal(isTime24('5:37'), false)
+  assert.deepEqual(getTime24MinuteOptions('08').filter(value => ['05', '08', '10'].includes(value)), ['05', '08', '10'])
+  assert.deepEqual(changeTime24Part({ hour: '17', minute: '08' }, 'hour', '18'), {
     parts: { hour: '18', minute: '08' },
-    emitted: '18:08',
-  })
-  assert.deepEqual(transition({ hour: '18', minute: '08' }, 'minute', ''), {
-    parts: { hour: '18', minute: '' },
-    emitted: undefined,
-  })
-  assert.deepEqual(transition({ hour: '18', minute: '' }, 'hour', ''), {
-    parts: { hour: '', minute: '' },
-    emitted: '',
+    value: '18:08',
   })
 })
 
-test('TimePicker24 has accessible labels, no AM/PM, and no native time input', () => {
-  const html = render('19:45')
-  assert.match(html, /role="group"/)
-  assert.match(html, />Time</)
-  assert.match(html, />Hour</)
-  assert.match(html, />Minute</)
-  assert.doesNotMatch(html, /\b(?:AM|PM)\b/i)
+test('TimePicker24 renders one compact field with a canonical named hidden value', () => {
+  const html = render('17:08', { name: 'event_start_time', label: 'Start time', stepMinutes: 15 })
+  assert.match(html, /data-time-picker-24/)
+  assert.match(html, /data-step-minutes="15"/)
+  assert.match(html, /name="event_start_time"/)
+  assert.match(html, /type="hidden"[^>]*value="17:08"/)
+  assert.match(html, />Start time</)
+  assert.match(html, />17:08</)
+  assert.equal((html.match(/<select/g) ?? []).length, 0)
+  assert.match(html, /pattern="\(\?:\[01\]\\d\|2\[0-3\]\):\[0-5\]\\d"/)
   assert.doesNotMatch(html, /type="time"/)
-  assert.match(html, /min-h-11/)
+  assert.doesNotMatch(html, /\b(?:AM|PM)\b/i)
 })
 
-test('TimePicker24 supports disabled, required, form name, and validation ARIA', () => {
-  const html = render('12:15', {
-    name: 'event_start_time',
-    required: true,
-    disabled: true,
-    'aria-describedby': 'time-error',
-    'aria-invalid': true,
-  })
-  assert.equal((html.match(/<select/g) ?? []).length, 2)
-  assert.equal((html.match(/ required=""/g) ?? []).length, 2)
-  assert.ok((html.match(/ disabled=""/g) ?? []).length >= 3)
-  assert.equal((html.match(/aria-describedby="time-error"/g) ?? []).length, 2)
-  assert.equal((html.match(/aria-invalid="true"/g) ?? []).length, 2)
-  const hidden = html.match(/<input[^>]*type="hidden"[^>]*>/)?.[0] ?? ''
-  assert.match(hidden, /name="event_start_time"/)
-  assert.match(hidden, /value="12:15"/)
-  assert.match(hidden, /disabled=""/)
+test('TimePicker24 empty, required, disabled, localized and ARIA states remain explicit', () => {
+  const empty = render('', { locale: 'lt', required: true, 'aria-describedby': 'time-error', 'aria-invalid': true })
+  assert.match(empty, /Pasirinkti laiką/)
+  assert.match(empty, /required=""/)
+  assert.match(empty, /aria-expanded="false"/)
+  assert.match(empty, /aria-haspopup="listbox"/)
+  assert.match(empty, /aria-describedby="time-error"/)
+  assert.match(empty, /aria-invalid="true"/)
+
+  const disabled = render('12:15', { name: 'departure_time', disabled: true })
+  assert.ok((disabled.match(/disabled=""/g) ?? []).length >= 3)
 })
 
-test('event and transport time-entry surfaces all use TimePicker24', () => {
-  const surfaces = [
+test('TimePicker24 source provides scroll-to-selection and complete keyboard behavior', () => {
+  const source = readFileSync(join(root, 'src/components/ui/TimePicker24.tsx'), 'utf8')
+  for (const key of ['Escape', 'ArrowDown', 'ArrowUp', 'Home', 'End']) {
+    assert.match(source, new RegExp(`event\\.key === '${key}'`))
+  }
+  assert.match(source, /scrollIntoView\(\{ block: 'center' \}\)/)
+  assert.match(source, /role="listbox"/)
+  assert.match(source, /role="option"/)
+  assert.match(source, /aria-selected=\{selected\}/)
+  assert.match(source, /touch-pan-y/)
+  assert.match(source, /max-h-64/)
+})
+
+test('all Event and Transport surfaces use the shared component family with correct steps', () => {
+  const eventFields = readFileSync(join(root, 'src/components/Project/EventDateTimeFields.tsx'), 'utf8')
+  assert.equal((eventFields.match(/<TimePicker24/g) ?? []).length, 2)
+  assert.equal((eventFields.match(/stepMinutes=\{15\}/g) ?? []).length, 2)
+  assert.match(eventFields, /name="event_start_time"/)
+  assert.match(eventFields, /name="event_end_time"/)
+  assert.match(eventFields, /onEndDateChange\(''\)[\s\S]*onEndTimeChange\(''\)/)
+
+  for (const path of [
     'src/components/Project/NewProjectForm.tsx',
     'src/components/Project/ProjectSettingsForm.tsx',
-    'src/components/Project/ProjectDateFinder.tsx',
-    'src/components/Project/ProjectTransport.tsx',
-  ]
-  for (const path of surfaces) {
+  ]) {
     const source = readFileSync(join(root, path), 'utf8')
-    assert.match(source, /<TimePicker24/)
+    assert.match(source, /<EventDateTimeFields/)
     assert.doesNotMatch(source, /type="time"/)
-    assert.doesNotMatch(source, /timeOptions/)
   }
 
-  const create = readFileSync(join(root, surfaces[0]), 'utf8')
-  assert.match(create, /name="event_start_time"/)
-  assert.match(create, /name="event_end_time"/)
-  assert.match(create, /A fixed project needs a confirmed start date and time/)
-  assert.match(create, /Event end time requires an end date/)
-  assert.match(create, /Event end must be after event start/)
-  assert.match(getTimePickerProps(create, 'new-project-event-start-time'), /required/)
-  assert.doesNotMatch(getTimePickerProps(create, 'new-project-event-end-time'), /required/)
-
-  const settings = readFileSync(join(root, surfaces[1]), 'utf8')
-  assert.match(settings, /value=\{startTime\}/)
-  assert.match(settings, /value=\{endTime\}/)
-  assert.doesNotMatch(getTimePickerProps(settings, 'settings-event-start-time'), /required/)
-  assert.doesNotMatch(getTimePickerProps(settings, 'settings-event-end-time'), /required/)
-
-  const dateFinder = readFileSync(join(root, surfaces[2]), 'utf8')
+  const dateFinder = readFileSync(join(root, 'src/components/Project/ProjectDateFinder.tsx'), 'utf8')
+  assert.equal((dateFinder.match(/stepMinutes=\{15\}/g) ?? []).length, 2)
   assert.match(dateFinder, /name="start_time"/)
   assert.match(dateFinder, /name="end_time"/)
-  assert.match(dateFinder, /startName="start_date"/)
-  assert.doesNotMatch(dateFinder, /startName="start_date"[\s\S]{0,200}<TimePicker24/)
-  assert.match(getTimePickerProps(dateFinder, 'date-finder-event-start-time'), /required/)
-  assert.doesNotMatch(getTimePickerProps(dateFinder, 'date-finder-event-end-time'), /required/)
 
-  const transport = readFileSync(join(root, surfaces[3]), 'utf8')
-  assert.match(transport, /id=\{`transport-time-[\s\S]*?required/)
+  const transport = readFileSync(join(root, 'src/components/Project/ProjectTransport.tsx'), 'utf8')
+  assert.match(transport, /<TimePicker24[\s\S]*stepMinutes=\{5\}/)
+  assert.match(transport, /disabled=\{passengerCount > 0\}/)
 })
 
 test('event and transport display formatters explicitly suppress AM/PM', () => {
