@@ -6,11 +6,40 @@ import { join, resolve } from 'node:path'
 const root = resolve(import.meta.dirname, '../..')
 const source = (path: string) => readFileSync(join(root, path), 'utf8')
 
-test('migration adds only a nullable constrained duration column without rewriting legacy data', () => {
+test('migration adds a nullable constrained duration column without rewriting legacy data', () => {
   const migration = source('supabase/migrations/20261001_add_project_event_duration.sql')
   assert.match(migration, /add column if not exists event_duration_nights integer/i)
   assert.match(migration, /event_duration_nights >= 0[\s\S]*event_duration_nights <= 365/i)
-  assert.doesNotMatch(migration, /not null|default\s+\d|update\s+public\.projects|project_date_options|delete\s+from/i)
+  assert.doesNotMatch(migration, /add column[^;]*event_duration_nights[^;]*not null/i)
+  assert.doesNotMatch(migration, /add column[^;]*event_duration_nights[^;]*default/i)
+  assert.doesNotMatch(migration, /update\s+public\.projects\s+set|delete\s+from/i)
+})
+
+test('database rejects direct date-option writes that violate the project duration', () => {
+  const migration = source('supabase/migrations/20261001_add_project_event_duration.sql')
+
+  assert.match(migration, /function public\.enforce_project_date_option_duration\(\)/i)
+  assert.match(migration, /security definer[\s\S]*set search_path = ''/i)
+  assert.match(migration, /before insert or update of project_id, starts_at, ends_at[\s\S]*on public\.project_date_options/i)
+  assert.match(migration, /select project\.event_duration_nights[\s\S]*where project\.id = new\.project_id[\s\S]*for update/i)
+  assert.match(migration, /if v_duration_nights is null then[\s\S]*return new/i)
+  assert.match(migration, /new\.starts_at at time zone 'UTC'[\s\S]*new\.starts_at <> v_start_midnight/i)
+  assert.match(migration, /v_duration_nights = 0[\s\S]*new\.ends_at is not null[\s\S]*raise exception/i)
+  assert.match(migration, /::date \+ v_duration_nights[\s\S]*at time zone 'UTC'/i)
+  assert.match(migration, /new\.ends_at is null or new\.ends_at <> v_expected_end/i)
+  assert.match(migration, /message = 'Date option does not match project event duration'/i)
+  assert.match(migration, /revoke all on function public\.enforce_project_date_option_duration\(\)[\s\S]*from public, anon, authenticated/i)
+})
+
+test('database locks duration after option history while leaving fixed projects editable', () => {
+  const migration = source('supabase/migrations/20261001_add_project_event_duration.sql')
+
+  assert.match(migration, /function public\.guard_project_event_duration_change\(\)/i)
+  assert.match(migration, /exists \([\s\S]*from public\.project_date_options option[\s\S]*option\.project_id = new\.id/i)
+  assert.match(migration, /Project event duration cannot change after date options exist/i)
+  assert.match(migration, /before update of event_duration_nights[\s\S]*on public\.projects/i)
+  assert.match(migration, /when \(old\.event_duration_nights is distinct from new\.event_duration_nights\)/i)
+  assert.doesNotMatch(migration, /where option\.project_id = new\.id[\s\S]*raise exception[\s\S]*else[\s\S]*raise exception/i)
 })
 
 test('new project UI requires one duration before both date modes and submits start candidates only', () => {
