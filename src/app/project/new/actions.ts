@@ -5,7 +5,7 @@ import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { recordProjectActivity } from '@/lib/activityLog'
-import { normalizeDateOnlyOption } from '@/lib/projectDateSelection'
+import { deriveDateOptionFromStart, deriveEndDate, validateEventDurationNights } from '@/lib/projectEventDuration'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { validateProjectFinanceInput } from '@/lib/projectFinance'
 import { getCurrentUserId } from '@/lib/supabaseServer'
@@ -50,6 +50,8 @@ const schema = z.object({
   min_participants: z.string().optional().nullable(),
   max_participants: z.string().optional().nullable(),
   date_mode: z.enum(['fixed', 'selecting']),
+  event_duration_nights: z.string(),
+  project_locale: z.enum(['en', 'lt']).optional(),
   date_voting_deadline_date: z.string().optional().nullable(),
   event_start_date: z.string().optional().nullable(),
   event_start_time: z.string().optional().nullable(),
@@ -109,6 +111,8 @@ export async function createProject(formData: FormData) {
     min_participants: typeof minParticipantsValue === 'string' ? minParticipantsValue : null,
     max_participants: typeof maxParticipantsValue === 'string' ? maxParticipantsValue : null,
     date_mode: submittedDateMode,
+    event_duration_nights: String(formData.get('event_duration_nights') ?? ''),
+    project_locale: formData.get('project_locale') === 'lt' ? 'lt' : 'en',
     date_voting_deadline_date: (formData.get('date_voting_deadline_date') as string) ?? null,
     event_start_date: (formData.get('event_start_date') as string) ?? null,
     event_start_time: (formData.get('event_start_time') as string) ?? null,
@@ -139,10 +143,11 @@ export async function createProject(formData: FormData) {
     min_participants,
     max_participants,
     date_mode,
+    event_duration_nights,
+    project_locale,
     date_voting_deadline_date,
     event_start_date,
     event_start_time,
-    event_end_date,
     event_end_time,
     event_location_label,
     event_location_address,
@@ -177,15 +182,23 @@ export async function createProject(formData: FormData) {
   const totalIsPerPerson = financeInput.totalIsPerPerson
   const isPublic = visibility === 'public'
   const transportEnabled = transport_enabled === 'true'
+  const eventDurationNights = validateEventDurationNights(event_duration_nights)
   const { bundleSize, bundlePayFor } = finance_mode === 'managed'
     ? validateBundlePricingConfig(totalIsPerPerson, bundle_size, bundle_pay_for)
     : { bundleSize: null, bundlePayFor: null }
   const eventStartAt = date_mode === 'fixed' ? parseEventDateTime(event_start_date, event_start_time, '09:00') : null
-  const eventEndAt = date_mode === 'fixed' ? parseEventDateTime(event_end_date, event_end_time, '17:00') : null
+  const derivedFixedEndDate = date_mode === 'fixed' && event_start_date?.trim()
+    ? deriveEndDate(event_start_date, eventDurationNights)
+    : null
+  const eventEndAt = date_mode === 'fixed' && derivedFixedEndDate
+    ? eventDurationNights === 0 && !event_end_time?.trim()
+      ? null
+      : parseEventDateTime(derivedFixedEndDate, event_end_time, '17:00')
+    : null
   if (date_mode === 'fixed' && (!eventStartAt || !event_start_time?.trim())) {
     throw new Error('A fixed project needs a confirmed start date and time')
   }
-  if (eventStartAt && eventEndAt && new Date(eventEndAt) < new Date(eventStartAt)) {
+  if (eventStartAt && eventEndAt && new Date(eventEndAt) <= new Date(eventStartAt)) {
     throw new Error('Event end must be after event start')
   }
   const votingDeadlineAt = date_mode === 'selecting'
@@ -202,13 +215,9 @@ export async function createProject(formData: FormData) {
     : null
 
   const initialDateOptions = date_mode === 'selecting'
-    ? formData.getAll('date_option_start_date').map((startValue, index) => {
-        const endValue = formData.getAll('date_option_end_date')[index]
-        return normalizeDateOnlyOption(
-          typeof startValue === 'string' ? startValue : '',
-          typeof endValue === 'string' ? endValue : null
-        )
-      })
+    ? formData.getAll('date_option_start_date').map(startValue =>
+        deriveDateOptionFromStart(typeof startValue === 'string' ? startValue : '', eventDurationNights)
+      )
     : []
   if (date_mode === 'selecting' && initialDateOptions.length === 0) {
     throw new Error('Add at least one date option')
@@ -217,7 +226,7 @@ export async function createProject(formData: FormData) {
     throw new Error(`You can add up to ${MAX_INITIAL_DATE_OPTIONS} initial date options`)
   }
   const uniqueInitialDateOptions = new Set(
-    initialDateOptions.map(option => `${option.startsAt}:${option.endsAt ?? ''}`)
+    initialDateOptions.map(option => option.startsAt)
   )
   if (uniqueInitialDateOptions.size !== initialDateOptions.length) {
     throw new Error('The same date option was added more than once')
@@ -263,6 +272,7 @@ export async function createProject(formData: FormData) {
     max_participants: maxParticipants,
     event_start_at: date_mode === 'fixed' ? eventStartAt : null,
     event_end_at: date_mode === 'fixed' ? eventEndAt : null,
+    event_duration_nights: eventDurationNights,
     date_mode,
     date_voting_deadline_at: votingDeadlineAt,
     date_suggestions_close_at: suggestionsCloseAt,
@@ -282,6 +292,12 @@ export async function createProject(formData: FormData) {
     .insert(projectInsertForAttempt)
     .select('id')
     .single()
+
+  if (missingColumn(pErr, 'event_duration_nights')) {
+    throw new Error(project_locale === 'lt'
+      ? 'Renginio trukmė nepasiekiama, kol neįdiegtas naujausias duomenų bazės atnaujinimas.'
+      : 'Event duration is unavailable until the latest database update is applied.')
+  }
 
   if (missingColumn(pErr, 'finance_mode')) {
     throw new Error('Shared cost management is unavailable until the latest database migration is applied.')
@@ -427,6 +443,7 @@ export async function createProject(formData: FormData) {
       bundle_size: bundleSize,
       bundle_pay_for: bundlePayFor,
       date_mode,
+      event_duration_nights: eventDurationNights,
       date_voting_deadline_at: votingDeadlineAt,
     },
   })

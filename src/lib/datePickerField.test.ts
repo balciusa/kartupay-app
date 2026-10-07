@@ -69,7 +69,8 @@ test('New Project and Settings preserve controlled canonical date values', () =>
   assert.match(create, /startDate=\{eventStartDate\}/)
   assert.match(create, /onEndDateChange=\{setEventEndDate\}/)
   assert.match(create, /A fixed project needs a confirmed start date and time/)
-  assert.match(create, /Event end time requires an end date/)
+  assert.match(create, /Number\(value\('event_duration_nights'\)\) === 0/)
+  assert.match(create, /EventDateCandidatePicker/)
   assert.match(create, /Event end must be after event start/)
 
   const settings = readFileSync(join(root, 'src/components/Project/ProjectSettingsForm.tsx'), 'utf8')

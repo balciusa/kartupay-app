@@ -53,6 +53,8 @@ type ProjectSettingsRow = {
   date_mode?: 'fixed' | 'selecting' | null
   finance_mode?: ProjectFinanceMode | null
   transport_enabled?: boolean | null
+  event_duration_nights?: number | null
+  selected_date_option_id?: string | null
   event_location_label: string | null
   event_location_address: string | null
   event_location_lat: number | null
@@ -69,7 +71,7 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
   const supabase = await getSupabaseServer()
   const baseProjectFields =
     'id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at, event_location_label, event_location_address, event_location_lat, event_location_lng, event_location_place_id'
-  const optionalProjectFields = ['is_public', 'bundle_size', 'bundle_pay_for', 'date_mode', 'finance_mode', 'transport_enabled'] as const
+  const optionalProjectFields = ['is_public', 'bundle_size', 'bundle_pay_for', 'date_mode', 'finance_mode', 'transport_enabled', 'event_duration_nights', 'selected_date_option_id'] as const
   let optionalFields = [...optionalProjectFields]
   const missingFields = new Set<string>()
   let project: ProjectSettingsRow | null = null
@@ -90,7 +92,7 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
       if (optionalFields.length === 0) {
         const row = result.data as ProjectSettingsRow | null
         project = row
-          ? { ...row, is_public: true, bundle_size: null, bundle_pay_for: null, date_mode: 'fixed', finance_mode: 'managed', transport_enabled: false }
+          ? { ...row, is_public: true, bundle_size: null, bundle_pay_for: null, date_mode: 'fixed', finance_mode: 'managed', transport_enabled: false, event_duration_nights: null, selected_date_option_id: null }
           : null
         projectErr = result.error
         break
@@ -108,6 +110,8 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
           date_mode: 'date_mode' in row ? row.date_mode ?? 'fixed' : 'fixed',
           finance_mode: 'finance_mode' in row ? normalizeProjectFinanceMode(row.finance_mode) : 'managed',
           transport_enabled: 'transport_enabled' in row ? row.transport_enabled === true : false,
+          event_duration_nights: 'event_duration_nights' in row ? row.event_duration_nights ?? null : null,
+          selected_date_option_id: 'selected_date_option_id' in row ? row.selected_date_option_id ?? null : null,
         }
       : null
     projectErr = result.error
@@ -156,6 +160,8 @@ export async function ProjectSettingsTab({ projectId }: { projectId: string }) {
             minParticipants: project.min_participants ?? null,
             maxParticipants: project.max_participants ?? null,
             dateMode: project.date_mode ?? 'fixed',
+            eventDurationNights: project.event_duration_nights ?? null,
+            dateControlledByFinder: project.event_duration_nights !== null && !!project.selected_date_option_id,
             eventStartDate: toLocalDateInput(project.event_start_at),
             eventStartTime: startTimeValue,
             eventEndDate: toLocalDateInput(project.event_end_at),

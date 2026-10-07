@@ -23,7 +23,7 @@ function compile(path: string) {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX }, fileName: path,
   }).outputText
 }
-function fixture() {
+function fixture(options: { missingDurationColumn?: boolean } = {}) {
   const writes: Array<{ table: string; values: Record<string, unknown> }> = []
   const modules: Record<string, unknown> = {}
   const load = (name: string): unknown => {
@@ -43,7 +43,12 @@ function fixture() {
     const q = {
       insert(v: Record<string, unknown>) { values = v; writes.push({ table, values }); return q },
       update() { return q }, select() { return q }, eq() { return q }, single() { return q },
-      then(done: (v: unknown) => void) { done({ data: table === 'projects' || table === 'participants' ? { id: `test-${table}` } : [], error: null }) },
+      then(done: (v: unknown) => void) {
+        const durationMissing = options.missingDurationColumn && table === 'projects' && 'event_duration_nights' in values
+        done(durationMissing
+          ? { data: null, error: { code: 'PGRST204', message: "Could not find the 'event_duration_nights' column" } }
+          : { data: table === 'projects' || table === 'participants' ? { id: `test-${table}` } : [], error: null })
+      },
     }
     return q
   } } }
@@ -52,7 +57,7 @@ function fixture() {
 }
 function form(mode: string | null = 'selecting') {
   const data = new FormData()
-  for (const [k, v] of Object.entries({ title: 'Weekend trip', description: 'Keep my description', visibility: 'public', finance_mode: 'none', date_voting_deadline_date: '2099-05-01', date_option_start_date: '2099-06-01', date_option_end_date: '2099-06-03' })) data.set(k, v)
+  for (const [k, v] of Object.entries({ title: 'Weekend trip', description: 'Keep my description', visibility: 'public', finance_mode: 'none', event_duration_nights: '2', date_voting_deadline_date: '2099-05-01', date_option_start_date: '2099-06-01' })) data.set(k, v)
   if (mode !== null) data.set('date_mode', mode)
   return data
 }
@@ -72,7 +77,7 @@ test('server independently validates modes, participants, dates, deadline and du
   for (const mutation of [
     (d: FormData) => { d.set('min_participants', '10'); d.set('max_participants', '2') },
     (d: FormData) => d.set('date_voting_deadline_date', '2000-01-01'),
-    (d: FormData) => { d.append('date_option_start_date', '2099-06-01'); d.append('date_option_end_date', '2099-06-03') },
+    (d: FormData) => { d.append('date_option_start_date', '2099-06-01') },
   ]) {
     const f = fixture(); const data = form(); mutation(data)
     assert.ok((await f.actions.createProjectWithState({ error: null }, data)).error)
@@ -83,6 +88,7 @@ test('server independently validates modes, participants, dates, deadline and du
     if (mode === 'fixed') { data.set('event_start_date', '2099-06-01'); data.set('event_start_time', '10:00') }
     await assert.rejects(f.actions.createProjectWithState({ error: null }, data), (e: unknown) => String((e as { digest: string }).digest).includes('NEXT_REDIRECT;replace;/project/test-projects;'))
     assert.equal(f.writes[0].values.date_mode, mode)
+    assert.equal(f.writes[0].values.event_duration_nights, 2)
   }
 })
 
@@ -96,6 +102,59 @@ test('new project persists the transport checkbox as an explicit boolean', async
     await assert.rejects(f.actions.createProjectWithState({ error: null }, data), (error: unknown) =>
       String((error as { digest: string }).digest).includes('NEXT_REDIRECT;replace;/project/test-projects;'))
     assert.equal(f.writes[0].values.transport_enabled, enabled)
+  }
+})
+
+test('duration-backed creation derives fixed ends and all selecting option ends on the server', async () => {
+  {
+    const f = fixture()
+    const data = form('fixed')
+    data.set('event_duration_nights', '0')
+    data.set('event_start_date', '2099-06-01')
+    data.set('event_start_time', '10:00')
+    data.set('event_end_date', '2099-12-31')
+    await assert.rejects(f.actions.createProjectWithState({ error: null }, data), (error: unknown) =>
+      String((error as { digest: string }).digest).includes('NEXT_REDIRECT'))
+    assert.equal(f.writes[0].values.event_end_at, null)
+  }
+  {
+    const f = fixture()
+    const data = form('fixed')
+    data.set('event_duration_nights', '2')
+    data.set('event_start_date', '2099-06-01')
+    data.set('event_start_time', '10:00')
+    data.set('event_end_date', '2099-12-31')
+    data.set('event_end_time', '18:30')
+    await assert.rejects(f.actions.createProjectWithState({ error: null }, data), (error: unknown) =>
+      String((error as { digest: string }).digest).includes('NEXT_REDIRECT'))
+    assert.equal(f.writes[0].values.event_end_at, new Date('2099-06-03T18:30').toISOString())
+  }
+  {
+    const f = fixture()
+    const data = form('selecting')
+    data.set('event_duration_nights', '2')
+    data.set('date_option_end_date', '2099-12-31')
+    await assert.rejects(f.actions.createProjectWithState({ error: null }, data), (error: unknown) =>
+      String((error as { digest: string }).digest).includes('NEXT_REDIRECT'))
+    const optionWrite = f.writes.find(write => write.table === 'project_date_options')
+    const options = optionWrite?.values as unknown as Array<{ starts_at: string; ends_at: string | null }>
+    assert.equal(options[0].starts_at, '2099-06-01T00:00:00.000Z')
+    assert.equal(options[0].ends_at, '2099-06-03T00:00:00.000Z')
+  }
+})
+
+test('new creation fails clearly when the duration schema is unavailable', async () => {
+  for (const [locale, expected] of [
+    ['en', 'Event duration is unavailable until the latest database update is applied.'],
+    ['lt', 'Renginio trukmė nepasiekiama, kol neįdiegtas naujausias duomenų bazės atnaujinimas.'],
+  ] as const) {
+    const f = fixture({ missingDurationColumn: true })
+    const data = form('fixed')
+    data.set('project_locale', locale)
+    data.set('event_start_date', '2099-06-01')
+    data.set('event_start_time', '10:00')
+    assert.equal((await f.actions.createProjectWithState({ error: null }, data)).error, expected)
+    assert.equal(f.writes.filter(write => write.table === 'participants').length, 0)
   }
 })
 
@@ -229,20 +288,20 @@ test('real React form in browser preserves the entire draft after server and cli
     await wait('!!document.querySelector("form")')
     console.log('Form mounted')
     await evaluate(`window.fill=(name,value,index=0)=>{let el=document.getElementsByName(name)[index];if(el.type==='hidden'&&el.closest('[data-date-picker-field]'))el=el.closest('[data-date-picker-field]').querySelector('input:not([type=hidden])');Object.getOwnPropertyDescriptor(el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:el.tagName==='SELECT'?HTMLSelectElement.prototype:HTMLInputElement.prototype,'value').set.call(el,value);el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));};window.fillTime=(name,value)=>{const hidden=document.getElementsByName(name)[0];const input=hidden.closest('[data-time-picker-24]').querySelector('input:not([type=hidden])');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));};window.draft=()=>JSON.stringify([...new FormData(document.querySelector('form'))]);window.submit=()=>document.querySelector('form').requestSubmit();`)
-    await evaluate(`fill('title','Weekend trip');fill('description','Detailed description stays exactly as entered.');document.querySelector('[name=visibility][value=public]').click();document.querySelector('[name=finance_mode][value=managed]').click();document.querySelector('[name=date_mode][value=selecting]').click();fill('min_participants','3');fill('max_participants','12');fill('event_location_label','Test venue');fill('event_location_address','Test address');`)
+    await evaluate(`fill('title','Weekend trip');fill('description','Detailed description stays exactly as entered.');document.querySelector('[name=visibility][value=public]').click();document.querySelector('[name=finance_mode][value=managed]').click();const duration=document.querySelector('#project_event_duration_nights');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(duration,'2');duration.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('[name=date_mode][value=selecting]').click();fill('min_participants','3');fill('max_participants','12');fill('event_location_label','Test venue');fill('event_location_address','Test address');`)
     await wait('!!document.querySelector("[name=totalEur]")')
     await evaluate(`fill('totalEur','25,50');document.querySelector('[name=total_is_per_person][value=true]').click();`)
     await wait('!!document.querySelector("input[type=checkbox]")')
-    await evaluate(`document.querySelector('input[type=checkbox]').click();Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Add another')).click();`)
+    await evaluate(`document.querySelector('input[type=checkbox]').click();window.candidateKeys=Array.from(document.querySelectorAll('button[data-date-key]:not(:disabled)')).map(button=>button.dataset.dateKey).slice(10,12);document.querySelector('button[data-date-key="'+candidateKeys[0]+'"]').click();document.querySelector('button[data-date-key="'+candidateKeys[1]+'"]').click();`)
     await wait('document.getElementsByName("date_option_start_date").length===2')
-    await evaluate(`fill('date_voting_deadline_date','2000-01-01');fill('date_option_start_date','2099-06-01',0);fill('date_option_end_date','2099-06-03',0);fill('date_option_start_date','2099-07-01',1);fill('date_option_end_date','2099-07-04',1);window.before=draft();submit();`)
+    await evaluate(`fill('date_voting_deadline_date','2000-01-01');window.before=draft();submit();`)
     await wait(`document.body.textContent.includes('Date voting deadline must be more than') && !document.querySelector('[type=submit]').disabled`)
     assert.equal(await evaluate('submissions[0].find(([k])=>k==="date_mode")[1]'), 'selecting')
     if (baseline) {
       assert.equal(await evaluate('document.querySelector("[name=title]").value'), '')
       assert.equal(await evaluate('new FormData(document.querySelector("form")).get("date_mode")'), 'fixed')
       assert.equal(await evaluate('!!document.querySelector("[name=date_voting_deadline_date]") && !document.querySelector("[name=event_start_date]")'), true)
-      await evaluate(`fill('title','Weekend trip');fill('totalEur','25');fill('date_voting_deadline_date','2099-05-01');fill('date_option_start_date','2099-06-01',0);fill('date_option_start_date','2099-07-01',1);submit();`)
+      await evaluate(`fill('title','Weekend trip');fill('totalEur','25');fill('date_voting_deadline_date','2099-05-01');submit();`)
       await wait(`document.body.textContent.includes('A fixed project needs a confirmed start date and time')`)
       console.log('BASELINE REPRODUCED: returned server error resets title and date radio to fixed while selecting fields remain visible; retry triggers misleading fixed-date error.')
       return
@@ -258,14 +317,13 @@ test('real React form in browser preserves the entire draft after server and cli
     await evaluate(`fill('max_participants','2');window.before=draft();submit();`)
     await wait(`document.body.textContent.includes('Max participants must be greater')`)
     assert.equal(await evaluate('draft()===before && submissions.length===2'), true)
-    await evaluate(`fill('max_participants','12');fill('date_option_start_date','2099-06-01',1);fill('date_option_end_date','2099-06-03',1);window.before=draft();submit();`)
+    await evaluate(`fill('max_participants','12');const duplicate=document.createElement('input');duplicate.type='hidden';duplicate.name='date_option_start_date';duplicate.value=document.getElementsByName('date_option_start_date')[0].value;duplicate.dataset.testDuplicate='true';document.querySelector('form').appendChild(duplicate);window.before=draft();submit();`)
     await wait(`document.body.textContent.includes('same date option')`)
     assert.equal(await evaluate('draft()===before && submissions.length===2'), true)
-    await evaluate(`document.querySelector('[name=date_mode][value=fixed]').click();`)
+    await evaluate(`document.querySelector('[data-test-duplicate]').remove();document.querySelector('[name=date_mode][value=fixed]').click();const duration=document.querySelector('#project_event_duration_nights');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(duration,'0');duration.dispatchEvent(new Event('change',{bubbles:true}));`)
     await wait('!!document.querySelector("[name=event_start_date]")')
-    await evaluate(`Array.from(document.querySelectorAll('button')).find(button=>button.textContent.includes('End date and time')).click();`)
-    await wait('!!document.querySelector("#new-project-event-end-date")')
-    await evaluate(`fill('event_start_date','2099-08-01');fillTime('event_start_time','10:00');fill('event_end_date','2099-07-31');fillTime('event_end_time','11:00');window.before=draft();submit();`)
+    assert.equal(await evaluate(`!document.querySelector('#new-project-event-end-date') && !Array.from(document.querySelectorAll('button')).some(button=>button.textContent.includes('End date and time'))`), true)
+    await evaluate(`fill('event_start_date','2099-08-01');fillTime('event_start_time','10:00');fillTime('event_end_time','09:00');window.before=draft();submit();`)
     await wait(`document.body.textContent.includes('Event end must be after')`)
     assert.equal(await evaluate(`new FormData(document.querySelector('form')).get('event_start_time')`), '10:00')
     assert.equal(await evaluate(`new FormData(document.querySelector('form')).get('event_end_time')`), '11:00')
@@ -273,7 +331,7 @@ test('real React form in browser preserves the entire draft after server and cli
     // Bypass HTML required validation: the handler also catches a missing fixed start.
     await evaluate(`fill('event_start_date','');document.querySelector('form').noValidate=true;submit();`)
     await wait(`document.body.textContent.includes('fixed project needs')`)
-    await evaluate(`fill('event_start_date','2099-08-01');fill('event_end_date','2099-08-02');fill('title','ab');window.before=draft();submit();`)
+    await evaluate(`fill('event_start_date','2099-08-01');fillTime('event_end_time','11:00');fill('title','ab');window.before=draft();submit();`)
     await wait(`document.body.textContent.includes('Invalid form:') && !document.querySelector('[type=submit]').disabled`)
     assert.equal(await evaluate('draft()===before'), true, 'fixed dates/times survive server validation')
     console.log('BROWSER PASS: selecting payload; full draft/ranges/bundle/location preservation; fix-only-deadline redirect; client participant/duplicate/end errors; fixed server failure preservation.')

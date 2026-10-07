@@ -3,11 +3,12 @@
 import { FormEvent, startTransition, useActionState, useEffect, useRef, useState } from 'react'
 import { createProjectWithState } from '@/app/project/new/actions'
 import { EventDateTimeFields } from '@/components/Project/EventDateTimeFields'
+import { EventDateCandidatePicker } from '@/components/Project/EventDateCandidatePicker'
+import { EventDurationField } from '@/components/Project/EventDurationField'
 import { Button } from '@/components/ui/button'
-import { DateRangePicker } from '@/components/ui/DateRangePicker'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
-import { normalizeDateOnlyOption } from '@/lib/projectDateSelection'
+import { validateEventDurationNights } from '@/lib/projectEventDuration'
 import type { ProjectDateLocale } from '@/lib/projectDateStrings'
 
 type NewProjectFormProps = {
@@ -15,12 +16,6 @@ type NewProjectFormProps = {
   onCancel?: () => void
   submitLabel?: string
   locale?: ProjectDateLocale
-}
-
-type DraftDateOption = {
-  id: string
-  startDate: string
-  endDate: string | null
 }
 
 const EURO = '\u20AC'
@@ -92,15 +87,12 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   const [showServerError, setShowServerError] = useState(true)
   const [financeMode, setFinanceMode] = useState<'none' | 'managed'>('none')
   const [dateMode, setDateMode] = useState<'fixed' | 'selecting'>('fixed')
+  const [eventDurationNights, setEventDurationNights] = useState<number | null>(null)
   const [eventStartDate, setEventStartDate] = useState('')
   const [eventStartTime, setEventStartTime] = useState('')
   const [eventEndDate, setEventEndDate] = useState('')
   const [eventEndTime, setEventEndTime] = useState('')
-  const [dateOptions, setDateOptions] = useState<DraftDateOption[]>([{
-    id: 'initial-date-option',
-    startDate: '',
-    endDate: null,
-  }])
+  const [dateOptionStarts, setDateOptionStarts] = useState<string[]>([])
   const [totalIsPerPerson, setTotalIsPerPerson] = useState(false)
   const [bundleEnabled, setBundleEnabled] = useState(false)
   const [bundleSize, setBundleSize] = useState('')
@@ -120,7 +112,6 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   const autocompleteListenerRef = useRef<google.maps.MapsEventListener | null>(null)
   const geocoderRef = useRef<google.maps.Geocoder | null>(null)
   const geocodeRequestCounterRef = useRef(0)
-  const nextDateOptionIdRef = useRef(1)
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? ''
   const financeStrings = getProjectFinanceStrings(locale)
 
@@ -295,18 +286,19 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
     const pricing = validatePricing()
     if (pricing) { fail('finance', pricing); return }
     if (location) { fail('location', location); return }
+    try {
+      validateEventDurationNights(value('event_duration_nights'))
+    } catch (error) {
+      fail('date', error instanceof Error ? error.message : 'Choose an event duration')
+      return
+    }
     if (value('date_mode') === 'fixed') {
       if (!value('event_start_date') || !value('event_start_time')) {
         fail('date', 'A fixed project needs a confirmed start date and time')
         return
       }
-      if (value('event_end_time') && !value('event_end_date')) {
-        fail('date', 'Event end time requires an end date')
-        return
-      }
-      if (value('event_end_date') &&
-        new Date(`${value('event_end_date')}T${value('event_end_time') || '17:00'}`) <
-        new Date(`${value('event_start_date')}T${value('event_start_time')}`)) {
+      if (Number(value('event_duration_nights')) === 0 && value('event_end_time') &&
+        value('event_end_time') <= value('event_start_time')) {
         fail('date', 'Event end must be after event start')
         return
       }
@@ -316,14 +308,10 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
         return
       }
       const starts = data.getAll('date_option_start_date')
-      const ends = data.getAll('date_option_end_date')
       if (!starts.length) { fail('date', 'Add at least one date option'); return }
-      try {
-        const options = starts.map((start, index) => normalizeDateOnlyOption(String(start), String(ends[index] ?? '')))
-        const unique = new Set(options.map(option => `${option.startsAt}:${option.endsAt ?? ''}`))
-        if (unique.size !== options.length) throw new Error('The same date option was added more than once')
-      } catch (error) {
-        fail('date', error instanceof Error ? error.message : 'Check the initial date options')
+      const normalizedStarts = starts.map(start => String(start))
+      if (new Set(normalizedStarts).size !== normalizedStarts.length) {
+        fail('date', 'The same date option was added more than once')
         return
       }
     } else {
@@ -352,6 +340,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
 
   return (
     <form ref={formRef} action={createAction} className="space-y-5" onSubmit={onSubmit}>
+      <input type="hidden" name="project_locale" value={locale} />
       <div className="space-y-2">
         <label htmlFor="project_title" className="text-sm font-medium">
           Project title <span className="text-red-500">*</span>
@@ -692,6 +681,18 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
           {renderError('date')}
           <p className="text-xs text-slate-600">Use a confirmed date, or let project members find the best date together.</p>
         </div>
+        <div className="max-w-sm">
+          <EventDurationField
+            id="project_event_duration_nights"
+            value={eventDurationNights}
+            onChange={setEventDurationNights}
+            locale={locale}
+            required
+          />
+        </div>
+        <div className="space-y-1 border-t border-slate-200 pt-4">
+          <h4 className="text-sm font-semibold text-slate-900">How should the date be decided?</h4>
+        </div>
         <div className="control-radio-group space-y-2">
           <label className="flex items-start gap-2 text-sm">
             <input
@@ -735,6 +736,8 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
               onEndDateChange={setEventEndDate}
               onEndTimeChange={setEventEndTime}
               startRequired
+              durationBacked
+              durationNights={eventDurationNights}
             />
           </div>
         ) : (
@@ -754,47 +757,19 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
             <div className="space-y-3 border-t border-slate-200 pt-4">
               <div>
                 <h4 className="text-sm font-semibold text-slate-900">Initial date options</h4>
-                <p className="mt-0.5 text-xs text-slate-600">Add one or more dates for members to vote on. Times are not required.</p>
+                <p className="mt-0.5 text-xs text-slate-600">Choose possible start dates. Every option uses the event duration above.</p>
               </div>
-              {dateOptions.map((option, index) => (
-                <div key={option.id} className="rounded-lg border border-slate-200 bg-white p-3">
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Option {index + 1}</span>
-                    {dateOptions.length > 1 && (
-                      <button
-                        type="button"
-                        className="min-h-9 rounded-full px-3 text-xs font-medium text-red-700 hover:bg-red-50"
-                        onClick={() => setDateOptions(current => current.filter(item => item.id !== option.id))}
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                  <DateRangePicker
-                    value={{ startDate: option.startDate, endDate: option.endDate }}
-                    onChange={value => setDateOptions(current => current.map(item =>
-                      item.id === option.id ? { ...item, ...value } : item
-                    ))}
-                    locale={locale}
-                    startName="date_option_start_date"
-                    endName="date_option_end_date"
-                    required
-                  />
-                </div>
-              ))}
-              <Button
-                type="button"
-                variant="outline"
-                className="min-h-11 rounded-full"
-                disabled={dateOptions.length >= MAX_INITIAL_DATE_OPTIONS}
-                onClick={() => {
-                  const id = `date-option-${nextDateOptionIdRef.current}`
-                  nextDateOptionIdRef.current += 1
-                  setDateOptions(current => [...current, { id, startDate: '', endDate: null }])
-                }}
-              >
-                + Add another date
-              </Button>
+              {eventDurationNights !== null ? (
+                <EventDateCandidatePicker
+                  locale={locale}
+                  durationNights={eventDurationNights}
+                  value={dateOptionStarts}
+                  onChange={setDateOptionStarts}
+                  max={MAX_INITIAL_DATE_OPTIONS}
+                />
+              ) : (
+                <p className="text-sm text-slate-600">Choose an event duration to select start dates.</p>
+              )}
             </div>
           </div>
         )}

@@ -1,0 +1,75 @@
+export const MIN_EVENT_DURATION_NIGHTS = 0
+export const MAX_EVENT_DURATION_NIGHTS = 365
+
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+
+const parseDateOnly = (value: string) => {
+  const dateKey = value.trim()
+  if (!DATE_ONLY_PATTERN.test(dateKey)) throw new Error('Invalid event start date')
+  const [year, month, day] = dateKey.split('-').map(Number)
+  const date = new Date(Date.UTC(year, month - 1, day))
+  if (date.toISOString().slice(0, 10) !== dateKey) throw new Error('Invalid event start date')
+  return date
+}
+
+export function validateEventDurationNights(value: unknown) {
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && value.trim() !== ''
+      ? Number(value)
+      : Number.NaN
+  if (!Number.isInteger(parsed)
+    || parsed < MIN_EVENT_DURATION_NIGHTS
+    || parsed > MAX_EVENT_DURATION_NIGHTS) {
+    throw new Error(`Event duration must be a whole number from ${MIN_EVENT_DURATION_NIGHTS} to ${MAX_EVENT_DURATION_NIGHTS}`)
+  }
+  return parsed
+}
+
+/** Adds calendar days in UTC so DST can never change the resulting date. */
+export function deriveEndDate(startDate: string, durationNights: number) {
+  const duration = validateEventDurationNights(durationNights)
+  const end = parseDateOnly(startDate)
+  end.setUTCDate(end.getUTCDate() + duration)
+  return end.toISOString().slice(0, 10)
+}
+
+export function deriveDateOptionFromStart(startDate: string, durationNights: number) {
+  const duration = validateEventDurationNights(durationNights)
+  const start = parseDateOnly(startDate).toISOString()
+  return {
+    startsAt: start,
+    endsAt: duration === 0 ? null : `${deriveEndDate(startDate, duration)}T00:00:00.000Z`,
+  }
+}
+
+export function deriveCandidateDateKeys(startDate: string, durationNights: number) {
+  const duration = validateEventDurationNights(durationNights)
+  const start = parseDateOnly(startDate)
+  return Array.from({ length: duration + 1 }, (_, index) => {
+    const date = new Date(start.getTime())
+    date.setUTCDate(date.getUTCDate() + index)
+    return date.toISOString().slice(0, 10)
+  })
+}
+
+export function lithuanianNightUnit(nights: number) {
+  const lastTwo = nights % 100
+  if (lastTwo >= 10 && lastTwo <= 20) return 'naktų'
+  const last = nights % 10
+  if (last === 1) return 'naktis'
+  if (last >= 2 && last <= 9) return 'naktys'
+  return 'naktų'
+}
+
+export function formatNightCount(nights: number, locale: 'en' | 'lt') {
+  const duration = validateEventDurationNights(nights)
+  if (locale === 'lt') return `${duration} ${lithuanianNightUnit(duration)}`
+  return `${duration} ${duration === 1 ? 'night' : 'nights'}`
+}
+
+export function formatEventDuration(nights: number, locale: 'en' | 'lt') {
+  const duration = validateEventDurationNights(nights)
+  if (duration === 0) return locale === 'lt' ? 'Tą pačią dieną' : 'Same day'
+  return formatNightCount(duration, locale)
+}

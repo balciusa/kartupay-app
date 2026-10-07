@@ -25,6 +25,7 @@ import {
   type ParticipantAttendanceStatus,
 } from '@/lib/projectDateSelection'
 import { applyEarlySelectedProjectDate, applySelectedProjectDate, syncProjectDateSelection } from '@/lib/projectDateService'
+import { deriveDateOptionFromStart, deriveEndDate, validateEventDurationNights } from '@/lib/projectEventDuration'
 import {
   DATE_CONFIRMATION_NOTIFICATION_TYPES,
   enqueueJoinRequestNotifications,
@@ -3163,11 +3164,23 @@ export async function suggestProjectDateOption(projectId: string, formData: Form
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('You must be signed in')
   const participant = await requireActiveProjectParticipant(projectId, uid)
-  const { data: project, error: projectError } = await supabaseAdmin
+  let projectResult = await supabaseAdmin
     .from('projects')
-    .select('date_mode, date_selection_status, date_voting_deadline_at, date_suggestions_close_at, collector_participant_id')
+    .select('date_mode, date_selection_status, date_voting_deadline_at, date_suggestions_close_at, collector_participant_id, event_duration_nights')
     .eq('id', projectId)
     .maybeSingle()
+  if (missingColumn(projectResult.error, 'event_duration_nights')) {
+    const legacyResult = await supabaseAdmin
+      .from('projects')
+      .select('date_mode, date_selection_status, date_voting_deadline_at, date_suggestions_close_at, collector_participant_id')
+      .eq('id', projectId)
+      .maybeSingle()
+    projectResult = {
+      data: legacyResult.data ? { ...legacyResult.data, event_duration_nights: null } : null,
+      error: legacyResult.error,
+    } as typeof projectResult
+  }
+  const { data: project, error: projectError } = projectResult
   if (projectError || !project) throw projectError || new Error('Project not found')
   if (project.date_mode !== 'selecting' || project.date_selection_status !== 'open') {
     throw new Error('Date suggestions are closed')
@@ -3178,17 +3191,24 @@ export async function suggestProjectDateOption(projectId: string, formData: Form
   }
   if (new Date(closeAt) <= new Date()) throw new Error('New date suggestions are closed')
 
+  const durationBacked = project.event_duration_nights !== null
+  const startDateRaw = String(formData.get('start_date') ?? '').trim()
   const startsAtRaw = String(formData.get('starts_at') ?? '').trim()
   const endsAtRaw = String(formData.get('ends_at') ?? '').trim()
-  if (!startsAtRaw) throw new Error('Choose a start date')
-  const normalized = normalizeDateOption(startsAtRaw, endsAtRaw || null)
+  if (durationBacked && !startDateRaw) throw new Error('Choose a start date')
+  if (!durationBacked && !startsAtRaw) throw new Error('Choose a start date')
+  const normalized = durationBacked
+    ? deriveDateOptionFromStart(startDateRaw, project.event_duration_nights)
+    : normalizeDateOption(startsAtRaw, endsAtRaw || null)
 
   const duplicateQuery = supabaseAdmin
     .from('project_date_options')
     .select('id')
     .eq('project_id', projectId)
     .eq('starts_at', normalized.startsAt)
-  const { data: duplicate, error: duplicateError } = normalized.endsAt
+  const { data: duplicate, error: duplicateError } = durationBacked
+    ? await duplicateQuery.maybeSingle()
+    : normalized.endsAt
     ? await duplicateQuery.eq('ends_at', normalized.endsAt).maybeSingle()
     : await duplicateQuery.is('ends_at', null).maybeSingle()
   if (duplicateError) throw duplicateError
@@ -4751,7 +4771,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
 
   const baseProjectFields =
     'id, collector_participant_id, title, description, total_cents, total_is_per_person, min_participants, max_participants, event_start_at, event_end_at, event_location_label, event_location_address, event_location_lat, event_location_lng, event_location_place_id, date_mode'
-  const optionalProjectFields = ['is_public', 'bundle_size', 'bundle_pay_for', 'finance_mode', 'transport_enabled'] as const
+  const optionalProjectFields = ['is_public', 'bundle_size', 'bundle_pay_for', 'finance_mode', 'transport_enabled', 'event_duration_nights', 'selected_date_option_id'] as const
   let optionalFields = [...optionalProjectFields]
   const missingFields = new Set<string>()
   let projectData: {
@@ -4766,6 +4786,8 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     bundle_pay_for: number | null
     finance_mode: ProjectFinanceMode | null
     transport_enabled: boolean | null
+    event_duration_nights: number | null
+    selected_date_option_id: string | null
     min_participants: number | null
     max_participants: number | null
     event_start_at: string | null
@@ -4794,7 +4816,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
       if (optionalFields.length === 0) {
         const row = result.data as NonNullable<typeof projectData> | null
         projectData = row
-          ? { ...row, is_public: true, bundle_size: null, bundle_pay_for: null, finance_mode: 'managed', transport_enabled: false }
+          ? { ...row, is_public: true, bundle_size: null, bundle_pay_for: null, finance_mode: 'managed', transport_enabled: false, event_duration_nights: null, selected_date_option_id: null }
           : null
         projectErr = result.error
         break
@@ -4810,6 +4832,8 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
           bundle_pay_for: 'bundle_pay_for' in row ? row.bundle_pay_for ?? null : null,
           finance_mode: 'finance_mode' in row ? normalizeProjectFinanceMode(row.finance_mode) : 'managed',
           transport_enabled: 'transport_enabled' in row ? row.transport_enabled === true : false,
+          event_duration_nights: 'event_duration_nights' in row ? row.event_duration_nights ?? null : null,
+          selected_date_option_id: 'selected_date_option_id' in row ? row.selected_date_option_id ?? null : null,
         }
       : null
     projectErr = result.error
@@ -4863,6 +4887,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   const eventStartTime = (formData.get('event_start_time') as string) ?? null
   const eventEndDate = (formData.get('event_end_date') as string) ?? null
   const eventEndTime = (formData.get('event_end_time') as string) ?? null
+  const submittedDurationRaw = String(formData.get('event_duration_nights') ?? '').trim()
   const eventLocationLabelRaw = String(formData.get('event_location_label') ?? '').trim()
   const eventLocationAddressRaw = String(formData.get('event_location_address') ?? '').trim()
   const eventLocationPlaceIdRaw = String(formData.get('event_location_place_id') ?? '').trim()
@@ -4951,14 +4976,35 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     }
     return { iso: parsed.toISOString(), localKey: combined }
   }
+  const durationBacked = project.event_duration_nights !== null
+  const eventDurationNights = durationBacked
+    ? validateEventDurationNights(submittedDurationRaw)
+    : null
+  const dateControlledByFinder = durationBacked && !!project.selected_date_option_id
+  if (durationBacked && (project.date_mode === 'selecting' || dateControlledByFinder)
+    && eventDurationNights !== project.event_duration_nights) {
+    throw new Error('Event duration cannot be changed after a Choose Together project is created')
+  }
+
   const parsedEventStart = parseEventDateTime(eventStartDate, eventStartTime, project.event_start_at, '09:00')
-  const parsedEventEnd = parseEventDateTime(eventEndDate, eventEndTime, project.event_end_at, '17:00')
+  if (durationBacked && project.date_mode === 'fixed' && !dateControlledByFinder
+    && (!parsedEventStart || !eventStartTime?.trim())) {
+    throw new Error('A fixed project needs a confirmed start date and time')
+  }
+  const derivedEventEndDate = durationBacked && eventStartDate?.trim() && eventDurationNights !== null
+    ? deriveEndDate(eventStartDate, eventDurationNights)
+    : eventEndDate
+  const parsedEventEnd = durationBacked && eventDurationNights === 0 && !eventEndTime?.trim()
+    ? null
+    : parseEventDateTime(derivedEventEndDate, eventEndTime, project.event_end_at, '17:00')
   const eventStartAt = parsedEventStart?.iso ?? null
   const eventEndAt = parsedEventEnd?.iso ?? null
   if (
     parsedEventStart?.localKey &&
     parsedEventEnd?.localKey &&
-    parsedEventEnd.localKey < parsedEventStart.localKey
+    (durationBacked
+      ? parsedEventEnd.localKey <= parsedEventStart.localKey
+      : parsedEventEnd.localKey < parsedEventStart.localKey)
   ) {
     throw new Error('Event end must be after event start')
   }
@@ -4998,8 +5044,11 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
     bundle_pay_for: bundlePayFor,
     min_participants: minParticipants,
     max_participants: maxParticipants,
-    event_start_at: project.date_mode === 'selecting' ? project.event_start_at : eventStartAt,
-    event_end_at: project.date_mode === 'selecting' ? project.event_end_at : eventEndAt,
+    event_start_at: project.date_mode === 'selecting' || dateControlledByFinder ? project.event_start_at : eventStartAt,
+    event_end_at: project.date_mode === 'selecting' || dateControlledByFinder ? project.event_end_at : eventEndAt,
+    ...(!missingFields.has('event_duration_nights') && durationBacked
+      ? { event_duration_nights: eventDurationNights }
+      : {}),
     event_location_label: eventLocationLabel,
     event_location_address: eventLocationAddress,
     event_location_lat: eventLocationLat,
@@ -5114,6 +5163,7 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   if ((project.bundle_pay_for ?? null) !== bundlePayFor) changedFields.push('bundle_pay_for')
   if ((project.min_participants ?? null) !== minParticipants) changedFields.push('min_participants')
   if ((project.max_participants ?? null) !== maxParticipants) changedFields.push('max_participants')
+  if (durationBacked && project.event_duration_nights !== eventDurationNights) changedFields.push('event_duration_nights')
   if ((project.event_start_at ?? null) !== eventStartAt) changedFields.push('event_start_at')
   if ((project.event_end_at ?? null) !== eventEndAt) changedFields.push('event_end_at')
   if ((project.event_location_label ?? null) !== eventLocationLabel) changedFields.push('event_location_label')

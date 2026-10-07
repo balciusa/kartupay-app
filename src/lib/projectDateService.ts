@@ -21,6 +21,7 @@ type DateProjectRow = {
   confirmation_deadline_at: string | null
   event_start_at: string | null
   event_end_at: string | null
+  event_duration_nights: number | null
   min_participants: number | null
   max_participants: number | null
 }
@@ -51,6 +52,7 @@ export type ProjectDateFinderData = {
   confirmationDeadlineAt: string | null
   eventStartAt: string | null
   eventEndAt: string | null
+  eventDurationNights: number | null
   minParticipants: number | null
   maxParticipants: number | null
   options: ProjectDateFinderOption[]
@@ -65,8 +67,36 @@ export type ProjectDateFinderData = {
   viewerTaskComplete: boolean
 }
 
-const dateFields =
+const legacyDateFields =
   'id, date_mode, date_selection_status, date_voting_deadline_at, date_suggestions_close_at, selected_date_option_id, confirmation_deadline_at, event_start_at, event_end_at, min_participants, max_participants'
+const dateFields = `${legacyDateFields}, event_duration_nights`
+
+const isMissingDurationColumn = (error: { code?: string; message?: string } | null | undefined) => {
+  const message = String(error?.message ?? '').toLowerCase()
+  return message.includes('event_duration_nights') && (
+    error?.code === 'PGRST204' || message.includes('does not exist') || message.includes('schema cache')
+  )
+}
+
+const loadDateProjectRow = async (projectId: string) => {
+  let result = await supabaseAdmin
+    .from('projects')
+    .select(dateFields)
+    .eq('id', projectId)
+    .maybeSingle()
+  if (isMissingDurationColumn(result.error)) {
+    const legacyResult = await supabaseAdmin
+      .from('projects')
+      .select(legacyDateFields)
+      .eq('id', projectId)
+      .maybeSingle()
+    result = {
+      data: legacyResult.data ? { ...legacyResult.data, event_duration_nights: null } : null,
+      error: legacyResult.error,
+    } as typeof result
+  }
+  return result
+}
 
 const isMissingDateSchema = (error: { code?: string; message?: string } | null | undefined) => {
   const message = String(error?.message ?? '').toLowerCase()
@@ -262,11 +292,7 @@ async function enqueueAvailabilityReminders(project: DateProjectRow, now: Date) 
 }
 
 export async function syncProjectDateSelection(projectId: string, now = new Date()) {
-  const { data, error } = await supabaseAdmin
-    .from('projects')
-    .select(dateFields)
-    .eq('id', projectId)
-    .maybeSingle()
+  const { data, error } = await loadDateProjectRow(projectId)
   if (error) {
     if (isMissingDateSchema(error)) return false
     throw error
@@ -407,11 +433,7 @@ export async function loadProjectDateFinderData(
   viewerUserId: string | null
 ): Promise<ProjectDateFinderData | null> {
   await syncProjectDateSelection(projectId)
-  const { data: projectData, error: projectError } = await supabaseAdmin
-    .from('projects')
-    .select(dateFields)
-    .eq('id', projectId)
-    .maybeSingle()
+  const { data: projectData, error: projectError } = await loadDateProjectRow(projectId)
   if (projectError) {
     if (isMissingDateSchema(projectError)) return null
     throw projectError
@@ -487,6 +509,7 @@ export async function loadProjectDateFinderData(
     confirmationDeadlineAt: project.confirmation_deadline_at,
     eventStartAt: project.event_start_at,
     eventEndAt: project.event_end_at,
+    eventDurationNights: project.event_duration_nights,
     minParticipants: project.min_participants,
     maxParticipants: project.max_participants,
     options: options.map(option => {

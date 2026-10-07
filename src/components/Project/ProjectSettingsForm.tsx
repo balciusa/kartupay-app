@@ -2,11 +2,13 @@
 
 import { FormEvent, useActionState, useEffect, useRef, useState } from 'react'
 import { EventDateTimeFields } from '@/components/Project/EventDateTimeFields'
+import { EventDurationField } from '@/components/Project/EventDurationField'
 import { Button } from '@/components/ui/button'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
 import { FINANCE_HISTORY_ERROR, type ProjectFinanceMode } from '@/lib/projectFinance'
 import type { ProjectDateLocale } from '@/lib/projectDateStrings'
+import { validateEventDurationNights } from '@/lib/projectEventDuration'
 
 type ProjectSettingsFormProps = {
   action: (formData: FormData) => Promise<{ error: string | null }>
@@ -27,6 +29,8 @@ type ProjectSettingsFormProps = {
     minParticipants: number | null
     maxParticipants: number | null
     dateMode: 'fixed' | 'selecting'
+    eventDurationNights: number | null
+    dateControlledByFinder: boolean
     eventStartDate: string
     eventStartTime: string
     eventEndDate: string
@@ -126,6 +130,7 @@ export function ProjectSettingsForm({ action, initial, locale = 'en' }: ProjectS
   const [startTime, setStartTime] = useState(initial.eventStartTime)
   const [endDate, setEndDate] = useState(initial.eventEndDate)
   const [endTime, setEndTime] = useState(initial.eventEndTime)
+  const [eventDurationNights, setEventDurationNights] = useState<number | null>(initial.eventDurationNights)
   const [dateError, setDateError] = useState<string | null>(null)
   const [locationError, setLocationError] = useState<string | null>(null)
   const [pricingError, setPricingError] = useState<string | null>(null)
@@ -206,6 +211,20 @@ export function ProjectSettingsForm({ action, initial, locale = 'en' }: ProjectS
   }, [googleMapsApiKey])
 
   const validateEventRange = () => {
+    if (initial.eventDurationNights !== null) {
+      try {
+        validateEventDurationNights(eventDurationNights)
+      } catch (error) {
+        return error instanceof Error ? error.message : 'Choose an event duration'
+      }
+      if (initial.dateMode === 'selecting' || initial.dateControlledByFinder) return null
+      const start = resolveDateTime(startDate, startTime, DEFAULT_START_TIME)
+      if (start && 'error' in start) return start.error
+      if (eventDurationNights === 0 && endTime && startTime && endTime <= startTime) {
+        return 'Event end must be after event start'
+      }
+      return null
+    }
     const start = resolveDateTime(startDate, startTime, DEFAULT_START_TIME)
     if (start && 'error' in start) return start.error
 
@@ -649,9 +668,25 @@ export function ProjectSettingsForm({ action, initial, locale = 'en' }: ProjectS
         )}
       </div>
 
-      {initial.dateMode === 'selecting' ? (
+      {initial.eventDurationNights !== null && (
+        <EventDurationField
+          id="settings-event-duration"
+          value={eventDurationNights}
+          onChange={setEventDurationNights}
+          locale={locale}
+          disabled={initial.dateMode === 'selecting' || initial.dateControlledByFinder}
+          required
+          helpText={initial.dateMode === 'selecting' || initial.dateControlledByFinder
+            ? (locale === 'lt'
+                ? 'Pasirinkus bendrą datą trukmė po projekto sukūrimo nekeičiama, kad esami balsai nebūtų interpretuojami iš naujo.'
+                : 'For Choose Together projects, duration cannot be changed after creation so existing votes are never reinterpreted.')
+            : undefined}
+        />
+      )}
+
+      {initial.dateMode === 'selecting' || initial.dateControlledByFinder ? (
         <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4 text-sm text-indigo-900">
-          The final event date is controlled by Date Finder in Overview while voting is in progress.
+          The final event start date is controlled by Date Finder in Overview while voting is in progress.
         </div>
       ) : (
         <EventDateTimeFields
@@ -678,6 +713,9 @@ export function ProjectSettingsForm({ action, initial, locale = 'en' }: ProjectS
             setDateError(null)
           }}
           aria-invalid={dateError ? true : undefined}
+          durationBacked={initial.eventDurationNights !== null}
+          durationNights={eventDurationNights}
+          startRequired={initial.eventDurationNights !== null}
         />
       )}
 
