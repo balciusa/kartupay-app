@@ -17,6 +17,7 @@ import {
   suggestProjectDateOption,
 } from '@/app/project/[id]/actions'
 import { LeaveProjectButton } from '@/components/Project/LeaveProjectButton'
+import { EventDateCandidatePicker } from '@/components/Project/EventDateCandidatePicker'
 import { Button } from '@/components/ui/button'
 import { DateRangePicker, type DateRangeValue } from '@/components/ui/DateRangePicker'
 import { TimePicker24 } from '@/components/ui/TimePicker24'
@@ -30,6 +31,7 @@ import {
 } from '@/lib/projectDateSelection'
 import type { ProjectDateFinderData, ProjectDateFinderOption } from '@/lib/projectDateService'
 import { getProjectDateStrings, type ProjectDateLocale } from '@/lib/projectDateStrings'
+import { formatEventDuration } from '@/lib/projectEventDuration'
 
 const statusClasses: Record<DateAvailability, string> = {
   available: 'border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100',
@@ -56,11 +58,13 @@ function DateOptionHeading({
   displayOption,
   durationOption,
   locale,
+  durationNights,
   className = '',
 }: {
   displayOption: Pick<ProjectDateFinderOption, 'starts_at' | 'ends_at'>
   durationOption: Pick<ProjectDateFinderOption, 'starts_at' | 'ends_at'> | null
   locale: ProjectDateLocale
+  durationNights?: number | null
   className?: string
 }) {
   return (
@@ -68,7 +72,9 @@ function DateOptionHeading({
       <span className="block">{formatDateOption(displayOption, locale)}</span>
       {durationOption && (
         <span className="mt-0.5 block text-sm font-medium text-indigo-700">
-          {formatDateRangeDuration(durationOption.starts_at, durationOption.ends_at, locale)}
+          {durationNights !== null && durationNights !== undefined
+            ? formatEventDuration(durationNights, locale)
+            : formatDateRangeDuration(durationOption.starts_at, durationOption.ends_at, locale)}
         </span>
       )}
     </span>
@@ -95,10 +101,12 @@ const formatDeadline = (value: string, locale: ProjectDateLocale) =>
 function SuggestDateForm({
   projectId,
   locale,
+  durationNights,
   onDone,
 }: {
   projectId: string
   locale: ProjectDateLocale
+  durationNights: number | null
   onDone: () => void
 }) {
   const strings = getProjectDateStrings(locale)
@@ -106,6 +114,7 @@ function SuggestDateForm({
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
   const [dates, setDates] = useState<DateRangeValue>({ startDate: '', endDate: null })
+  const [startDates, setStartDates] = useState<string[]>([])
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -113,11 +122,13 @@ function SuggestDateForm({
     try {
       setPending(true)
       setError(null)
-      const startDate = String(form.get('start_date') ?? '')
-      const endDate = String(form.get('end_date') ?? '')
-      const normalized = normalizeDateOnlyOption(startDate, endDate || null)
-      form.set('starts_at', normalized.startsAt)
-      if (normalized.endsAt) form.set('ends_at', normalized.endsAt)
+      if (durationNights === null) {
+        const startDate = String(form.get('start_date') ?? '')
+        const endDate = String(form.get('end_date') ?? '')
+        const normalized = normalizeDateOnlyOption(startDate, endDate || null)
+        form.set('starts_at', normalized.startsAt)
+        if (normalized.endsAt) form.set('ends_at', normalized.endsAt)
+      }
       await suggestProjectDateOption(projectId, form)
       router.refresh()
       onDone()
@@ -131,14 +142,25 @@ function SuggestDateForm({
 
   return (
     <form onSubmit={submit} className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-      <DateRangePicker
-        value={dates}
-        onChange={setDates}
-        locale={locale}
-        startName="start_date"
-        endName="end_date"
-        required
-      />
+      {durationNights === null ? (
+        <DateRangePicker
+          value={dates}
+          onChange={setDates}
+          locale={locale}
+          startName="start_date"
+          endName="end_date"
+          required
+        />
+      ) : (
+        <EventDateCandidatePicker
+          locale={locale}
+          durationNights={durationNights}
+          value={startDates}
+          onChange={setStartDates}
+          name="start_date"
+          single
+        />
+      )}
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
       <div className="flex flex-wrap justify-end gap-2">
         <Button type="button" variant="outline" className="min-h-11 rounded-full" onClick={onDone}>{strings.cancel}</Button>
@@ -260,7 +282,7 @@ export function ProjectDateFinder({
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="font-semibold text-slate-900"><DateOptionHeading displayOption={option} durationOption={option} locale={locale} /></h3>
+                  <h3 className="font-semibold text-slate-900"><DateOptionHeading displayOption={option} durationOption={option} locale={locale} durationNights={data.eventDurationNights} /></h3>
                   {isBest && <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800">{strings.currentlyBest}</span>}
                   {option.isTied && hasAvailabilityResponses && <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800">{strings.currentlyTied}</span>}
                 </div>
@@ -351,7 +373,7 @@ export function ProjectDateFinder({
             </div>
             <h2 className="text-xl font-semibold text-slate-900">
               {confirmedDateOption.starts_at ? (
-                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} />
+                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} durationNights={data.eventDurationNights} />
               ) : ''}
             </h2>
             <p className="text-sm text-slate-600">{strings.confirmedParticipants}: {data.confirmedCount}</p>
@@ -482,7 +504,7 @@ export function ProjectDateFinder({
             <div className="mt-1 text-sm text-slate-700">
               <span>{strings.finalProjectDate}:</span>
               {confirmedDateOption.starts_at ? (
-                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} className="mt-1" />
+                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} durationNights={data.eventDurationNights} className="mt-1" />
               ) : ''}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -554,6 +576,13 @@ export function ProjectDateFinder({
         </div>
       </div>
 
+      {data.eventDurationNights !== null && (
+        <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm text-indigo-900">
+          <span className="font-medium">{locale === 'lt' ? 'Renginio trukmė' : 'Event duration'}:</span>{' '}
+          {formatEventDuration(data.eventDurationNights, locale)}
+        </div>
+      )}
+
       {presentationState === 'collecting_responses' && !dateActionShown && viewerIsParticipant && !data.viewerTaskComplete && votingOpen && (
         <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
           <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">{strings.priorityTask}</div>
@@ -587,7 +616,7 @@ export function ProjectDateFinder({
               ) : earlyOption ? (
                 <div className="mt-3 rounded-xl border border-indigo-200 bg-white p-4" role="group" aria-labelledby="confirm-final-date-title">
                   <h4 id="confirm-final-date-title" className="font-semibold text-slate-900">{strings.confirmFinalDateTitle}</h4>
-                  <DateOptionHeading displayOption={earlyOption} durationOption={earlyOption} locale={locale} className="mt-1 text-sm font-medium text-slate-800" />
+                  <DateOptionHeading displayOption={earlyOption} durationOption={earlyOption} locale={locale} durationNights={data.eventDurationNights} className="mt-1 text-sm font-medium text-slate-800" />
                   <p className="mt-1 text-sm text-slate-600">{strings.confirmFinalDateHelp}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Button
@@ -637,7 +666,7 @@ export function ProjectDateFinder({
                 {suggestionsOpen && viewerIsParticipant && !suggesting && (
                   <Button type="button" variant="outline" className="mt-4 min-h-11 rounded-full" onClick={() => setSuggesting(true)}><Plus className="mr-2 h-4 w-4" /> {strings.suggestAnother}</Button>
                 )}
-                {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} onDone={() => setSuggesting(false)} /></div>}
+                {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} durationNights={data.eventDurationNights} onDone={() => setSuggesting(false)} /></div>}
                 {!suggestionsOpen && votingOpen && <p className="mt-4 text-sm text-slate-600">{strings.suggestionsClosed}</p>}
               </div>
             </details>
@@ -655,7 +684,7 @@ export function ProjectDateFinder({
           {suggestionsOpen && viewerIsParticipant && !suggesting && (
             <Button type="button" variant="outline" className="mt-4 min-h-11 rounded-full" onClick={() => setSuggesting(true)}><Plus className="mr-2 h-4 w-4" /> {strings.suggestAnother}</Button>
           )}
-          {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} onDone={() => setSuggesting(false)} /></div>}
+          {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} durationNights={data.eventDurationNights} onDone={() => setSuggesting(false)} /></div>}
           {!suggestionsOpen && votingOpen && <p className="mt-4 text-sm text-slate-600">{strings.suggestionsClosed}</p>}
         </>
       )}

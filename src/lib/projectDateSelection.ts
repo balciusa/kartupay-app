@@ -1,3 +1,5 @@
+import { formatNightCount } from './projectEventDuration.ts'
+
 export const DATE_SUGGESTION_CLOSE_HOURS = 24
 export const DEFAULT_CONFIRMATION_WINDOW_HOURS = 48
 
@@ -119,15 +121,6 @@ export function dateRangeNightCount(startsAt: string, endsAt: string | null | un
   return nights
 }
 
-const lithuanianNightUnit = (nights: number) => {
-  const lastTwo = nights % 100
-  if (lastTwo >= 10 && lastTwo <= 20) return 'naktų'
-  const last = nights % 10
-  if (last === 1) return 'naktis'
-  if (last >= 2 && last <= 9) return 'naktys'
-  return 'naktų'
-}
-
 export function formatDateRangeDuration(
   startsAt: string,
   endsAt: string | null | undefined,
@@ -135,8 +128,7 @@ export function formatDateRangeDuration(
 ) {
   const nights = dateRangeNightCount(startsAt, endsAt)
   if (nights === 0) return locale === 'lt' ? '1 diena' : '1 day'
-  if (locale === 'lt') return `${nights} ${lithuanianNightUnit(nights)}`
-  return `${nights} ${nights === 1 ? 'night' : 'nights'}`
+  return formatNightCount(nights, locale)
 }
 
 export function formatProjectDateRange(

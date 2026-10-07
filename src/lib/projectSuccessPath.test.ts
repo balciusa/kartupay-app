@@ -337,6 +337,7 @@ const compileFixture = (source: string) => ts.transpileModule(source, {
 const calendarRovingFocus = await import('./calendarRovingFocus.ts')
 const dateSelection = await import('./projectDateSelection.ts')
 const dateStrings = await import('./projectDateStrings.ts')
+const eventDuration = await import('./projectEventDuration.ts')
 const time24 = await import('./time24.ts')
 const timePickerExports: Record<string, React.ComponentType<Record<string, unknown>>> = {}
 const timePickerRequire = (name: string) => {
@@ -357,11 +358,13 @@ const dateRequire = (name: string) => {
   if (name === 'next/navigation') return { useRouter: () => ({ refresh() {} }) }
   if (name === '@/app/project/[id]/actions') return new Proxy({}, { get: () => () => { throw new Error('Unexpected action invocation') } })
   if (name === '@/components/Project/LeaveProjectButton') return { LeaveProjectButton: () => createElement('button', {}, 'Leave project') }
+  if (name === '@/components/Project/EventDateCandidatePicker') return { EventDateCandidatePicker: () => createElement('div') }
   if (name === '@/components/ui/DateRangePicker') return datePickerExports
   if (name === '@/components/ui/TimePicker24') return timePickerExports
   if (name === '@/components/ui/button') return { Button: ({ variant, asChild, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; asChild?: boolean }) => { void variant; return asChild ? children : createElement('button', props, children) } }
   if (name === '@/lib/projectDateSelection') return dateSelection
   if (name === '@/lib/projectDateStrings') return dateStrings
+  if (name === '@/lib/projectEventDuration') return eventDuration
   return nodeRequire(name)
 }
 new Function('require', 'exports', compileFixture(readFileSync(new URL('../components/Project/ProjectDateFinder.tsx', import.meta.url), 'utf8')))(dateRequire, dateComponentExports)
@@ -375,6 +378,7 @@ const fixedDateFixture = {
   available: true, dateMode: 'fixed', selectionStatus: 'confirmation_open',
   votingDeadlineAt: null, suggestionsCloseAt: null, selectedDateOptionId: 'selected',
   confirmationDeadlineAt: '2099-01-01T00:00:00Z', eventStartAt: '2099-02-01T00:00:00Z', eventEndAt: null,
+  eventDurationNights: null,
   minParticipants: 2, maxParticipants: 10, options: [], respondedCount: 2, memberCount: 3,
   confirmedCount: 2, awaitingCount: 1, cannotAttendCount: 0, missingResponseNames: [], awaitingNames: ['Member'],
   viewerAttendanceStatus: 'confirmed', viewerTaskComplete: true,
@@ -479,7 +483,7 @@ test('Overview: actual page suppresses duplicate priority task when Success Path
   assert.doesNotMatch(html, /Priority task|Still needed|Final date not selected/)
   assert.equal((html.match(/0 of 2 required participants confirmed/g) ?? []).length, 1)
   assert.match(html, /href="#date-availability"/)
-  assert.match(html, /id="date-availability" role="region" aria-label="Choose the dates when you can participate\." tabindex="-1"/)
+  assert.match(html, /id="date-availability" role="region" aria-label="Could you attend if the event starts on this date\?" tabindex="-1"/)
   assert.match(html, /id="date-availability"[\s\S]*<article[\s\S]*>Available<\/button>/)
 })
 

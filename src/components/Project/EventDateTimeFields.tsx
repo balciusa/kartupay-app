@@ -1,10 +1,12 @@
 'use client'
 
 import { useState } from 'react'
-import { Plus, X } from 'lucide-react'
+import { CalendarDays, Plus, X } from 'lucide-react'
 import { DatePickerField } from '@/components/ui/DatePickerField'
 import { TimePicker24 } from '@/components/ui/TimePicker24'
 import type { ProjectDateLocale } from '@/lib/projectDateStrings'
+import { deriveEndDate } from '@/lib/projectEventDuration'
+import { formatDateFieldValue } from '@/lib/dateField'
 
 type EventDateTimeFieldsProps = {
   idPrefix: string
@@ -18,6 +20,8 @@ type EventDateTimeFieldsProps = {
   onEndDateChange: (value: string) => void
   onEndTimeChange: (value: string) => void
   startRequired?: boolean
+  durationBacked?: boolean
+  durationNights?: number | null
   'aria-describedby'?: string
   'aria-invalid'?: boolean
 }
@@ -33,6 +37,7 @@ const labels = {
     endTime: 'End time',
     addEnd: 'End date and time',
     removeEnd: 'Remove end date and time',
+    derivedEnd: 'Derived from the start date and event duration',
   },
   lt: {
     eventStarts: 'Renginio pradžia',
@@ -44,6 +49,7 @@ const labels = {
     endTime: 'Pabaigos laikas',
     addEnd: 'Pabaigos data ir laikas',
     removeEnd: 'Pašalinti pabaigos datą ir laiką',
+    derivedEnd: 'Apskaičiuota pagal pradžios datą ir renginio trukmę',
   },
 } as const
 
@@ -59,11 +65,16 @@ export function EventDateTimeFields({
   onEndDateChange,
   onEndTimeChange,
   startRequired = false,
+  durationBacked = false,
+  durationNights = null,
   'aria-describedby': ariaDescribedBy,
   'aria-invalid': ariaInvalid,
 }: EventDateTimeFieldsProps) {
   const text = labels[locale]
   const [endExpanded, setEndExpanded] = useState(() => Boolean(endDate || endTime))
+  const derivedEndDate = durationBacked && startDate && durationNights !== null
+    ? deriveEndDate(startDate, durationNights)
+    : ''
 
   const removeEnd = () => {
     onEndDateChange('')
@@ -105,7 +116,39 @@ export function EventDateTimeFields({
         </div>
       </section>
 
-      {endExpanded ? (
+      {durationBacked ? (
+        <section className="space-y-2" aria-labelledby={`${idPrefix}-end-heading`}>
+          <h4 id={`${idPrefix}-end-heading`} className="text-sm font-semibold text-slate-900">
+            {text.eventEnds}
+            <span className="ml-1 font-normal text-muted-foreground">({text.optional})</span>
+          </h4>
+          <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="flex min-h-[68px] items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5" data-derived-end-date>
+              <CalendarDays className="h-5 w-5 shrink-0 text-indigo-600" aria-hidden="true" />
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-slate-500">{text.endDate}</div>
+                <div className="truncate text-sm font-semibold text-slate-900">
+                  {derivedEndDate ? formatDateFieldValue(derivedEndDate, locale) : '—'}
+                </div>
+                <div className="sr-only">{text.derivedEnd}</div>
+              </div>
+            </div>
+            <TimePicker24
+              id={`${idPrefix}-end-time`}
+              name="event_end_time"
+              value={endTime}
+              onChange={onEndTimeChange}
+              label={text.endTime}
+              locale={locale}
+              stepMinutes={15}
+              aria-describedby={ariaDescribedBy}
+              aria-invalid={ariaInvalid}
+            />
+          </div>
+          <input type="hidden" name="event_end_date" value={derivedEndDate} />
+          <p className="text-xs text-slate-600">{text.derivedEnd}</p>
+        </section>
+      ) : endExpanded ? (
         <section className="space-y-2" aria-labelledby={`${idPrefix}-end-heading`}>
           <div className="flex items-center justify-between gap-3">
             <h4 id={`${idPrefix}-end-heading`} className="text-sm font-semibold text-slate-900">

@@ -73,6 +73,10 @@ type CalendarMonthProps = {
   startSelectedLabel?: string
   endSelectedLabel?: string
   isDayDisabled?: (date: Date) => boolean
+  selectedDateKeys?: string[]
+  coveredDateKeys?: string[]
+  coverageEndDateKeys?: string[]
+  selectedDayLabel?: string
 }
 
 export function CalendarMonth({
@@ -84,6 +88,10 @@ export function CalendarMonth({
   startSelectedLabel = '',
   endSelectedLabel = '',
   isDayDisabled,
+  selectedDateKeys,
+  coveredDateKeys,
+  coverageEndDateKeys,
+  selectedDayLabel = '',
 }: CalendarMonthProps) {
   const localeName = locale === 'lt' ? 'lt-LT' : 'en-GB'
   const days = calendarDays(month)
@@ -96,7 +104,11 @@ export function CalendarMonth({
       && day.getUTCMonth() === month.getUTCMonth(),
     disabled: isDayDisabled?.(day) ?? false,
   }))
-  const focusIndex = findCalendarRovingFocusIndex(dayStates, selectedStart, todayKey)
+  const selectedKeys = new Set(selectedDateKeys ?? [])
+  const coveredKeys = new Set(coveredDateKeys ?? [])
+  const coverageEndKeys = new Set(coverageEndDateKeys ?? [])
+  const preferredFocusKey = selectedStart || selectedDateKeys?.find(key => dayStates.some(day => day.key === key)) || ''
+  const focusIndex = findCalendarRovingFocusIndex(dayStates, preferredFocusKey, todayKey)
 
   const moveFocus = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (!isCalendarNavigationKey(event.key)) return
@@ -125,7 +137,8 @@ export function CalendarMonth({
         {days.map((day, index) => {
           const { key, disabled } = dayStates[index]
           const timestamp = day.getTime()
-          const isStart = key === selectedStart
+          const isCandidateStart = selectedKeys.has(key)
+          const isStart = key === selectedStart || isCandidateStart
           const isEnd = key === selectedEnd
           const isInRange = startTimestamp !== null && endTimestamp !== null
             && timestamp >= startTimestamp && timestamp <= endTimestamp
@@ -133,7 +146,11 @@ export function CalendarMonth({
           const fullLabel = new Intl.DateTimeFormat(localeName, {
             weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC',
           }).format(day)
-          const selectionLabel = isStart && startSelectedLabel
+          const isCovered = coveredKeys.has(key) && !isCandidateStart
+          const isCoverageEnd = coverageEndKeys.has(key) && !isCandidateStart
+          const selectionLabel = isCandidateStart && selectedDayLabel
+            ? `, ${selectedDayLabel}`
+            : isStart && startSelectedLabel
             ? `, ${startSelectedLabel}`
             : isEnd && endSelectedLabel ? `, ${endSelectedLabel}` : ''
           return (
@@ -142,18 +159,20 @@ export function CalendarMonth({
                 type="button"
                 aria-label={`${fullLabel}${selectionLabel}`}
                 aria-current={key === todayKey ? 'date' : undefined}
+                aria-pressed={selectedDateKeys ? isCandidateStart : undefined}
+                data-date-key={key}
                 data-calendar-index={index}
                 tabIndex={getCalendarDayTabIndex(dayStates, index, focusIndex)}
                 disabled={disabled}
                 className={`relative flex min-h-11 w-full min-w-0 items-center justify-center text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 ${
                   isStart || isEnd
                     ? 'z-10 rounded-full bg-indigo-600 text-white ring-2 ring-indigo-200'
-                    : isInRange
+                    : isInRange || isCovered
                       ? 'bg-indigo-100 text-indigo-900'
                       : inCurrentMonth
                         ? 'rounded-full text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent'
                         : 'rounded-full text-slate-400 hover:bg-slate-50'
-                } ${key === todayKey && !isStart && !isEnd ? 'underline decoration-2 underline-offset-4' : ''}`}
+                } ${isCoverageEnd ? 'rounded-r-full ring-1 ring-inset ring-indigo-200' : ''} ${key === todayKey && !isStart && !isEnd ? 'underline decoration-2 underline-offset-4' : ''}`}
                 onKeyDown={event => moveFocus(event, index)}
                 onClick={() => onSelect(day)}
               >

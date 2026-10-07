@@ -162,8 +162,8 @@ test('TimePicker24 source provides scroll-to-selection and complete keyboard beh
 
 test('all Event and Transport surfaces use the shared component family with correct steps', () => {
   const eventFields = readFileSync(join(root, 'src/components/Project/EventDateTimeFields.tsx'), 'utf8')
-  assert.equal((eventFields.match(/<TimePicker24/g) ?? []).length, 2)
-  assert.equal((eventFields.match(/stepMinutes=\{15\}/g) ?? []).length, 2)
+  assert.equal((eventFields.match(/<TimePicker24/g) ?? []).length, 3)
+  assert.equal((eventFields.match(/stepMinutes=\{15\}/g) ?? []).length, 3)
   assert.match(eventFields, /name="event_start_time"/)
   assert.match(eventFields, /name="event_end_time"/)
   assert.match(eventFields, /onEndDateChange\(''\)[\s\S]*onEndTimeChange\(''\)/)

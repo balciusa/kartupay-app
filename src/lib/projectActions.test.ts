@@ -10,6 +10,7 @@ import * as joinRequests from './projectJoinRequests.ts'
 import * as statusUi from './projectStatusUi.ts'
 import * as projectInvite from './projectInvite.ts'
 import * as dateSelection from './projectDateSelection.ts'
+import * as eventDuration from './projectEventDuration.ts'
 
 type Row = Record<string, unknown>
 type Tables = Record<string, Row[]>
@@ -28,7 +29,7 @@ const adminPanelCode = compile('../components/Project/AdminPanel.tsx')
 
 function fixture() {
   const tables: Tables = {
-    projects: [{ id: 'project', status: 'pending', canceled_at: null, aborted_at: null, is_public: true, finance_mode: 'none', collector_participant_id: 'collector', date_mode: 'selecting', date_selection_status: 'open', date_voting_deadline_at: '2099-10-01T00:00:00.000Z', selected_date_option_id: null }],
+    projects: [{ id: 'project', status: 'pending', canceled_at: null, aborted_at: null, is_public: true, finance_mode: 'none', collector_participant_id: 'collector', date_mode: 'selecting', date_selection_status: 'open', date_voting_deadline_at: '2099-10-01T00:00:00.000Z', selected_date_option_id: null, event_duration_nights: null }],
     participants: [{ id: 'me', project_id: 'project', user_id: 'user', role: 'member', left_at: null }],
     polls: [{ id: 'poll', project_id: 'project', created_by: 'user', title: 'Original' }],
     poll_options: [
@@ -147,6 +148,7 @@ function fixture() {
     '@/lib/projectTransportServer': { cleanupParticipantTransport: async () => true },
     '@/lib/projectStatusUi': statusUi,
     '@/lib/projectDateSelection': dateSelection,
+    '@/lib/projectEventDuration': eventDuration,
     '@/lib/projectDateService': {
       applySelectedProjectDate: async (projectId: string, optionId: string, actor: { actorUserId: string; actorParticipantId: string }) => {
         appliedDateSelections.push({ projectId, optionId, ...actor })
@@ -288,6 +290,127 @@ function earlyDateFixture() {
   ]
   return f
 }
+
+test('duration-backed suggestions derive the authoritative end and ignore a submitted end', async () => {
+  for (const [duration, expectedEnd] of [
+    [0, null],
+    [2, '2099-06-03T00:00:00.000Z'],
+  ] as const) {
+    const f = fixture()
+    f.tables.projects[0].event_duration_nights = duration
+    const data = new FormData()
+    data.set('start_date', '2099-06-01')
+    data.set('ends_at', '2099-12-31T00:00:00.000Z')
+
+    await f.actions.suggestProjectDateOption('project', data)
+
+    const option = f.tables.project_date_options[0]
+    assert.equal(option.starts_at, '2099-06-01T00:00:00.000Z')
+    assert.equal(option.ends_at, expectedEnd)
+    assert.equal(option.created_by_user_id, 'user')
+  }
+})
+
+test('duration-backed suggestions reject a duplicate start regardless of a submitted end', async () => {
+  const f = fixture()
+  f.tables.projects[0].event_duration_nights = 2
+  f.tables.project_date_options.push({
+    id: 'existing',
+    project_id: 'project',
+    starts_at: '2099-06-01T00:00:00.000Z',
+    ends_at: '2099-06-03T00:00:00.000Z',
+    status: 'active',
+  })
+  const data = new FormData()
+  data.set('start_date', '2099-06-01')
+  data.set('ends_at', '2099-12-31T00:00:00.000Z')
+
+  await assert.rejects(f.actions.suggestProjectDateOption('project', data), /already been suggested/)
+  assert.equal(f.tables.project_date_options.length, 1)
+})
+
+test('legacy suggestions preserve submitted ranges when the duration column is unavailable', async () => {
+  const f = fixture()
+  f.missingColumns.add('projects.event_duration_nights')
+  const data = new FormData()
+  data.set('starts_at', '2099-06-01T00:00:00.000Z')
+  data.set('ends_at', '2099-06-05T00:00:00.000Z')
+
+  await f.actions.suggestProjectDateOption('project', data)
+
+  const option = f.tables.project_date_options[0]
+  assert.equal(option.starts_at, '2099-06-01T00:00:00.000Z')
+  assert.equal(option.ends_at, '2099-06-05T00:00:00.000Z')
+})
+
+const projectSettingsForm = (overrides: Record<string, string> = {}) => {
+  const data = new FormData()
+  for (const [key, value] of Object.entries({
+    project_title: 'Updated project',
+    finance_mode: 'none',
+    visibility: 'public',
+    event_duration_nights: '2',
+    event_start_date: '2099-10-10',
+    event_start_time: '17:00',
+    event_end_date: '2099-12-31',
+    event_end_time: '18:00',
+    ...overrides,
+  })) data.set(key, value)
+  return data
+}
+
+test('fixed settings rederive the end when duration changes and ignore the submitted end date', async () => {
+  const f = fixture()
+  Object.assign(f.tables.projects[0], {
+    collector_participant_id: 'me',
+    date_mode: 'fixed',
+    finance_mode: 'none',
+    event_duration_nights: 2,
+    event_start_at: '2099-10-10T17:00:00.000Z',
+    event_end_at: '2099-10-12T18:00:00.000Z',
+  })
+  const data = projectSettingsForm({ event_duration_nights: '4' })
+
+  await f.actions.updateProjectSettings('project', data)
+
+  assert.equal(f.tables.projects[0].event_duration_nights, 4)
+  assert.equal(f.tables.projects[0].event_start_at, new Date('2099-10-10T17:00').toISOString())
+  assert.equal(f.tables.projects[0].event_end_at, new Date('2099-10-14T18:00').toISOString())
+})
+
+test('selecting settings block duration mutation without rewriting options or responses', async () => {
+  const f = fixture()
+  Object.assign(f.tables.projects[0], {
+    collector_participant_id: 'me',
+    event_duration_nights: 2,
+  })
+  f.tables.project_date_options.push({ id: 'date', project_id: 'project', starts_at: '2099-10-10T00:00:00.000Z', ends_at: '2099-10-12T00:00:00.000Z', status: 'active' })
+  f.tables.project_date_responses.push({ project_id: 'project', date_option_id: 'date', user_id: 'user', availability: 'available', is_preferred: true })
+
+  await assert.rejects(
+    f.actions.updateProjectSettings('project', projectSettingsForm({ event_duration_nights: '4' })),
+    /cannot be changed/
+  )
+
+  assert.equal(f.tables.projects[0].event_duration_nights, 2)
+  assert.equal(f.tables.project_date_options[0].ends_at, '2099-10-12T00:00:00.000Z')
+  assert.equal(f.tables.project_date_responses.length, 1)
+})
+
+test('legacy settings keep organizer-controlled end dates when duration is null', async () => {
+  const f = fixture()
+  Object.assign(f.tables.projects[0], {
+    collector_participant_id: 'me',
+    date_mode: 'fixed',
+    finance_mode: 'none',
+    event_duration_nights: null,
+  })
+
+  await f.actions.updateProjectSettings('project', projectSettingsForm({ event_duration_nights: '' }))
+
+  assert.equal(f.tables.projects[0].event_duration_nights, null)
+  assert.equal(f.tables.projects[0].event_end_at, new Date('2099-12-31T18:00').toISOString())
+})
 
 test('early finalization selects any active project option through the existing apply flow', async () => {
   for (const optionId of ['date-a', 'date-b']) {
