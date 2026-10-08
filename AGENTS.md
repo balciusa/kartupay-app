@@ -7,14 +7,14 @@
 - Prefer existing helpers, naming, and English/Lithuanian strings. Inspect nearby code and tests before changing behavior. The root README is scaffold text; use the current code and `package.json` as the source of truth for paths and commands.
 
 ## Product invariants
-- Revalidate dependent fields immediately when an upstream input changes. Clear, recalculate, or visibly flag stale dates, times, prices, availability, and submit state before the user can save an inconsistent form.
+- Revalidate dependent fields immediately when an upstream input changes. Automatically recalculate deterministic values; preserve invalid user selections, show immediate inline validation, and block invalid submission. Never silently delete, reset, or replace ambiguous user selections.
 - Date Finder supports fixed dates and Choose Together selection. Keep candidate dates, votes, deadlines, finalization, and participant confirmations consistent; only authorized roles may mutate each stage.
 - A new project's event duration is one whole number of nights from 0 through 365. For duration-backed date options, users select start dates; derive ends from the project duration using UTC calendar days. Zero nights means same day and a null option end. Do not derive night counts from timezone-adjusted display timestamps.
 - Preserve legacy projects with `event_duration_nights = NULL` and their existing date-range semantics. Once a project has date-option history, do not change its duration or reinterpret existing votes. Date Finder controls the final date for selecting projects; settings must not override it.
 - Check both client behavior and server validation for changes to these rules. Keep the database constraints and triggers aligned.
 
 ## Security and authorization
-- Private projects must stay out of public discovery. A direct URL, invite, or client-side hidden control is not authorization. Check the authenticated user's current project membership and role on every protected server read and mutation; scope data to the project and use the least privilege required.
+- Private projects must stay out of public discovery. Private invitation links do not grant membership: join requests require organizer approval; finance collector privileges alone cannot approve them. Former members must request access again. Recheck capacity and authorization at approval. Check the authenticated user's current project membership and role on every protected server read and mutation; scope data to the project and use the least privilege required.
 - The Supabase service-role client bypasses RLS. Any code using it must make explicit authorization checks before reading or writing user or project data. Review RLS and SQL functions for cross-project access and role escalation. Keep service-role keys, tokens, and sensitive data out of client bundles, logs, fixtures, and PRs.
 - Treat authentication, authorization, finances, RLS, migrations, and sensitive data as HIGH risk even for a small diff.
 
