@@ -11,6 +11,7 @@ import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
 import {
   candidateStartsAfterVotingDeadline,
   earliestCandidateStartDate,
+  isVotingDeadlineMoreThan24HoursAway,
   validateEventDurationNights,
 } from '@/lib/projectEventDuration'
 import type { ProjectDateLocale } from '@/lib/projectDateStrings'
@@ -153,10 +154,13 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   }
   const deadlineFutureError = (() => {
     if (dateMode !== 'selecting' || !votingDeadlineDate) return null
-    const deadline = new Date(`${votingDeadlineDate}T23:59:00`)
-    return Number.isNaN(deadline.getTime()) || deadline.getTime() <= deadlineValidationNow + 24 * 60 * 60 * 1000
-      ? text.deadlineFuture
-      : null
+    try {
+      return isVotingDeadlineMoreThan24HoursAway(votingDeadlineDate, deadlineValidationNow)
+        ? null
+        : text.deadlineFuture
+    } catch {
+      return text.deadlineFuture
+    }
   })()
   const invalidCandidateStarts = dateMode === 'selecting' && votingDeadlineDate
     ? dateOptionStarts.filter(start => {
@@ -366,6 +370,15 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
     } else if (value('date_mode') === 'selecting') {
       if (!value('date_voting_deadline_date')) {
         fail('date', 'Choose a date voting deadline')
+        return
+      }
+      try {
+        if (!isVotingDeadlineMoreThan24HoursAway(value('date_voting_deadline_date'))) {
+          fail('date', text.deadlineFuture)
+          return
+        }
+      } catch {
+        fail('date', text.deadlineFuture)
         return
       }
       const starts = data.getAll('date_option_start_date')

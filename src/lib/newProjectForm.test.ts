@@ -89,6 +89,9 @@ test('server independently validates modes, participants, dates, deadline and du
     await assert.rejects(f.actions.createProjectWithState({ error: null }, data), (e: unknown) => String((e as { digest: string }).digest).includes('NEXT_REDIRECT;replace;/project/test-projects;'))
     assert.equal(f.writes[0].values.date_mode, mode)
     assert.equal(f.writes[0].values.event_duration_nights, 2)
+    if (mode === 'selecting') {
+      assert.equal(f.writes[0].values.date_voting_deadline_at, '2099-05-01T23:59:00.000Z')
+    }
   }
 })
 

@@ -9,7 +9,9 @@ import {
   deriveEndDate,
   earliestCandidateStartDate,
   formatEventDuration,
+  isVotingDeadlineMoreThan24HoursAway,
   validateEventDurationNights,
+  votingDeadlineTimestampUtc,
 } from './projectEventDuration.ts'
 
 test('candidate starts must be strictly after the voting deadline calendar date', () => {
@@ -53,6 +55,24 @@ test('deadline eligibility is identical in UTC and Europe/Vilnius', () => {
       assert.equal(earliestCandidateStartDate('2026-10-24'), '2026-10-25')
       assert.equal(candidateStartsAfterVotingDeadline('2026-10-16', '2026-10-15'), true)
       assert.equal(candidateStartsAfterVotingDeadline('2026-10-15', '2026-10-15'), false)
+    }
+  } finally {
+    if (originalTimezone === undefined) delete process.env.TZ
+    else process.env.TZ = originalTimezone
+  }
+})
+
+test('voting deadline uses 23:59 UTC and preserves the strict 24-hour boundary in every runtime timezone', () => {
+  const originalTimezone = process.env.TZ
+  const deadlineDate = '2026-03-29'
+  const exactBoundary = Date.parse('2026-03-28T23:59:00.000Z')
+  try {
+    for (const timezone of ['UTC', 'Europe/Vilnius']) {
+      process.env.TZ = timezone
+      assert.equal(votingDeadlineTimestampUtc(deadlineDate), '2026-03-29T23:59:00.000Z')
+      assert.equal(isVotingDeadlineMoreThan24HoursAway(deadlineDate, exactBoundary), false)
+      assert.equal(isVotingDeadlineMoreThan24HoursAway(deadlineDate, exactBoundary - 1), true)
+      assert.equal(isVotingDeadlineMoreThan24HoursAway(deadlineDate, exactBoundary + 1), false)
     }
   } finally {
     if (originalTimezone === undefined) delete process.env.TZ

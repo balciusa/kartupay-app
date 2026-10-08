@@ -10,7 +10,9 @@ import {
   calendarDateKeyFromTimestamp,
   deriveDateOptionFromStart,
   deriveEndDate,
+  isVotingDeadlineMoreThan24HoursAway,
   validateEventDurationNights,
+  votingDeadlineTimestampUtc,
 } from '@/lib/projectEventDuration'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { validateProjectFinanceInput } from '@/lib/projectFinance'
@@ -207,13 +209,14 @@ export async function createProject(formData: FormData) {
   if (eventStartAt && eventEndAt && new Date(eventEndAt) <= new Date(eventStartAt)) {
     throw new Error('Event end must be after event start')
   }
-  const votingDeadlineAt = date_mode === 'selecting'
-    ? parseEventDateTime(date_voting_deadline_date, null, '23:59')
+  const votingDeadlineDate = (date_voting_deadline_date ?? '').trim()
+  const votingDeadlineAt = date_mode === 'selecting' && votingDeadlineDate
+    ? votingDeadlineTimestampUtc(votingDeadlineDate)
     : null
   if (date_mode === 'selecting' && !votingDeadlineAt) {
     throw new Error('Choose a date voting deadline')
   }
-  if (votingDeadlineAt && new Date(votingDeadlineAt).getTime() <= Date.now() + 24 * 60 * 60 * 1000) {
+  if (votingDeadlineAt && !isVotingDeadlineMoreThan24HoursAway(votingDeadlineDate)) {
     throw new Error('Date voting deadline must be more than 24 hours from now')
   }
   const suggestionsCloseAt = votingDeadlineAt
@@ -239,9 +242,9 @@ export async function createProject(formData: FormData) {
     throw new Error('The same date option was added more than once')
   }
   if (votingDeadlineAt) {
-    const votingDeadlineDate = calendarDateKeyFromTimestamp(votingDeadlineAt)
+    const canonicalVotingDeadlineDate = calendarDateKeyFromTimestamp(votingDeadlineAt)
     initialDateOptionStarts.forEach(startDate => {
-      assertCandidateStartsAfterVotingDeadline(startDate, votingDeadlineDate)
+      assertCandidateStartsAfterVotingDeadline(startDate, canonicalVotingDeadlineDate)
     })
   }
 

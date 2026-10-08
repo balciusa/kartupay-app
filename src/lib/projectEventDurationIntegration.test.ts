@@ -130,3 +130,14 @@ test('dependent deadline UI preserves invalid candidates, reports them, and bloc
   assert.match(candidate, /role="alert"/)
   assert.doesNotMatch(candidate, /onChange\(value\.filter\(candidate => candidate < min/)
 })
+
+test('client and server share the explicit UTC voting deadline convention without changing fixed dates', () => {
+  const form = source('src/components/Project/NewProjectForm.tsx')
+  const creation = source('src/app/project/new/actions.ts')
+
+  assert.match(form, /isVotingDeadlineMoreThan24HoursAway\(votingDeadlineDate, deadlineValidationNow\)/)
+  assert.doesNotMatch(form, /new Date\(`\$\{votingDeadlineDate\}T23:59:00`\)/)
+  assert.match(creation, /votingDeadlineTimestampUtc\(votingDeadlineDate\)/)
+  assert.match(creation, /isVotingDeadlineMoreThan24HoursAway\(votingDeadlineDate\)/)
+  assert.match(creation, /date_mode === 'fixed' \? parseEventDateTime\(event_start_date, event_start_time, '09:00'\) : null/)
+})
