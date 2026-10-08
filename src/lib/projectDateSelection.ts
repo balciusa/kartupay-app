@@ -176,18 +176,23 @@ export function formatCandidateDateRange(
 export function formatConfirmedEventDateRange(
   startsAt: string,
   endsAt: string | null | undefined,
-  locale: 'en' | 'lt'
+  locale: 'en' | 'lt',
+  timeState: { startHasTime: boolean; endHasTime: boolean } = { startHasTime: true, endHasTime: true }
 ) {
   const localeName = locale === 'lt' ? 'lt-LT' : 'en-GB'
-  const formatValue = (value: string) => {
+  const formatValue = (value: string, includeTime: boolean) => {
     const date = new Date(value)
     if (Number.isNaN(date.getTime())) throw new Error('Invalid date')
     return new Intl.DateTimeFormat(localeName, {
-      month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      timeZone: 'UTC',
+      ...(includeTime ? { hour: '2-digit', minute: '2-digit', hour12: false } : {}),
     }).format(date)
   }
-  const start = formatValue(startsAt)
-  return endsAt ? `${start} – ${formatValue(endsAt)}` : start
+  const start = formatValue(startsAt, timeState.startHasTime)
+  return endsAt ? `${start} – ${formatValue(endsAt, timeState.endHasTime)}` : start
 }
 
 const dateOnlyToIso = (value: string, label: string) => {

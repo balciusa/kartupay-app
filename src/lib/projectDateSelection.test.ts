@@ -39,6 +39,15 @@ test('duration-backed candidate formatting is date-only while confirmed midnight
   )
   assert.match(formatConfirmedEventDateRange('2026-10-09T17:00:00Z', null, 'en'), /17:00/)
   assert.match(formatConfirmedEventDateRange('2026-10-09T00:00:00Z', null, 'en'), /00:00/)
+  const startOnlyTime = formatConfirmedEventDateRange(
+    '2026-10-09T17:00:00Z',
+    '2026-10-11T00:00:00Z',
+    'en',
+    { startHasTime: true, endHasTime: false }
+  )
+  assert.match(startOnlyTime, /9 Oct 2026, 17:00/)
+  assert.match(startOnlyTime, /11 Oct 2026/)
+  assert.doesNotMatch(startOnlyTime, /11 Oct 2026, 00:00/)
 })
 
 const options: DateOptionLike[] = [

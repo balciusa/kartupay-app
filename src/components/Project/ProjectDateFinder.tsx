@@ -63,9 +63,13 @@ const formatDateOption = (
   option: Pick<ProjectDateFinderOption, 'starts_at' | 'ends_at'>,
   locale: ProjectDateLocale,
   dateOnly: boolean,
-  confirmedTime: boolean
-) => confirmedTime
-  ? formatConfirmedEventDateRange(option.starts_at, option.ends_at, locale)
+  confirmedStartTime: boolean,
+  confirmedEndTime: boolean
+) => confirmedStartTime || confirmedEndTime
+  ? formatConfirmedEventDateRange(option.starts_at, option.ends_at, locale, {
+      startHasTime: confirmedStartTime,
+      endHasTime: confirmedEndTime,
+    })
   : dateOnly
     ? formatCandidateDateRange(option.starts_at, option.ends_at, locale)
     : formatProjectDateRange(option.starts_at, option.ends_at, locale)
@@ -76,7 +80,8 @@ function DateOptionHeading({
   locale,
   durationNights,
   dateOnly = false,
-  confirmedTime = false,
+  confirmedStartTime = false,
+  confirmedEndTime = false,
   className = '',
 }: {
   displayOption: Pick<ProjectDateFinderOption, 'starts_at' | 'ends_at'>
@@ -84,12 +89,13 @@ function DateOptionHeading({
   locale: ProjectDateLocale
   durationNights?: number | null
   dateOnly?: boolean
-  confirmedTime?: boolean
+  confirmedStartTime?: boolean
+  confirmedEndTime?: boolean
   className?: string
 }) {
   return (
     <span className={className}>
-      <span className="block">{formatDateOption(displayOption, locale, dateOnly, confirmedTime)}</span>
+      <span className="block">{formatDateOption(displayOption, locale, dateOnly, confirmedStartTime, confirmedEndTime)}</span>
       {durationOption && (
         <span className="mt-0.5 block text-sm font-medium text-indigo-700">
           {durationNights !== null && durationNights !== undefined
@@ -407,6 +413,7 @@ export function ProjectDateFinder({
       ends_at: data.eventEndAt ?? selectedOption?.ends_at ?? null,
     }
     const hasProjectTime = !!data.eventStartAt && !isDateOnlyTimestamp(data.eventStartAt)
+    const hasProjectEndTime = !!data.eventEndAt && !isDateOnlyTimestamp(data.eventEndAt)
     return (
       <section data-date-state={presentationState} className="rounded-2xl border border-emerald-200 bg-white p-4 shadow-sm md:p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -416,7 +423,7 @@ export function ProjectDateFinder({
             </div>
             <h2 className="text-xl font-semibold text-slate-900">
               {confirmedDateOption.starts_at ? (
-                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} durationNights={data.eventDurationNights} confirmedTime={hasProjectTime} />
+                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} durationNights={data.eventDurationNights} confirmedStartTime={hasProjectTime} confirmedEndTime={hasProjectEndTime} />
               ) : ''}
             </h2>
             <p className="text-sm text-slate-600">{strings.confirmedParticipants}: {data.confirmedCount}</p>
@@ -547,7 +554,7 @@ export function ProjectDateFinder({
             <div className="mt-1 text-sm text-slate-700">
               <span>{strings.finalProjectDate}:</span>
               {confirmedDateOption.starts_at ? (
-                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} durationNights={data.eventDurationNights} confirmedTime={hasProjectTime} className="mt-1" />
+                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} durationNights={data.eventDurationNights} confirmedStartTime={hasProjectTime} confirmedEndTime={hasProjectEndTime} className="mt-1" />
               ) : ''}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
