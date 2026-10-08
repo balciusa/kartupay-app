@@ -29,7 +29,7 @@ const adminPanelCode = compile('../components/Project/AdminPanel.tsx')
 
 function fixture() {
   const tables: Tables = {
-    projects: [{ id: 'project', status: 'pending', canceled_at: null, aborted_at: null, is_public: true, finance_mode: 'none', collector_participant_id: 'collector', date_mode: 'selecting', date_selection_status: 'open', date_voting_deadline_at: '2099-10-01T00:00:00.000Z', selected_date_option_id: null, event_duration_nights: null }],
+    projects: [{ id: 'project', status: 'pending', canceled_at: null, aborted_at: null, is_public: true, finance_mode: 'none', collector_participant_id: 'collector', date_mode: 'selecting', date_selection_status: 'open', date_voting_deadline_at: '2099-05-01T00:00:00.000Z', selected_date_option_id: null, event_duration_nights: null }],
     participants: [{ id: 'me', project_id: 'project', user_id: 'user', role: 'member', left_at: null }],
     polls: [{ id: 'poll', project_id: 'project', created_by: 'user', title: 'Original' }],
     poll_options: [
@@ -327,6 +327,30 @@ test('duration-backed suggestions reject a duplicate start regardless of a submi
 
   await assert.rejects(f.actions.suggestProjectDateOption('project', data), /already been suggested/)
   assert.equal(f.tables.project_date_options.length, 1)
+})
+
+test('duration-backed suggestions reject starts on or before the voting deadline', async () => {
+  for (const candidate of ['2099-06-14', '2099-06-15']) {
+    const f = fixture()
+    f.tables.projects[0].event_duration_nights = 2
+    f.tables.projects[0].date_voting_deadline_at = '2099-06-15T23:59:00.000Z'
+    const data = new FormData()
+    data.set('start_date', candidate)
+
+    await assert.rejects(
+      f.actions.suggestProjectDateOption('project', data),
+      /must start after voting deadline date/
+    )
+    assert.equal(f.tables.project_date_options.length, 0)
+  }
+
+  const allowed = fixture()
+  allowed.tables.projects[0].event_duration_nights = 2
+  allowed.tables.projects[0].date_voting_deadline_at = '2099-06-15T23:59:00.000Z'
+  const data = new FormData()
+  data.set('start_date', '2099-06-16')
+  await allowed.actions.suggestProjectDateOption('project', data)
+  assert.equal(allowed.tables.project_date_options[0].starts_at, '2099-06-16T00:00:00.000Z')
 })
 
 test('legacy suggestions preserve submitted ranges when the duration column is unavailable', async () => {

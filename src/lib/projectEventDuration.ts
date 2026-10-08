@@ -12,6 +12,31 @@ const parseDateOnly = (value: string) => {
   return date
 }
 
+export const DATE_OPTION_AFTER_DEADLINE_ERROR = 'Date option must start after voting deadline date'
+
+/** Returns the UTC calendar date carried by a stored timestamp. */
+export function calendarDateKeyFromTimestamp(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) throw new Error('Invalid voting deadline')
+  return date.toISOString().slice(0, 10)
+}
+
+export function earliestCandidateStartDate(votingDeadlineDate: string) {
+  return deriveEndDate(votingDeadlineDate, 1)
+}
+
+export function candidateStartsAfterVotingDeadline(startDate: string, votingDeadlineDate: string) {
+  const startKey = parseDateOnly(startDate).toISOString().slice(0, 10)
+  const deadlineKey = parseDateOnly(votingDeadlineDate).toISOString().slice(0, 10)
+  return startKey > deadlineKey
+}
+
+export function assertCandidateStartsAfterVotingDeadline(startDate: string, votingDeadlineDate: string) {
+  if (!candidateStartsAfterVotingDeadline(startDate, votingDeadlineDate)) {
+    throw new Error(DATE_OPTION_AFTER_DEADLINE_ERROR)
+  }
+}
+
 export function validateEventDurationNights(value: unknown) {
   const parsed = typeof value === 'number'
     ? value

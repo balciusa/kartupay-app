@@ -13,6 +13,8 @@ import {
   deriveProjectDatePresentationState,
   financeReadiness,
   formatDateRangeDuration,
+  formatCandidateDateRange,
+  formatConfirmedEventDateRange,
   formatProjectDateRange,
   fullyRespondedDateParticipantIds,
   haveAllActiveParticipantsResponded,
@@ -25,6 +27,19 @@ import {
   type DateOptionLike,
   type DateResponseLike,
 } from './projectDateSelection.ts'
+
+test('duration-backed candidate formatting is date-only while confirmed midnight remains explicit', () => {
+  assert.equal(
+    formatCandidateDateRange('2026-10-09T00:00:00Z', '2026-10-11T00:00:00.000Z', 'en'),
+    '9 Oct 2026 – 11 Oct 2026'
+  )
+  assert.equal(
+    formatCandidateDateRange('2026-10-09T00:00:00+00:00', null, 'en'),
+    '9 Oct 2026'
+  )
+  assert.match(formatConfirmedEventDateRange('2026-10-09T17:00:00Z', null, 'en'), /17:00/)
+  assert.match(formatConfirmedEventDateRange('2026-10-09T00:00:00Z', null, 'en'), /00:00/)
+})
 
 const options: DateOptionLike[] = [
   { id: 'a', starts_at: '2026-10-01T10:00:00.000Z', ends_at: null, status: 'active', created_by_user_id: 'u1' },

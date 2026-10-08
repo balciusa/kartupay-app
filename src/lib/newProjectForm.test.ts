@@ -92,6 +92,21 @@ test('server independently validates modes, participants, dates, deadline and du
   }
 })
 
+test('forged candidate on or before the voting deadline is rejected before any project write', async () => {
+  for (const candidate of ['2099-05-09', '2099-05-15']) {
+    const f = fixture()
+    const data = form()
+    data.set('date_voting_deadline_date', '2099-05-15')
+    data.set('date_option_start_date', candidate)
+
+    assert.equal(
+      (await f.actions.createProjectWithState({ error: null }, data)).error,
+      'Date option must start after voting deadline date'
+    )
+    assert.equal(f.writes.length, 0)
+  }
+})
+
 test('new project persists the transport checkbox as an explicit boolean', async () => {
   for (const enabled of [true, false]) {
     const f = fixture()
