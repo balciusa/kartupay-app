@@ -89,6 +89,24 @@ test('server independently validates modes, participants, dates, deadline and du
     await assert.rejects(f.actions.createProjectWithState({ error: null }, data), (e: unknown) => String((e as { digest: string }).digest).includes('NEXT_REDIRECT;replace;/project/test-projects;'))
     assert.equal(f.writes[0].values.date_mode, mode)
     assert.equal(f.writes[0].values.event_duration_nights, 2)
+    if (mode === 'selecting') {
+      assert.equal(f.writes[0].values.date_voting_deadline_at, '2099-05-01T23:59:00.000Z')
+    }
+  }
+})
+
+test('forged candidate on or before the voting deadline is rejected before any project write', async () => {
+  for (const candidate of ['2099-05-09', '2099-05-15']) {
+    const f = fixture()
+    const data = form()
+    data.set('date_voting_deadline_date', '2099-05-15')
+    data.set('date_option_start_date', candidate)
+
+    assert.equal(
+      (await f.actions.createProjectWithState({ error: null }, data)).error,
+      'Date option must start after voting deadline date'
+    )
+    assert.equal(f.writes.length, 0)
   }
 })
 

@@ -164,13 +164,13 @@ export function CalendarMonth({
                 data-calendar-index={index}
                 tabIndex={getCalendarDayTabIndex(dayStates, index, focusIndex)}
                 disabled={disabled}
-                className={`relative flex min-h-11 w-full min-w-0 items-center justify-center text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 ${
+                className={`relative flex min-h-11 w-full min-w-0 items-center justify-center text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent ${
                   isStart || isEnd
                     ? 'z-10 rounded-full bg-indigo-600 text-white ring-2 ring-indigo-200'
                     : isInRange || isCovered
                       ? 'bg-indigo-100 text-indigo-900'
                       : inCurrentMonth
-                        ? 'rounded-full text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent'
+                        ? 'rounded-full text-slate-800 hover:bg-slate-100'
                         : 'rounded-full text-slate-400 hover:bg-slate-50'
                 } ${isCoverageEnd ? 'rounded-r-full ring-1 ring-inset ring-indigo-200' : ''} ${key === todayKey && !isStart && !isEnd ? 'underline decoration-2 underline-offset-4' : ''}`}
                 onKeyDown={event => moveFocus(event, index)}

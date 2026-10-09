@@ -25,7 +25,13 @@ import {
   type ParticipantAttendanceStatus,
 } from '@/lib/projectDateSelection'
 import { applyEarlySelectedProjectDate, applySelectedProjectDate, syncProjectDateSelection } from '@/lib/projectDateService'
-import { deriveDateOptionFromStart, deriveEndDate, validateEventDurationNights } from '@/lib/projectEventDuration'
+import {
+  assertCandidateStartsAfterVotingDeadline,
+  calendarDateKeyFromTimestamp,
+  deriveDateOptionFromStart,
+  deriveEndDate,
+  validateEventDurationNights,
+} from '@/lib/projectEventDuration'
 import {
   DATE_CONFIRMATION_NOTIFICATION_TYPES,
   enqueueJoinRequestNotifications,
@@ -3197,6 +3203,13 @@ export async function suggestProjectDateOption(projectId: string, formData: Form
   const endsAtRaw = String(formData.get('ends_at') ?? '').trim()
   if (durationBacked && !startDateRaw) throw new Error('Choose a start date')
   if (!durationBacked && !startsAtRaw) throw new Error('Choose a start date')
+  if (durationBacked) {
+    if (!project.date_voting_deadline_at) throw new Error('Date voting deadline is required')
+    assertCandidateStartsAfterVotingDeadline(
+      startDateRaw,
+      calendarDateKeyFromTimestamp(project.date_voting_deadline_at)
+    )
+  }
   const normalized = durationBacked
     ? deriveDateOptionFromStart(startDateRaw, project.event_duration_nights)
     : normalizeDateOption(startsAtRaw, endsAtRaw || null)

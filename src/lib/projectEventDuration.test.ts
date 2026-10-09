@@ -1,12 +1,31 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  assertCandidateStartsAfterVotingDeadline,
+  calendarDateKeyFromTimestamp,
+  candidateStartsAfterVotingDeadline,
   deriveDateOptionFromStart,
   deriveCandidateDateKeys,
   deriveEndDate,
+  earliestCandidateStartDate,
   formatEventDuration,
+  isVotingDeadlineMoreThan24HoursAway,
   validateEventDurationNights,
+  votingDeadlineTimestampUtc,
 } from './projectEventDuration.ts'
+
+test('candidate starts must be strictly after the voting deadline calendar date', () => {
+  assert.equal(candidateStartsAfterVotingDeadline('2026-10-09', '2026-10-15'), false)
+  assert.equal(candidateStartsAfterVotingDeadline('2026-10-15', '2026-10-15'), false)
+  assert.equal(candidateStartsAfterVotingDeadline('2026-10-16', '2026-10-15'), true)
+  assert.equal(earliestCandidateStartDate('2026-10-31'), '2026-11-01')
+  assert.equal(earliestCandidateStartDate('2026-12-31'), '2027-01-01')
+  assert.equal(calendarDateKeyFromTimestamp('2026-10-15T23:59:00.000Z'), '2026-10-15')
+  assert.throws(
+    () => assertCandidateStartsAfterVotingDeadline('2026-10-15', '2026-10-15'),
+    /must start after voting deadline date/
+  )
+})
 
 test('derives same-day and multi-night options with date-only UTC arithmetic', () => {
   assert.deepEqual(deriveDateOptionFromStart('2026-10-10', 0), {
@@ -25,6 +44,40 @@ test('handles month, year, leap-year, and DST boundaries as calendar dates', () 
   assert.equal(deriveEndDate('2028-02-29', 1), '2028-03-01')
   assert.equal(deriveEndDate('2026-03-28', 2), '2026-03-30')
   assert.equal(deriveEndDate('2026-10-24', 2), '2026-10-26')
+})
+
+test('deadline eligibility is identical in UTC and Europe/Vilnius', () => {
+  const originalTimezone = process.env.TZ
+  try {
+    for (const timezone of ['UTC', 'Europe/Vilnius']) {
+      process.env.TZ = timezone
+      assert.equal(earliestCandidateStartDate('2026-03-28'), '2026-03-29')
+      assert.equal(earliestCandidateStartDate('2026-10-24'), '2026-10-25')
+      assert.equal(candidateStartsAfterVotingDeadline('2026-10-16', '2026-10-15'), true)
+      assert.equal(candidateStartsAfterVotingDeadline('2026-10-15', '2026-10-15'), false)
+    }
+  } finally {
+    if (originalTimezone === undefined) delete process.env.TZ
+    else process.env.TZ = originalTimezone
+  }
+})
+
+test('voting deadline uses 23:59 UTC and preserves the strict 24-hour boundary in every runtime timezone', () => {
+  const originalTimezone = process.env.TZ
+  const deadlineDate = '2026-03-29'
+  const exactBoundary = Date.parse('2026-03-28T23:59:00.000Z')
+  try {
+    for (const timezone of ['UTC', 'Europe/Vilnius']) {
+      process.env.TZ = timezone
+      assert.equal(votingDeadlineTimestampUtc(deadlineDate), '2026-03-29T23:59:00.000Z')
+      assert.equal(isVotingDeadlineMoreThan24HoursAway(deadlineDate, exactBoundary), false)
+      assert.equal(isVotingDeadlineMoreThan24HoursAway(deadlineDate, exactBoundary - 1), true)
+      assert.equal(isVotingDeadlineMoreThan24HoursAway(deadlineDate, exactBoundary + 1), false)
+    }
+  } finally {
+    if (originalTimezone === undefined) delete process.env.TZ
+    else process.env.TZ = originalTimezone
+  }
 })
 
 test('rejects invalid duration values and invalid calendar dates', () => {

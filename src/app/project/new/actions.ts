@@ -5,7 +5,15 @@ import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { recordProjectActivity } from '@/lib/activityLog'
-import { deriveDateOptionFromStart, deriveEndDate, validateEventDurationNights } from '@/lib/projectEventDuration'
+import {
+  assertCandidateStartsAfterVotingDeadline,
+  calendarDateKeyFromTimestamp,
+  deriveDateOptionFromStart,
+  deriveEndDate,
+  isVotingDeadlineMoreThan24HoursAway,
+  validateEventDurationNights,
+  votingDeadlineTimestampUtc,
+} from '@/lib/projectEventDuration'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { validateProjectFinanceInput } from '@/lib/projectFinance'
 import { getCurrentUserId } from '@/lib/supabaseServer'
@@ -201,23 +209,25 @@ export async function createProject(formData: FormData) {
   if (eventStartAt && eventEndAt && new Date(eventEndAt) <= new Date(eventStartAt)) {
     throw new Error('Event end must be after event start')
   }
-  const votingDeadlineAt = date_mode === 'selecting'
-    ? parseEventDateTime(date_voting_deadline_date, null, '23:59')
+  const votingDeadlineDate = (date_voting_deadline_date ?? '').trim()
+  const votingDeadlineAt = date_mode === 'selecting' && votingDeadlineDate
+    ? votingDeadlineTimestampUtc(votingDeadlineDate)
     : null
   if (date_mode === 'selecting' && !votingDeadlineAt) {
     throw new Error('Choose a date voting deadline')
   }
-  if (votingDeadlineAt && new Date(votingDeadlineAt).getTime() <= Date.now() + 24 * 60 * 60 * 1000) {
+  if (votingDeadlineAt && !isVotingDeadlineMoreThan24HoursAway(votingDeadlineDate)) {
     throw new Error('Date voting deadline must be more than 24 hours from now')
   }
   const suggestionsCloseAt = votingDeadlineAt
     ? new Date(new Date(votingDeadlineAt).getTime() - 24 * 60 * 60 * 1000).toISOString()
     : null
 
+  const initialDateOptionStarts = date_mode === 'selecting'
+    ? formData.getAll('date_option_start_date').map(startValue => typeof startValue === 'string' ? startValue : '')
+    : []
   const initialDateOptions = date_mode === 'selecting'
-    ? formData.getAll('date_option_start_date').map(startValue =>
-        deriveDateOptionFromStart(typeof startValue === 'string' ? startValue : '', eventDurationNights)
-      )
+    ? initialDateOptionStarts.map(startValue => deriveDateOptionFromStart(startValue, eventDurationNights))
     : []
   if (date_mode === 'selecting' && initialDateOptions.length === 0) {
     throw new Error('Add at least one date option')
@@ -230,6 +240,12 @@ export async function createProject(formData: FormData) {
   )
   if (uniqueInitialDateOptions.size !== initialDateOptions.length) {
     throw new Error('The same date option was added more than once')
+  }
+  if (votingDeadlineAt) {
+    const canonicalVotingDeadlineDate = calendarDateKeyFromTimestamp(votingDeadlineAt)
+    initialDateOptionStarts.forEach(startDate => {
+      assertCandidateStartsAfterVotingDeadline(startDate, canonicalVotingDeadlineDate)
+    })
   }
 
   const locationLabel = (event_location_label ?? '').trim() || null

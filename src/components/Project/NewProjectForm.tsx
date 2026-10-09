@@ -8,8 +8,14 @@ import { EventDurationField } from '@/components/Project/EventDurationField'
 import { Button } from '@/components/ui/button'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
-import { validateEventDurationNights } from '@/lib/projectEventDuration'
+import {
+  candidateStartsAfterVotingDeadline,
+  earliestCandidateStartDate,
+  isVotingDeadlineMoreThan24HoursAway,
+  validateEventDurationNights,
+} from '@/lib/projectEventDuration'
 import type { ProjectDateLocale } from '@/lib/projectDateStrings'
+import { formatDateFieldValue } from '@/lib/dateField'
 
 type NewProjectFormProps = {
   showCancel?: boolean
@@ -21,6 +27,25 @@ type NewProjectFormProps = {
 const EURO = '\u20AC'
 const GOOGLE_MAPS_SCRIPT_ID = 'google-maps-places-sdk'
 const MAX_INITIAL_DATE_OPTIONS = 20
+
+const dependencyStrings = {
+  en: {
+    deadlineGuidance: 'Choose event dates after voting closes.',
+    earliestStart: 'Earliest event start',
+    deadlineFuture: 'Date voting deadline must be more than 24 hours from now',
+    invalidCandidate: 'One or more event dates start before voting ends. Choose a start date from the earliest allowed date onward.',
+    participantLimits: 'Max participants cannot be lower than Min participants.',
+    sameDayTime: 'Event end must be after event start.',
+  },
+  lt: {
+    deadlineGuidance: 'Rinkitės renginio datas po balsavimo pabaigos.',
+    earliestStart: 'Anksčiausia renginio pradžia',
+    deadlineFuture: 'Balsavimo pabaiga turi būti daugiau nei po 24 valandų',
+    invalidCandidate: 'Viena ar daugiau renginio datų prasideda dar nepasibaigus balsavimui. Pasirinkite pradžios datą nuo anksčiausios leidžiamos datos.',
+    participantLimits: 'Didžiausias dalyvių skaičius negali būti mažesnis už mažiausią dalyvių skaičių.',
+    sameDayTime: 'Renginio pabaiga turi būti vėliau nei pradžia.',
+  },
+} as const
 
 let googleMapsPlacesScriptPromise: Promise<void> | null = null
 
@@ -92,7 +117,11 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   const [eventStartTime, setEventStartTime] = useState('')
   const [eventEndDate, setEventEndDate] = useState('')
   const [eventEndTime, setEventEndTime] = useState('')
+  const [votingDeadlineDate, setVotingDeadlineDate] = useState('')
+  const [deadlineValidationNow, setDeadlineValidationNow] = useState(() => Date.now())
   const [dateOptionStarts, setDateOptionStarts] = useState<string[]>([])
+  const [minParticipants, setMinParticipants] = useState('')
+  const [maxParticipants, setMaxParticipants] = useState('')
   const [totalIsPerPerson, setTotalIsPerPerson] = useState(false)
   const [bundleEnabled, setBundleEnabled] = useState(false)
   const [bundleSize, setBundleSize] = useState('')
@@ -114,6 +143,42 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
   const geocodeRequestCounterRef = useRef(0)
   const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? ''
   const financeStrings = getProjectFinanceStrings(locale)
+  const text = dependencyStrings[locale]
+  let earliestCandidateStart = ''
+  if (votingDeadlineDate) {
+    try {
+      earliestCandidateStart = earliestCandidateStartDate(votingDeadlineDate)
+    } catch {
+      earliestCandidateStart = ''
+    }
+  }
+  const deadlineFutureError = (() => {
+    if (dateMode !== 'selecting' || !votingDeadlineDate) return null
+    try {
+      return isVotingDeadlineMoreThan24HoursAway(votingDeadlineDate, deadlineValidationNow)
+        ? null
+        : text.deadlineFuture
+    } catch {
+      return text.deadlineFuture
+    }
+  })()
+  const invalidCandidateStarts = dateMode === 'selecting' && votingDeadlineDate
+    ? dateOptionStarts.filter(start => {
+        try { return !candidateStartsAfterVotingDeadline(start, votingDeadlineDate) } catch { return true }
+      })
+    : []
+  const candidateDependencyError = invalidCandidateStarts.length > 0 ? text.invalidCandidate : null
+  const participantDependencyError = minParticipants && maxParticipants && Number(maxParticipants) < Number(minParticipants)
+    ? text.participantLimits
+    : null
+  const sameDayTimeError = dateMode === 'fixed'
+    && eventDurationNights === 0
+    && eventStartTime
+    && eventEndTime
+    && eventEndTime <= eventStartTime
+    ? text.sameDayTime
+    : null
+  const hasDependentError = Boolean(deadlineFutureError || candidateDependencyError || participantDependencyError || sameDayTimeError)
 
   useEffect(() => {
     let canceled = false
@@ -307,11 +372,29 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
         fail('date', 'Choose a date voting deadline')
         return
       }
+      try {
+        if (!isVotingDeadlineMoreThan24HoursAway(value('date_voting_deadline_date'))) {
+          fail('date', text.deadlineFuture)
+          return
+        }
+      } catch {
+        fail('date', text.deadlineFuture)
+        return
+      }
       const starts = data.getAll('date_option_start_date')
       if (!starts.length) { fail('date', 'Add at least one date option'); return }
       const normalizedStarts = starts.map(start => String(start))
       if (new Set(normalizedStarts).size !== normalizedStarts.length) {
         fail('date', 'The same date option was added more than once')
+        return
+      }
+      try {
+        if (normalizedStarts.some(start => !candidateStartsAfterVotingDeadline(start, value('date_voting_deadline_date')))) {
+          fail('date', text.invalidCandidate)
+          return
+        }
+      } catch {
+        fail('date', text.invalidCandidate)
         return
       }
     } else {
@@ -589,6 +672,10 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
             type="number"
             min={1}
             className="control-input"
+            value={minParticipants}
+            onChange={event => setMinParticipants(event.target.value)}
+            aria-invalid={participantDependencyError ? true : undefined}
+            aria-describedby={participantDependencyError ? 'project-participant-limits-error' : undefined}
           />
         </div>
         <div className="space-y-2">
@@ -600,10 +687,19 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
             name="max_participants"
             type="number"
             min={1}
-          className="control-input"
+            className="control-input"
+            value={maxParticipants}
+            onChange={event => setMaxParticipants(event.target.value)}
+            aria-invalid={participantDependencyError ? true : undefined}
+            aria-describedby={participantDependencyError ? 'project-participant-limits-error' : undefined}
           />
         </div>
       </div>
+      {participantDependencyError && (
+        <p id="project-participant-limits-error" role="alert" className="text-sm font-medium text-red-700">
+          {participantDependencyError}
+        </p>
+      )}
 
       <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
         <div className="flex flex-wrap items-start justify-between gap-2">
@@ -738,20 +834,49 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
               startRequired
               durationBacked
               durationNights={eventDurationNights}
+              aria-invalid={sameDayTimeError ? true : undefined}
+              aria-describedby={sameDayTimeError ? 'new-project-same-day-time-error' : undefined}
             />
+            {sameDayTimeError && (
+              <p id="new-project-same-day-time-error" role="alert" className="mt-2 text-sm font-medium text-red-700">
+                {sameDayTimeError}
+              </p>
+            )}
           </div>
         ) : (
           <div className="space-y-5 pt-1">
             <div className="space-y-2">
-              <label className="text-sm font-medium">
+              <label htmlFor="project-date-voting-deadline" className="text-sm font-medium">
                 Date voting deadline <span className="text-red-500">*</span>
               </label>
               <div className="md:max-w-xs">
-                <input name="date_voting_deadline_date" type="date" className="control-input" required />
+                <input
+                  id="project-date-voting-deadline"
+                  name="date_voting_deadline_date"
+                  type="date"
+                  className="control-input"
+                  required
+                  value={votingDeadlineDate}
+                  onChange={event => {
+                    setVotingDeadlineDate(event.target.value)
+                    setDeadlineValidationNow(Date.now())
+                  }}
+                  aria-invalid={deadlineFutureError ? true : undefined}
+                  aria-describedby={`project-date-voting-guidance${deadlineFutureError ? ' project-date-voting-error' : ''}`}
+                />
               </div>
-              <p className="text-xs text-slate-600">
+              <p id="project-date-voting-guidance" className="text-xs text-slate-600">
                 Voting remains open through this date. New suggestions close automatically one day earlier.
               </p>
+              <p className="text-xs font-medium text-indigo-700">
+                {text.deadlineGuidance}
+                {earliestCandidateStart && <> {text.earliestStart}: {formatDateFieldValue(earliestCandidateStart, locale)}.</>}
+              </p>
+              {deadlineFutureError && (
+                <p id="project-date-voting-error" role="alert" className="text-sm font-medium text-red-700">
+                  {deadlineFutureError}
+                </p>
+              )}
             </div>
 
             <div className="space-y-3 border-t border-slate-200 pt-4">
@@ -766,9 +891,15 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
                   value={dateOptionStarts}
                   onChange={setDateOptionStarts}
                   max={MAX_INITIAL_DATE_OPTIONS}
+                  min={earliestCandidateStart || undefined}
                 />
               ) : (
                 <p className="text-sm text-slate-600">Choose an event duration to select start dates.</p>
+              )}
+              {candidateDependencyError && (
+                <p role="alert" className="text-sm font-medium text-red-700">
+                  {candidateDependencyError}
+                </p>
               )}
             </div>
           </div>
@@ -798,7 +929,7 @@ export function NewProjectForm({ showCancel = false, onCancel, submitLabel = 'Cr
             Cancel
           </Button>
         )}
-        <Button className="rounded-full px-5" type="submit" disabled={isCreating} aria-busy={isCreating}>
+        <Button className="rounded-full px-5" type="submit" disabled={isCreating || hasDependentError} aria-busy={isCreating}>
           {isCreating ? 'Creating…' : submitLabel}
         </Button>
       </div>

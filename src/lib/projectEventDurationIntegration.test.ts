@@ -42,6 +42,22 @@ test('database locks duration after option history while leaving fixed projects 
   assert.doesNotMatch(migration, /where option\.project_id = new\.id[\s\S]*raise exception[\s\S]*else[\s\S]*raise exception/i)
 })
 
+test('database serializes candidate writes with deadline changes and preserves legacy rows', () => {
+  const migration = source('supabase/migrations/20261008_enforce_date_candidate_after_voting_deadline.sql')
+
+  assert.match(migration, /Existing date option violates voting deadline date/i)
+  assert.match(migration, /select[\s\S]*date_voting_deadline_at[\s\S]*from public\.projects[\s\S]*for update/i)
+  assert.match(migration, /event_duration_nights is null then[\s\S]*return new/i)
+  assert.match(migration, /new\.starts_at at time zone 'UTC'[\s\S]*<= \(v_project\.date_voting_deadline_at at time zone 'UTC'\)::date/i)
+  assert.match(migration, /message = 'Date option must start after voting deadline date'/i)
+  assert.match(migration, /function public\.guard_project_date_candidate_deadline\(\)/i)
+  assert.match(migration, /before update of date_voting_deadline_at, date_mode, event_duration_nights/i)
+  assert.match(migration, /option\.project_id = new\.id[\s\S]*option\.starts_at at time zone 'UTC'/i)
+  assert.match(migration, /security definer[\s\S]*set search_path = ''/i)
+  assert.match(migration, /revoke all on function public\.guard_project_date_candidate_deadline\(\)[\s\S]*from public, anon, authenticated/i)
+  assert.doesNotMatch(migration, /update\s+public\.project_date_options|delete\s+from\s+public\.project_date_options/i)
+})
+
 test('new project UI requires one duration before both date modes and submits start candidates only', () => {
   const form = source('src/components/Project/NewProjectForm.tsx')
   const durationIndex = form.indexOf('<EventDurationField')
@@ -97,4 +113,31 @@ test('Date Finder displays the project duration and uses start-only suggestions 
   assert.match(finder, /formatEventDuration\(data\.eventDurationNights, locale\)/)
   assert.match(finder, /durationNights === null \? \([\s\S]*<DateRangePicker[\s\S]*<EventDateCandidatePicker/)
   assert.match(finder, /name="start_date"[\s\S]*single/)
+  assert.match(finder, /votingDeadlineAt=\{data\.votingDeadlineAt\}/)
+  assert.match(finder, /min=\{earliestStart\}/)
+})
+
+test('dependent deadline UI preserves invalid candidates, reports them, and blocks creation', () => {
+  const form = source('src/components/Project/NewProjectForm.tsx')
+  const candidate = source('src/components/Project/EventDateCandidatePicker.tsx')
+
+  assert.match(form, /value=\{votingDeadlineDate\}[\s\S]*onChange=\{event => \{[\s\S]*setVotingDeadlineDate/)
+  assert.match(form, /min=\{earliestCandidateStart \|\| undefined\}/)
+  assert.match(form, /candidateDependencyError[\s\S]*disabled=\{isCreating \|\| hasDependentError\}/)
+  assert.match(form, /participantDependencyError[\s\S]*role="alert"/)
+  assert.match(form, /sameDayTimeError[\s\S]*aria-invalid/)
+  assert.match(candidate, /invalidStarts[\s\S]*data-invalid-candidate/)
+  assert.match(candidate, /role="alert"/)
+  assert.doesNotMatch(candidate, /onChange\(value\.filter\(candidate => candidate < min/)
+})
+
+test('client and server share the explicit UTC voting deadline convention without changing fixed dates', () => {
+  const form = source('src/components/Project/NewProjectForm.tsx')
+  const creation = source('src/app/project/new/actions.ts')
+
+  assert.match(form, /isVotingDeadlineMoreThan24HoursAway\(votingDeadlineDate, deadlineValidationNow\)/)
+  assert.doesNotMatch(form, /new Date\(`\$\{votingDeadlineDate\}T23:59:00`\)/)
+  assert.match(creation, /votingDeadlineTimestampUtc\(votingDeadlineDate\)/)
+  assert.match(creation, /isVotingDeadlineMoreThan24HoursAway\(votingDeadlineDate\)/)
+  assert.match(creation, /date_mode === 'fixed' \? parseEventDateTime\(event_start_date, event_start_time, '09:00'\) : null/)
 })

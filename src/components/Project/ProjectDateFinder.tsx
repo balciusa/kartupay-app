@@ -23,6 +23,8 @@ import { DateRangePicker, type DateRangeValue } from '@/components/ui/DateRangeP
 import { TimePicker24 } from '@/components/ui/TimePicker24'
 import {
   deriveProjectDatePresentationState,
+  formatCandidateDateRange,
+  formatConfirmedEventDateRange,
   formatDateRangeDuration,
   formatProjectDateRange,
   isDateOnlyTimestamp,
@@ -31,7 +33,13 @@ import {
 } from '@/lib/projectDateSelection'
 import type { ProjectDateFinderData, ProjectDateFinderOption } from '@/lib/projectDateService'
 import { getProjectDateStrings, type ProjectDateLocale } from '@/lib/projectDateStrings'
-import { formatEventDuration } from '@/lib/projectEventDuration'
+import { formatDateFieldValue } from '@/lib/dateField'
+import {
+  calendarDateKeyFromTimestamp,
+  candidateStartsAfterVotingDeadline,
+  earliestCandidateStartDate,
+  formatEventDuration,
+} from '@/lib/projectEventDuration'
 
 const statusClasses: Record<DateAvailability, string> = {
   available: 'border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100',
@@ -51,25 +59,43 @@ const toDateTimeIso = (value: string) => {
   return date.toISOString()
 }
 
-const formatDateOption = (option: Pick<ProjectDateFinderOption, 'starts_at' | 'ends_at'>, locale: ProjectDateLocale) =>
-  formatProjectDateRange(option.starts_at, option.ends_at, locale)
+const formatDateOption = (
+  option: Pick<ProjectDateFinderOption, 'starts_at' | 'ends_at'>,
+  locale: ProjectDateLocale,
+  dateOnly: boolean,
+  confirmedStartTime: boolean,
+  confirmedEndTime: boolean
+) => confirmedStartTime || confirmedEndTime
+  ? formatConfirmedEventDateRange(option.starts_at, option.ends_at, locale, {
+      startHasTime: confirmedStartTime,
+      endHasTime: confirmedEndTime,
+    })
+  : dateOnly
+    ? formatCandidateDateRange(option.starts_at, option.ends_at, locale)
+    : formatProjectDateRange(option.starts_at, option.ends_at, locale)
 
 function DateOptionHeading({
   displayOption,
   durationOption,
   locale,
   durationNights,
+  dateOnly = false,
+  confirmedStartTime = false,
+  confirmedEndTime = false,
   className = '',
 }: {
   displayOption: Pick<ProjectDateFinderOption, 'starts_at' | 'ends_at'>
   durationOption: Pick<ProjectDateFinderOption, 'starts_at' | 'ends_at'> | null
   locale: ProjectDateLocale
   durationNights?: number | null
+  dateOnly?: boolean
+  confirmedStartTime?: boolean
+  confirmedEndTime?: boolean
   className?: string
 }) {
   return (
     <span className={className}>
-      <span className="block">{formatDateOption(displayOption, locale)}</span>
+      <span className="block">{formatDateOption(displayOption, locale, dateOnly, confirmedStartTime, confirmedEndTime)}</span>
       {durationOption && (
         <span className="mt-0.5 block text-sm font-medium text-indigo-700">
           {durationNights !== null && durationNights !== undefined
@@ -102,11 +128,13 @@ function SuggestDateForm({
   projectId,
   locale,
   durationNights,
+  votingDeadlineAt,
   onDone,
 }: {
   projectId: string
   locale: ProjectDateLocale
   durationNights: number | null
+  votingDeadlineAt: string | null
   onDone: () => void
 }) {
   const strings = getProjectDateStrings(locale)
@@ -115,6 +143,16 @@ function SuggestDateForm({
   const [pending, setPending] = useState(false)
   const [dates, setDates] = useState<DateRangeValue>({ startDate: '', endDate: null })
   const [startDates, setStartDates] = useState<string[]>([])
+  const earliestStart = durationNights !== null && votingDeadlineAt
+    ? earliestCandidateStartDate(calendarDateKeyFromTimestamp(votingDeadlineAt))
+    : undefined
+  const invalidStart = Boolean(
+    durationNights !== null
+    && votingDeadlineAt
+    && startDates[0]
+    && !candidateStartsAfterVotingDeadline(startDates[0], calendarDateKeyFromTimestamp(votingDeadlineAt))
+  )
+  const earliestStartLabel = earliestStart ? formatDateFieldValue(earliestStart, locale) : ''
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -122,6 +160,11 @@ function SuggestDateForm({
     try {
       setPending(true)
       setError(null)
+      if (invalidStart) {
+        throw new Error(locale === 'lt'
+          ? `Pasirinkite pradžios datą nuo ${earliestStartLabel}.`
+          : `Choose a start date from ${earliestStartLabel} onward.`)
+      }
       if (durationNights === null) {
         const startDate = String(form.get('start_date') ?? '')
         const endDate = String(form.get('end_date') ?? '')
@@ -159,12 +202,18 @@ function SuggestDateForm({
           onChange={setStartDates}
           name="start_date"
           single
+          min={earliestStart}
         />
       )}
-      {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+      {earliestStart && (
+        <p className="text-xs font-medium text-indigo-700">
+          {locale === 'lt' ? `Anksčiausia renginio pradžia: ${earliestStartLabel}.` : `Earliest event start: ${earliestStartLabel}.`}
+        </p>
+      )}
+      {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
       <div className="flex flex-wrap justify-end gap-2">
         <Button type="button" variant="outline" className="min-h-11 rounded-full" onClick={onDone}>{strings.cancel}</Button>
-        <Button type="submit" className="min-h-11 rounded-full" disabled={pending}>{strings.addDate}</Button>
+        <Button type="submit" className="min-h-11 rounded-full" disabled={pending || invalidStart}>{strings.addDate}</Button>
       </div>
     </form>
   )
@@ -282,7 +331,7 @@ export function ProjectDateFinder({
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="font-semibold text-slate-900"><DateOptionHeading displayOption={option} durationOption={option} locale={locale} durationNights={data.eventDurationNights} /></h3>
+                  <h3 className="font-semibold text-slate-900"><DateOptionHeading displayOption={option} durationOption={option} locale={locale} durationNights={data.eventDurationNights} dateOnly={data.eventDurationNights !== null} /></h3>
                   {isBest && <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800">{strings.currentlyBest}</span>}
                   {option.isTied && hasAvailabilityResponses && <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800">{strings.currentlyTied}</span>}
                 </div>
@@ -364,6 +413,7 @@ export function ProjectDateFinder({
       ends_at: data.eventEndAt ?? selectedOption?.ends_at ?? null,
     }
     const hasProjectTime = !!data.eventStartAt && !isDateOnlyTimestamp(data.eventStartAt)
+    const hasProjectEndTime = !!data.eventEndAt && !isDateOnlyTimestamp(data.eventEndAt)
     return (
       <section data-date-state={presentationState} className="rounded-2xl border border-emerald-200 bg-white p-4 shadow-sm md:p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -373,7 +423,7 @@ export function ProjectDateFinder({
             </div>
             <h2 className="text-xl font-semibold text-slate-900">
               {confirmedDateOption.starts_at ? (
-                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} durationNights={data.eventDurationNights} />
+                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} durationNights={data.eventDurationNights} confirmedStartTime={hasProjectTime} confirmedEndTime={hasProjectEndTime} />
               ) : ''}
             </h2>
             <p className="text-sm text-slate-600">{strings.confirmedParticipants}: {data.confirmedCount}</p>
@@ -504,7 +554,7 @@ export function ProjectDateFinder({
             <div className="mt-1 text-sm text-slate-700">
               <span>{strings.finalProjectDate}:</span>
               {confirmedDateOption.starts_at ? (
-                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} durationNights={data.eventDurationNights} className="mt-1" />
+                <DateOptionHeading displayOption={confirmedDateOption} durationOption={selectedOption ?? null} locale={locale} durationNights={data.eventDurationNights} confirmedStartTime={hasProjectTime} confirmedEndTime={hasProjectEndTime} className="mt-1" />
               ) : ''}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -616,7 +666,7 @@ export function ProjectDateFinder({
               ) : earlyOption ? (
                 <div className="mt-3 rounded-xl border border-indigo-200 bg-white p-4" role="group" aria-labelledby="confirm-final-date-title">
                   <h4 id="confirm-final-date-title" className="font-semibold text-slate-900">{strings.confirmFinalDateTitle}</h4>
-                  <DateOptionHeading displayOption={earlyOption} durationOption={earlyOption} locale={locale} durationNights={data.eventDurationNights} className="mt-1 text-sm font-medium text-slate-800" />
+                  <DateOptionHeading displayOption={earlyOption} durationOption={earlyOption} locale={locale} durationNights={data.eventDurationNights} dateOnly={data.eventDurationNights !== null} className="mt-1 text-sm font-medium text-slate-800" />
                   <p className="mt-1 text-sm text-slate-600">{strings.confirmFinalDateHelp}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Button
@@ -666,7 +716,7 @@ export function ProjectDateFinder({
                 {suggestionsOpen && viewerIsParticipant && !suggesting && (
                   <Button type="button" variant="outline" className="mt-4 min-h-11 rounded-full" onClick={() => setSuggesting(true)}><Plus className="mr-2 h-4 w-4" /> {strings.suggestAnother}</Button>
                 )}
-                {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} durationNights={data.eventDurationNights} onDone={() => setSuggesting(false)} /></div>}
+                {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} durationNights={data.eventDurationNights} votingDeadlineAt={data.votingDeadlineAt} onDone={() => setSuggesting(false)} /></div>}
                 {!suggestionsOpen && votingOpen && <p className="mt-4 text-sm text-slate-600">{strings.suggestionsClosed}</p>}
               </div>
             </details>
@@ -684,7 +734,7 @@ export function ProjectDateFinder({
           {suggestionsOpen && viewerIsParticipant && !suggesting && (
             <Button type="button" variant="outline" className="mt-4 min-h-11 rounded-full" onClick={() => setSuggesting(true)}><Plus className="mr-2 h-4 w-4" /> {strings.suggestAnother}</Button>
           )}
-          {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} durationNights={data.eventDurationNights} onDone={() => setSuggesting(false)} /></div>}
+          {suggesting && <div className="mt-4"><SuggestDateForm projectId={projectId} locale={locale} durationNights={data.eventDurationNights} votingDeadlineAt={data.votingDeadlineAt} onDone={() => setSuggesting(false)} /></div>}
           {!suggestionsOpen && votingOpen && <p className="mt-4 text-sm text-slate-600">{strings.suggestionsClosed}</p>}
         </>
       )}

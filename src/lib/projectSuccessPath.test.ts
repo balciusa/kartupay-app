@@ -337,6 +337,7 @@ const compileFixture = (source: string) => ts.transpileModule(source, {
 const calendarRovingFocus = await import('./calendarRovingFocus.ts')
 const dateSelection = await import('./projectDateSelection.ts')
 const dateStrings = await import('./projectDateStrings.ts')
+const dateField = await import('./dateField.ts')
 const eventDuration = await import('./projectEventDuration.ts')
 const time24 = await import('./time24.ts')
 const timePickerExports: Record<string, React.ComponentType<Record<string, unknown>>> = {}
@@ -364,6 +365,7 @@ const dateRequire = (name: string) => {
   if (name === '@/components/ui/button') return { Button: ({ variant, asChild, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; asChild?: boolean }) => { void variant; return asChild ? children : createElement('button', props, children) } }
   if (name === '@/lib/projectDateSelection') return dateSelection
   if (name === '@/lib/projectDateStrings') return dateStrings
+  if (name === '@/lib/dateField') return dateField
   if (name === '@/lib/projectEventDuration') return eventDuration
   return nodeRequire(name)
 }
