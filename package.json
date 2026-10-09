@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test --experimental-transform-types src/lib/calendarRovingFocus.test.ts src/lib/datePickerField.test.ts src/lib/timePicker24.test.ts src/lib/projectEventDuration.test.ts src/lib/projectEventDurationIntegration.test.ts src/lib/projectDateSelection.test.ts src/lib/projectDateService.test.ts src/lib/projectFinance.test.ts src/lib/projectActions.test.ts src/lib/projectNotifications.test.ts src/lib/projectNotificationUi.test.ts src/lib/projectSuccessPath.test.ts src/lib/projectShare.test.ts src/lib/projectInvite.test.ts src/lib/newProjectForm.test.ts src/lib/projectTransport.test.ts src/lib/projectTransportServer.test.ts"
+    "test": "node --test --experimental-transform-types src/lib/calendarRovingFocus.test.ts src/lib/datePickerField.test.ts src/lib/timePicker24.test.ts src/lib/projectEventDuration.test.ts src/lib/projectEventDurationIntegration.test.ts src/lib/projectDateSelection.test.ts src/lib/projectDateService.test.ts src/lib/projectFinance.test.ts src/lib/projectActions.test.ts src/lib/projectNotifications.test.ts src/lib/projectNotificationUi.test.ts src/lib/projectSuccessPath.test.ts src/lib/projectShare.test.ts src/lib/projectInvite.test.ts src/lib/newProjectForm.test.ts src/lib/projectTransport.test.ts src/lib/projectTransportServer.test.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@radix-ui/react-avatar": "^1.1.11",
@@ -27,6 +28,7 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
     "@tailwindcss/postcss": "^4",
     "@types/google.maps": "^3.58.1",
     "@types/node": "^20",
