@@ -18,6 +18,33 @@ export type FinancialActivitySummary = {
   ledgerEntries?: number
 }
 
+export type CountedPaymentRow = {
+  participant_id: string
+  is_counted: boolean | null
+}
+
+export type PaymentObligationKind = 'base' | 'extra' | 'late_join'
+
+export function formatEuroCents(cents: number): string {
+  return `€${(Math.max(0, Number(cents ?? 0)) / 100).toFixed(2)}`
+}
+
+export function getUniqueCountedPaymentParticipantIds(payments: CountedPaymentRow[]): string[] {
+  return [...new Set(
+    payments
+      .filter(payment => payment.is_counted === true)
+      .map(payment => payment.participant_id)
+  )]
+}
+
+export function paymentObligationKey(
+  kind: PaymentObligationKind,
+  participantId: string,
+  obligationId?: string
+): string {
+  return `${kind}:${participantId}:${obligationId ?? 'base'}`
+}
+
 export function normalizeProjectFinanceMode(value: unknown): ProjectFinanceMode {
   return value === 'none' ? 'none' : 'managed'
 }

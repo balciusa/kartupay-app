@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   FINANCE_DISABLED_ERROR,
@@ -9,10 +10,13 @@ import {
   getFinanceCapabilities,
   getProjectReadiness,
   getProjectJoinStrategy,
+  getUniqueCountedPaymentParticipantIds,
   hasMeaningfulFinancialActivity,
   isManagedFinance,
   normalizeProjectFinanceMode,
   normalizeExtraFinanceInput,
+  formatEuroCents,
+  paymentObligationKey,
   validateProjectFinanceInput,
 } from './projectFinance.ts'
 
@@ -116,4 +120,39 @@ test('20. managed projects keep financial readiness behavior', () => {
   assert.equal(isManagedFinance('managed'), true)
   assert.equal(getProjectReadiness({ financeMode: 'managed', confirmedParticipants: 2, minParticipants: 2, managedFinanceReady: false }).projectReady, false)
   assert.equal(getProjectReadiness({ financeMode: 'managed', confirmedParticipants: 2, minParticipants: 2, managedFinanceReady: true }).projectReady, true)
+})
+
+test('21. counted base payments stay unique when legacy rows are duplicated', () => {
+  assert.deepEqual(getUniqueCountedPaymentParticipantIds([
+    { participant_id: 'member-a', is_counted: true },
+    { participant_id: 'member-a', is_counted: true },
+    { participant_id: 'member-b', is_counted: false },
+    { participant_id: 'member-c', is_counted: true },
+  ]), ['member-a', 'member-c'])
+})
+
+test('22. payment obligations use identity and type instead of amount', () => {
+  const base = paymentObligationKey('base', 'member-a')
+  const extra = paymentObligationKey('extra', 'member-a', 'extra-a')
+  const lateJoin = paymentObligationKey('late_join', 'member-a', 'transfer-a')
+
+  assert.equal(new Set([base, extra, lateJoin]).size, 3)
+  assert.notEqual(paymentObligationKey('extra', 'member-a', 'extra-a'), paymentObligationKey('extra', 'member-a', 'extra-b'))
+})
+
+test('23. Payments formats EUR with the euro symbol', () => {
+  assert.equal(formatEuroCents(1000), '€10.00')
+  assert.equal(formatEuroCents(0), '€0.00')
+})
+
+test('24. counted payment uniqueness migration has a non-destructive deployment gate', () => {
+  const migration = readFileSync(
+    new URL('../../supabase/migrations/20261010073840_enforce_unique_counted_payment_confirmation.sql', import.meta.url),
+    'utf8'
+  )
+
+  assert.match(migration, /group by participant_id[\s\S]*having count\(\*\) > 1/i)
+  assert.match(migration, /raise exception[\s\S]*Duplicate counted base payment confirmations require review/i)
+  assert.match(migration, /create unique index[\s\S]*on public\.payments \(participant_id\)[\s\S]*where is_counted is true/i)
+  assert.doesNotMatch(migration, /delete from public\.payments/i)
 })

@@ -2631,24 +2631,39 @@ export async function confirmLateJoinReceipt(transferId: string) {
  * Mark a participant's payment as received.
  */
 export async function markReceived(participantId: string) {
+  'use server'
   const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
   const { data: participant, error: e1 } = await supabaseAdmin
     .from('participants')
-    .select('id, user_id, project_id')
+    .select('id, user_id, project_id, left_at')
     .eq('id', participantId)
+    .is('left_at', null)
     .single()
   if (e1 || !participant) throw new Error('Participant not found')
   await requireManagedFinanceProject(participant.project_id)
-  const actor = uid
-    ? await getActiveParticipantContext(participant.project_id, uid)
-    : { actorUserId: null, actorParticipantId: null as string | null }
 
   const { data: project, error: projectErr } = await supabaseAdmin
     .from('projects')
-    .select('status')
+    .select('status, collector_participant_id')
     .eq('id', participant.project_id)
     .maybeSingle()
   if (projectErr || !project) throw projectErr || new Error('Project not found')
+
+  if (!project.collector_participant_id || participant.id === project.collector_participant_id) {
+    throw new Error('Only the active collector can confirm participant payments')
+  }
+  const { data: collector, error: collectorErr } = await supabaseAdmin
+    .from('participants')
+    .select('id')
+    .eq('id', project.collector_participant_id)
+    .eq('project_id', participant.project_id)
+    .eq('user_id', uid)
+    .is('left_at', null)
+    .maybeSingle()
+  if (collectorErr) throw collectorErr
+  if (!collector) throw new Error('Only the active collector can confirm participant payments')
+
   const projectStatus = normalizeProjectStatus(project.status)
   if (projectStatus === 'pending') {
     throw new Error('Start collecting before recording payments')
@@ -2658,18 +2673,34 @@ export async function markReceived(participantId: string) {
   }
   await requireDateReadyForPayment(participant.project_id, participant.id)
 
+  const { data: existingCounted, error: existingErr } = await supabaseAdmin
+    .from('payments')
+    .select('id')
+    .eq('participant_id', participantId)
+    .eq('is_counted', true)
+    .limit(1)
+  if (existingErr) throw existingErr
+  if ((existingCounted?.length ?? 0) > 0) {
+    revalidatePath(`/project/${participant.project_id}`)
+    return
+  }
+
   const { data: paymentRow, error: e3 } = await supabaseAdmin
     .from('payments')
     .insert({ participant_id: participantId, is_counted: true })
     .select('id')
     .single()
+  if (e3?.code === '23505') {
+    revalidatePath(`/project/${participant.project_id}`)
+    return
+  }
   if (e3) throw e3
 
   await recordProjectActivity({
     projectId: participant.project_id,
     entryType: 'payment_confirmed',
-    actorUserId: actor.actorUserId,
-    actorParticipantId: actor.actorParticipantId,
+    actorUserId: uid,
+    actorParticipantId: collector.id,
     targetUserId: participant.user_id ?? null,
     targetParticipantId: participant.id,
     paymentId: paymentRow?.id ?? null,

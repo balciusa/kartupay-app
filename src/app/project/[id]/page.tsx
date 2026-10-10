@@ -32,7 +32,15 @@ import { loadProjectNotifications, type ProjectNotificationSnapshot } from '@/li
 import { resolveProjectDateLocale } from '@/lib/projectDateStrings'
 import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { shouldShowProjectShare } from '@/lib/projectShare'
-import { getProjectJoinStrategy, getProjectReadiness, normalizeProjectFinanceMode, type ProjectFinanceMode } from '@/lib/projectFinance'
+import {
+  formatEuroCents as formatEuro,
+  getProjectJoinStrategy,
+  getProjectReadiness,
+  getUniqueCountedPaymentParticipantIds,
+  normalizeProjectFinanceMode,
+  paymentObligationKey,
+  type ProjectFinanceMode,
+} from '@/lib/projectFinance'
 import { isProjectCanceled } from '@/lib/projectInvite'
 import { canViewProjectTransport } from '@/lib/projectTransport'
 import { loadProjectTransport } from '@/lib/projectTransportServer'
@@ -944,8 +952,7 @@ export default async function ProjectPage({
   const paidSet = new Set(allPaidIds)
   
   // Only counted payments for threshold calculations
-  const countedPayments = payments.filter(p => p.is_counted === true)
-  const paidIds = countedPayments.map(p => p.participant_id)
+  const paidIds = getUniqueCountedPaymentParticipantIds(payments)
   
   // Calculate scenarios
   const totalIsPerPerson = !!project.total_is_per_person
@@ -986,7 +993,6 @@ export default async function ProjectPage({
   const paymentsOpen = !isPendingStatus
   const viewerPaid = !!(myParticipantId && paidSet.has(myParticipantId))
   const viewerHasPendingSignal = !!(myParticipantId && pendingSignalsSet.has(myParticipantId))
-  const formatEuro = (cents: number) => `?${(cents / 100).toFixed(2)}`
   const bundleLabel = describeBundlePricing(pricingNow.bundleSize, pricingNow.bundlePayFor)
   const scenarios = {
     now: pricingNow.perPersonCents,
@@ -1068,9 +1074,7 @@ export default async function ProjectPage({
       })
     : { items: [], unreadCount: 0 }
   console.log('[ProjectPage] Pending join requests for manager:', { count: pendingJoinRequestsCount, requests: pendingForOrganizer })
-  const basePaidIds = countedPayments
-    .filter(p => baseParticipantIds.has(p.participant_id))
-    .map(p => p.participant_id)
+  const basePaidIds = paidIds.filter(participantId => baseParticipantIds.has(participantId))
   const basePaidSet = new Set(basePaidIds)
   const collectedCentsDisplay = Math.min(perPersonCentsAtFinalize * basePaidSet.size, pricingAtFinalize.totalCents)
   const lateJoinerIds = new Set(
@@ -2196,11 +2200,14 @@ export default async function ProjectPage({
                   return (
                     <div className="mt-3 space-y-2.5">
                       {incomingStandard.map(p => (
-                        <div key={p.id} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                        <div key={paymentObligationKey('base', p.id)} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
                           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="text-sm font-medium text-slate-900">
                                 {participantName(p)} {formatEuro(perPersonCentsAtFinalize)}
+                              </span>
+                              <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                                Base contribution
                               </span>
                               {pendingSignalsSet.has(p.id) && (
                                 <span className="rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
@@ -2229,7 +2236,7 @@ export default async function ProjectPage({
                         const awaiting = row.reported
                         return (
                           <div
-                            key={`${row.extra_id}:${row.payer_participant_id}`}
+                            key={paymentObligationKey('extra', row.payer_participant_id, row.extra_id)}
                             className="rounded-xl border border-slate-200 bg-slate-50/70 p-3"
                           >
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -2274,11 +2281,17 @@ export default async function ProjectPage({
                         const senderName = sender ? participantName(sender) : 'Participant'
                         const awaiting = !!transfer.sender_marked_at && !transfer.received_at
                         return (
-                          <div key={transfer.id} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                          <div
+                            key={paymentObligationKey('late_join', transfer.from_participant_id, transfer.id)}
+                            className="rounded-xl border border-slate-200 bg-slate-50/70 p-3"
+                          >
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="text-sm font-medium text-slate-900">
                                   {senderName} {formatEuro(transfer.expected_cents)}
+                                </span>
+                                <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                                  Late-join balance
                                 </span>
                                 {awaiting && (
                                   <span className="rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
