@@ -159,11 +159,52 @@ test('a failed concurrent logout cannot reveal content while another attempt is 
   await expect(secondTab.getByRole('button', { name: 'Sign in' })).toBeVisible()
 })
 
-test('a restored page revalidates an externally expired session before showing private content', async ({ context, page }) => {
+test('a restored page rejects an expired session when refresh fails', async ({ context, page }) => {
   await login(context, page)
   await recordPrivateExposureAfterBlock(page, 'expired-session-exposure')
 
+  const authCookie = (await context.cookies()).find(cookie => cookie.name.startsWith('sb-'))
+  if (!authCookie) throw new Error('Expected an authenticated Supabase cookie')
+
+  const expiredPayload = Buffer.from(JSON.stringify({
+    sub: '00000000-0000-4000-8000-000000000001',
+    email: 'member@example.test',
+    role: 'authenticated',
+    aud: 'authenticated',
+    exp: Math.floor(Date.now() / 1000) - 60,
+  })).toString('base64url')
+  const expiredSession = {
+    access_token: `e2e.${expiredPayload}.signature`,
+    token_type: 'bearer',
+    expires_in: 0,
+    expires_at: Math.floor(Date.now() / 1000) - 60,
+    refresh_token: 'expired-e2e-refresh-token',
+    user: {
+      id: '00000000-0000-4000-8000-000000000001',
+      aud: 'authenticated',
+      role: 'authenticated',
+      email: 'member@example.test',
+      app_metadata: { provider: 'email', providers: ['email'] },
+      user_metadata: {},
+      created_at: '2026-01-01T00:00:00.000Z',
+    },
+  }
+
   await context.clearCookies()
+  await context.addCookies([{
+    name: authCookie.name.replace(/\.\d+$/, ''),
+    value: `base64-${Buffer.from(JSON.stringify(expiredSession)).toString('base64url')}`,
+    domain: authCookie.domain,
+    path: '/',
+    httpOnly: false,
+    secure: false,
+    sameSite: 'Lax',
+  }])
+  await page.route('**/auth/v1/token**', route => route.fulfill({
+    status: 400,
+    contentType: 'application/json',
+    body: JSON.stringify({ message: 'Expired E2E refresh token' }),
+  }))
   await page.evaluate(() => {
     window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
   })
