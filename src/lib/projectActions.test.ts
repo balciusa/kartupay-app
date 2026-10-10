@@ -1218,6 +1218,30 @@ test('only the active project collector can confirm a base payment', async () =>
   assert.deepEqual(f.activityEvents, [])
 })
 
+test('legacy projects without an assigned collector let an active organizer confirm a base payment', async () => {
+  const f = paymentConfirmationFixture()
+  f.tables.projects[0].collector_participant_id = null
+
+  await f.actions.markReceived('member')
+
+  assert.equal(f.tables.payments.length, 1)
+  assert.equal(f.tables.payments[0].participant_id, 'member')
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
+})
+
+test('legacy collector fallback does not authorize an ordinary participant', async () => {
+  const f = paymentConfirmationFixture()
+  f.tables.projects[0].collector_participant_id = null
+  f.setCurrentUserId('member-user')
+
+  await assert.rejects(
+    f.actions.markReceived('collector'),
+    /Only the active collector can confirm participant payments/
+  )
+  assert.deepEqual(f.tables.payments, [])
+  assert.deepEqual(f.activityEvents, [])
+})
+
 test('a signed-out caller cannot confirm a base payment', async () => {
   const f = paymentConfirmationFixture()
   f.setCurrentUserId(null)
@@ -1263,5 +1287,45 @@ test('concurrent base payment confirmations preserve one row and one activity', 
   ])
 
   assert.equal(f.tables.payments.length, 1)
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
+})
+
+test('concurrent collector self-confirmations preserve one counted row and one activity', async () => {
+  const f = paymentConfirmationFixture()
+
+  await Promise.all([
+    f.actions.markCollectorSelfPaid('project'),
+    f.actions.markCollectorSelfPaid('project'),
+  ])
+
+  assert.equal(f.tables.payments.length, 1)
+  assert.equal(f.tables.payments[0].participant_id, 'collector')
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
+})
+
+test('legacy organizer self-confirmation uses the organizer identity when collector is null', async () => {
+  const f = paymentConfirmationFixture()
+  f.tables.projects[0].collector_participant_id = null
+
+  await f.actions.markCollectorSelfPaid('project')
+
+  assert.equal(f.tables.payments.length, 1)
+  assert.equal(f.tables.payments[0].participant_id, 'collector')
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
+})
+
+test('concurrent legacy start-collecting requests preserve one counted organizer payment', async () => {
+  const f = paymentConfirmationFixture()
+  f.tables.projects[0].status = 'pending'
+  f.tables.projects[0].collector_participant_id = null
+
+  await Promise.all([
+    f.actions.startCollecting('project'),
+    f.actions.startCollecting('project'),
+  ])
+
+  assert.equal(f.tables.projects[0].status, 'collecting')
+  assert.equal(f.tables.payments.length, 1)
+  assert.equal(f.tables.payments[0].participant_id, 'collector')
   assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
 })
