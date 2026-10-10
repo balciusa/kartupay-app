@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test --experimental-transform-types src/lib/calendarRovingFocus.test.ts src/lib/datePickerField.test.ts src/lib/timePicker24.test.ts src/lib/projectEventDuration.test.ts src/lib/projectEventDurationIntegration.test.ts src/lib/projectDateSelection.test.ts src/lib/projectDateService.test.ts src/lib/projectFinance.test.ts src/lib/projectActions.test.ts src/lib/projectNotifications.test.ts src/lib/projectNotificationUi.test.ts src/lib/projectSuccessPath.test.ts src/lib/projectShare.test.ts src/lib/projectInvite.test.ts src/lib/newProjectForm.test.ts src/lib/projectTransport.test.ts src/lib/projectTransportServer.test.ts",
+    "test": "node --test --experimental-transform-types src/lib/calendarRovingFocus.test.ts src/lib/datePickerField.test.ts src/lib/timePicker24.test.ts src/lib/projectEventDuration.test.ts src/lib/projectEventDurationIntegration.test.ts src/lib/projectDateSelection.test.ts src/lib/projectDateService.test.ts src/lib/projectFinance.test.ts src/lib/paymentRecipient.test.ts src/lib/projectActions.test.ts src/lib/projectNotifications.test.ts src/lib/projectNotificationUi.test.ts src/lib/projectSuccessPath.test.ts src/lib/projectShare.test.ts src/lib/projectInvite.test.ts src/lib/newProjectForm.test.ts src/lib/projectTransport.test.ts src/lib/projectTransportServer.test.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -20,6 +20,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
+    "ibantools": "4.5.1",
     "lucide-react": "^0.555.0",
     "next": "16.0.7",
     "react": "19.2.0",
