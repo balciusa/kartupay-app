@@ -9,21 +9,21 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 
 export function UserWidget() {
   const { user, loading } = useSupabaseSession()
-  const { authExitError, beginAuthExit, cancelAuthExit } = useAuthPrivacy()
+  const { authExitError, beginAuthExit, cancelAuthExit, completeAuthExit } = useAuthPrivacy()
 
   const handleLogout = async () => {
-    beginAuthExit()
-    notifyOtherTabsOfAuthExit('started')
+    const attemptId = beginAuthExit()
+    notifyOtherTabsOfAuthExit('started', attemptId)
     const { error } = await supabaseBrowser.auth.signOut({ scope: 'global' })
 
     if (error) {
-      notifyOtherTabsOfAuthExit('canceled')
-      cancelAuthExit('Logout failed. Please try again.')
+      notifyOtherTabsOfAuthExit('canceled', attemptId)
+      cancelAuthExit(attemptId, 'Logout failed. Please try again.')
       return
     }
 
-    notifyOtherTabsOfAuthExit('completed')
-    window.location.replace('/login')
+    notifyOtherTabsOfAuthExit('completed', attemptId)
+    completeAuthExit(attemptId)
   }
 
   if (loading) {

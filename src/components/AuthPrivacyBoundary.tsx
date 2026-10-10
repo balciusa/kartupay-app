@@ -5,8 +5,9 @@ import { flushSync } from 'react-dom'
 import { supabaseBrowser } from '@/lib/supabaseClient'
 
 type AuthPrivacyContextValue = {
-  beginAuthExit: () => void
-  cancelAuthExit: (message: string) => void
+  beginAuthExit: () => string
+  cancelAuthExit: (attemptId: string, message: string) => void
+  completeAuthExit: (attemptId: string) => void
   authExitError: string | null
 }
 
@@ -14,11 +15,11 @@ const AuthPrivacyContext = createContext<AuthPrivacyContextValue | null>(null)
 const AUTH_PRIVACY_CHANNEL = 'kartupay-auth-privacy'
 const AUTH_PRIVACY_STORAGE_KEY = 'kartupay-auth-exit'
 type AuthExitPhase = 'started' | 'completed' | 'canceled'
-type AuthExitMessage = { type: 'auth-exit'; phase: AuthExitPhase; nonce: string }
+type AuthExitMessage = { type: 'auth-exit'; phase: AuthExitPhase; attemptId: string }
 
-export function notifyOtherTabsOfAuthExit(phase: AuthExitPhase) {
+export function notifyOtherTabsOfAuthExit(phase: AuthExitPhase, attemptId: string) {
   if (typeof window === 'undefined') return
-  const message: AuthExitMessage = { type: 'auth-exit', phase, nonce: crypto.randomUUID() }
+  const message: AuthExitMessage = { type: 'auth-exit', phase, attemptId }
 
   try {
     const channel = new BroadcastChannel(AUTH_PRIVACY_CHANNEL)
@@ -36,16 +37,19 @@ export function notifyOtherTabsOfAuthExit(phase: AuthExitPhase) {
 }
 
 const redirectToLogin = () => {
-  if (window.location.pathname !== '/login') {
-    window.location.replace('/login')
-  }
+  // Replacing /login with itself deliberately reloads tabs whose content was
+  // blocked by another tab's logout. The fresh document is safe to reveal.
+  window.location.replace('/login')
 }
 
 export function AuthPrivacyBoundary({ children }: { children: React.ReactNode }) {
   const [contentBlocked, setContentBlocked] = useState(false)
   const [authExitError, setAuthExitError] = useState<string | null>(null)
   const hadAuthenticatedSession = useRef(false)
-  const localAuthExitPending = useRef(false)
+  const activeAuthExits = useRef(new Set<string>())
+  const finishedAuthExits = useRef(new Set<string>())
+  const localAuthExits = useRef(new Set<string>())
+  const sessionVerificationGeneration = useRef(0)
 
   const blockContent = useCallback(() => {
     flushSync(() => setContentBlocked(true))
@@ -56,23 +60,46 @@ export function AuthPrivacyBoundary({ children }: { children: React.ReactNode })
     redirectToLogin()
   }, [blockContent])
 
-  const beginAuthExit = useCallback(() => {
-    localAuthExitPending.current = true
+  const registerAuthExit = useCallback((attemptId: string, isLocal: boolean) => {
+    // BroadcastChannel and storage are independent transports. A late duplicate
+    // start must not revive an attempt whose terminal phase already arrived.
+    if (finishedAuthExits.current.has(attemptId)) return
+    sessionVerificationGeneration.current += 1
+    activeAuthExits.current.add(attemptId)
+    if (isLocal) localAuthExits.current.add(attemptId)
     setAuthExitError(null)
     blockContent()
   }, [blockContent])
-  const cancelAuthExit = useCallback((message: string) => {
-    localAuthExitPending.current = false
-    setAuthExitError(message)
-    setContentBlocked(false)
-  }, [])
 
-  const verifyRestoredSession = useCallback(async () => {
+  const beginAuthExit = useCallback(() => {
+    const attemptId = crypto.randomUUID()
+    registerAuthExit(attemptId, true)
+    return attemptId
+  }, [registerAuthExit])
+
+  const completeAuthExit = useCallback((attemptId: string) => {
+    sessionVerificationGeneration.current += 1
+    finishedAuthExits.current.add(attemptId)
+    activeAuthExits.current.delete(attemptId)
+    localAuthExits.current.delete(attemptId)
+    blockAndRedirect()
+  }, [blockAndRedirect])
+
+  const verifyRestoredSession = useCallback(async (force = false) => {
     const privateContentIsMounted = document.querySelector('[data-private-project-content="true"]') !== null
-    if (!hadAuthenticatedSession.current && !privateContentIsMounted) return
+    if (!force && !hadAuthenticatedSession.current && !privateContentIsMounted) return
 
+    const verificationGeneration = ++sessionVerificationGeneration.current
     blockContent()
     const { data } = await supabaseBrowser.auth.getSession()
+
+    // A logout may start while the session lookup is in flight. Never let an
+    // earlier lookup override that newer privacy state.
+    if (
+      verificationGeneration !== sessionVerificationGeneration.current ||
+      activeAuthExits.current.size > 0
+    ) return
+
     if (!data.session) {
       blockAndRedirect()
       return
@@ -81,6 +108,23 @@ export function AuthPrivacyBoundary({ children }: { children: React.ReactNode })
     setContentBlocked(false)
   }, [blockAndRedirect, blockContent])
 
+  const cancelAuthExit = useCallback((attemptId: string, message?: string) => {
+    sessionVerificationGeneration.current += 1
+    finishedAuthExits.current.add(attemptId)
+    activeAuthExits.current.delete(attemptId)
+    localAuthExits.current.delete(attemptId)
+    if (message) setAuthExitError(message)
+
+    if (activeAuthExits.current.size > 0) {
+      blockContent()
+      return
+    }
+
+    // A SIGNED_OUT event may have raced with the failed request. Revalidate
+    // instead of revealing cached content solely because this attempt ended.
+    void verifyRestoredSession(true)
+  }, [blockContent, verifyRestoredSession])
+
   useEffect(() => {
     const { data: { subscription } } = supabaseBrowser.auth.onAuthStateChange((event, session) => {
       if (session) {
@@ -88,7 +132,7 @@ export function AuthPrivacyBoundary({ children }: { children: React.ReactNode })
       }
 
       if (event === 'SIGNED_OUT') {
-        if (!localAuthExitPending.current) {
+        if (localAuthExits.current.size === 0) {
           blockAndRedirect()
         }
       }
@@ -107,10 +151,10 @@ export function AuthPrivacyBoundary({ children }: { children: React.ReactNode })
     }
 
     const handleAuthExitMessage = (message: AuthExitMessage) => {
-      if (message.type !== 'auth-exit') return
-      if (message.phase === 'started') blockContent()
-      if (message.phase === 'completed') blockAndRedirect()
-      if (message.phase === 'canceled') setContentBlocked(false)
+      if (message.type !== 'auth-exit' || typeof message.attemptId !== 'string') return
+      if (message.phase === 'started') registerAuthExit(message.attemptId, false)
+      if (message.phase === 'completed') completeAuthExit(message.attemptId)
+      if (message.phase === 'canceled') cancelAuthExit(message.attemptId)
     }
 
     const handleBroadcastMessage = (event: MessageEvent<AuthExitMessage>) => {
@@ -147,13 +191,14 @@ export function AuthPrivacyBoundary({ children }: { children: React.ReactNode })
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       delete document.documentElement.dataset.authPrivacyReady
     }
-  }, [blockAndRedirect, blockContent, verifyRestoredSession])
+  }, [blockAndRedirect, cancelAuthExit, completeAuthExit, registerAuthExit, verifyRestoredSession])
 
   const contextValue = useMemo<AuthPrivacyContextValue>(() => ({
     beginAuthExit,
     cancelAuthExit,
+    completeAuthExit,
     authExitError,
-  }), [authExitError, beginAuthExit, cancelAuthExit])
+  }), [authExitError, beginAuthExit, cancelAuthExit, completeAuthExit])
 
   return (
     <AuthPrivacyContext.Provider value={contextValue}>

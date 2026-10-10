@@ -1,7 +1,8 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test'
+import { expect, test, type BrowserContext, type Page, type Route } from '@playwright/test'
 
 const projectId = '00000000-0000-4000-8000-000000000002'
 const projectPath = `/project/${projectId}`
+const logoutEndpoint = '**/auth/v1/logout**'
 
 // Logout intentionally broadcasts across same-origin tabs, so these scenarios
 // must not send competing auth-exit signals in parallel.
@@ -13,71 +14,154 @@ async function login(context: BrowserContext, page: Page) {
   await page.getByLabel('Password').fill('test-password')
   await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page).toHaveURL(new RegExp(`${projectPath}$`), { timeout: 15_000 })
-  await expect(page.getByRole('tab', { name: 'Overview' })).toBeVisible({ timeout: 15_000 })
+  await expectPrivateProjectContent(page)
   await expect(page.locator('html[data-auth-privacy-ready="true"]')).toHaveCount(1)
 
   // Confirm the authenticated browser context is reusable by additional tabs.
   await expect.poll(() => context.cookies().then(cookies => cookies.some(cookie => cookie.name.startsWith('sb-')))).toBe(true)
 }
 
+async function openAuthenticatedProject(context: BrowserContext) {
+  const page = await context.newPage()
+  await page.goto(projectPath)
+  await expectPrivateProjectContent(page)
+  await expect(page.locator('html[data-auth-privacy-ready="true"]')).toHaveCount(1)
+  return page
+}
+
+async function expectPrivateProjectContent(page: Page) {
+  await expect(page.getByRole('tab', { name: 'Overview' })).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('[data-private-project-content="true"]')).toHaveCount(1)
+}
+
 async function expectNoPrivateProjectContent(page: Page) {
   await expect(page.getByRole('tab', { name: 'Overview' })).toHaveCount(0)
   await expect(page.getByRole('tab', { name: 'Admin' })).toHaveCount(0)
+  await expect(page.locator('[data-private-project-content="true"]')).toHaveCount(0)
 }
 
-async function recordPrivacyScreen(page: Page, marker: string) {
+async function recordPrivateExposureAfterBlock(page: Page, marker: string) {
   await page.evaluate(markerName => {
-    const observer = new MutationObserver(() => {
-      const privacyScreen = document.querySelector('[data-auth-privacy="blocked"]')
-      const privateTab = document.querySelector('[role="tab"]')
-      if (privacyScreen && !privateTab) {
-        window.sessionStorage.setItem(markerName, 'true')
-        observer.disconnect()
+    let blockObserved = false
+    const inspect = () => {
+      if (document.querySelector('[data-auth-privacy="blocked"]')) blockObserved = true
+      if (blockObserved && document.querySelector('[data-private-project-content="true"]')) {
+        window.sessionStorage.setItem(markerName, 'exposed')
       }
-    })
-    observer.observe(document.body, { childList: true, subtree: true })
+    }
+    inspect()
+    new MutationObserver(inspect).observe(document.body, { childList: true, subtree: true })
   }, marker)
 }
 
-test('logout hides private content before the request completes and survives Back and direct access', async ({ context, page }) => {
+async function delayRoute(route: Route, delayMs: number, status: number) {
+  await new Promise(resolve => setTimeout(resolve, delayMs))
+  if (status >= 400) {
+    await route.fulfill({
+      status,
+      contentType: 'application/json',
+      body: JSON.stringify({ message: 'Intentional E2E logout failure' }),
+    })
+    return
+  }
+  await route.fulfill({ status })
+}
+
+test('logout stays blocked through visibility and BFCache revalidation races', async ({ context, page }) => {
   await login(context, page)
-  await recordPrivacyScreen(page, 'privacy-screen-before-redirect')
+  await recordPrivateExposureAfterBlock(page, 'revalidation-race-exposure')
+  await page.route(logoutEndpoint, route => delayRoute(route, 700, 204))
 
   await page.getByRole('button', { name: 'Logout' }).click()
+  await expect(page.locator('[data-auth-privacy="blocked"]')).toBeVisible()
 
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  await page.waitForTimeout(150)
+
+  await expect(page.locator('[data-auth-privacy="blocked"]')).toBeVisible()
   await expectNoPrivateProjectContent(page)
+  await expect.poll(() => page.evaluate(() => window.sessionStorage.getItem('revalidation-race-exposure')))
+    .toBeNull()
+
   await expect(page).toHaveURL(/\/login$/)
-  await expect.poll(() => page.evaluate(() => window.sessionStorage.getItem('privacy-screen-before-redirect')))
-    .toBe('true')
+  await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
+  await expectNoPrivateProjectContent(page)
+})
+
+test('a login tab finishes logout and Back cannot restore private content', async ({ context, page }) => {
+  await login(context, page)
+  const logoutTab = await openAuthenticatedProject(context)
+
+  // Keep the private project as an earlier real history entry.
+  await page.goto('/login')
+  await expect(page).toHaveURL(/\/login$/)
+
+  await logoutTab.getByRole('button', { name: 'Logout' }).click()
+
+  // The completed message must reload an already-open /login route rather
+  // than leaving its privacy screen mounted forever.
+  await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
+  await expect(page.locator('[data-auth-privacy="blocked"]')).toHaveCount(0)
+  await expectNoPrivateProjectContent(page)
 
   await page.goBack()
-  await expect(page).not.toHaveURL(new RegExp(`${projectPath}$`))
-  await expectNoPrivateProjectContent(page)
-
-  await page.goto(projectPath)
-  await expect(page.getByRole('heading', { name: 'Private browser regression project' })).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`${projectPath}$`))
   await expect(page.getByText('Sign in to continue')).toBeVisible()
   await expectNoPrivateProjectContent(page)
 })
 
-test('logout in another tab removes private content without a private-data flash', async ({ context, page }) => {
+test('one failed logout restores authenticated content only after session revalidation', async ({ context, page }) => {
   await login(context, page)
-  const secondTab = await context.newPage()
-  await secondTab.goto(projectPath)
-  await expect(secondTab.getByRole('tab', { name: 'Overview' })).toBeVisible()
-  await recordPrivacyScreen(secondTab, 'cross-tab-privacy-screen')
+  const secondTab = await openAuthenticatedProject(context)
+  await page.route(logoutEndpoint, route => delayRoute(route, 250, 500))
 
   await page.getByRole('button', { name: 'Logout' }).click()
+  await expect(page.locator('[data-auth-privacy="blocked"]')).toBeVisible()
+  await expect(secondTab.locator('[data-auth-privacy="blocked"]')).toBeVisible()
 
-  await expectNoPrivateProjectContent(secondTab)
-  await expect(secondTab).toHaveURL(/\/login$/)
-  await expect.poll(() => secondTab.evaluate(() => window.sessionStorage.getItem('cross-tab-privacy-screen')))
-    .toBe('true')
+  await expectPrivateProjectContent(page)
+  await expectPrivateProjectContent(secondTab)
+  await expect(page.getByText('Logout failed. Please try again.')).toHaveCount(1)
 })
 
-test('a restored page revalidates an expired session before showing private content', async ({ context, page }) => {
+test('a failed concurrent logout cannot reveal content while another attempt is pending', async ({ context, page }) => {
   await login(context, page)
-  await recordPrivacyScreen(page, 'expired-session-privacy-screen')
+  const secondTab = await openAuthenticatedProject(context)
+  await recordPrivateExposureAfterBlock(page, 'first-concurrent-exposure')
+  await recordPrivateExposureAfterBlock(secondTab, 'second-concurrent-exposure')
+
+  await page.route(logoutEndpoint, route => delayRoute(route, 200, 500))
+  await secondTab.route(logoutEndpoint, route => delayRoute(route, 900, 204))
+
+  await Promise.all([
+    page.getByRole('button', { name: 'Logout' }).click(),
+    secondTab.getByRole('button', { name: 'Logout' }).click(),
+  ])
+
+  // The first attempt has failed, but the second stable attempt ID remains
+  // active and must keep both tabs blocked.
+  await page.waitForTimeout(350)
+  await expect(page.locator('[data-auth-privacy="blocked"]')).toBeVisible()
+  await expect(secondTab.locator('[data-auth-privacy="blocked"]')).toBeVisible()
+  await expectNoPrivateProjectContent(page)
+  await expectNoPrivateProjectContent(secondTab)
+  await expect.poll(() => page.evaluate(() => window.sessionStorage.getItem('first-concurrent-exposure')))
+    .toBeNull()
+  await expect.poll(() => secondTab.evaluate(() => window.sessionStorage.getItem('second-concurrent-exposure')))
+    .toBeNull()
+
+  await expect(page).toHaveURL(/\/login$/)
+  await expect(secondTab).toHaveURL(/\/login$/)
+  await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
+  await expect(secondTab.getByRole('button', { name: 'Sign in' })).toBeVisible()
+})
+
+test('a restored page revalidates an externally expired session before showing private content', async ({ context, page }) => {
+  await login(context, page)
+  await recordPrivateExposureAfterBlock(page, 'expired-session-exposure')
 
   await context.clearCookies()
   await page.evaluate(() => {
@@ -86,6 +170,6 @@ test('a restored page revalidates an expired session before showing private cont
 
   await expectNoPrivateProjectContent(page)
   await expect(page).toHaveURL(/\/login$/)
-  await expect.poll(() => page.evaluate(() => window.sessionStorage.getItem('expired-session-privacy-screen')))
-    .toBe('true')
+  await expect.poll(() => page.evaluate(() => window.sessionStorage.getItem('expired-session-exposure')))
+    .toBeNull()
 })
