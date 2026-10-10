@@ -1706,7 +1706,10 @@ export default async function ProjectPage({
   }
 
   return (
-    <main className="p-6 max-w-4xl mx-auto space-y-6">
+    <main
+      className="p-6 max-w-4xl mx-auto space-y-6"
+      data-private-project-content={project.is_public !== true ? 'true' : undefined}
+    >
       <section className="relative rounded-3xl border border-slate-200 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.14),transparent_45%),linear-gradient(to_bottom,#ffffff,#f8fafc)] p-5 md:p-7">
         <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0 space-y-3">

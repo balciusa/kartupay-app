@@ -1,5 +1,6 @@
 'use client'
 
+import { useAuthPrivacy, notifyOtherTabsOfAuthExit } from '@/components/AuthPrivacyBoundary'
 import Link from 'next/link'
 import { supabaseBrowser } from '@/lib/supabaseClient'
 import { useSupabaseSession } from '@/lib/useSupabaseSession'
@@ -8,9 +9,21 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 
 export function UserWidget() {
   const { user, loading } = useSupabaseSession()
+  const { authExitError, beginAuthExit, cancelAuthExit } = useAuthPrivacy()
 
   const handleLogout = async () => {
-    await supabaseBrowser.auth.signOut()
+    beginAuthExit()
+    notifyOtherTabsOfAuthExit('started')
+    const { error } = await supabaseBrowser.auth.signOut({ scope: 'global' })
+
+    if (error) {
+      notifyOtherTabsOfAuthExit('canceled')
+      cancelAuthExit('Logout failed. Please try again.')
+      return
+    }
+
+    notifyOtherTabsOfAuthExit('completed')
+    window.location.replace('/login')
   }
 
   if (loading) {
@@ -41,6 +54,7 @@ export function UserWidget() {
       <Button size="sm" variant="outline" onClick={handleLogout}>
         Logout
       </Button>
+      {authExitError && <span className="sr-only" role="alert">{authExitError}</span>}
     </div>
   )
 }
