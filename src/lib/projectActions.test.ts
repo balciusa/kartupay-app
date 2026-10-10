@@ -38,9 +38,10 @@ function fixture() {
     ],
     poll_votes: [{ id: 'vote', poll_id: 'poll', option_id: 'option-a', user_id: 'voter' }],
     project_date_options: [], project_date_responses: [], project_notifications: [],
-    messages: [], chat_reads: [], join_requests: [],
+    messages: [], chat_reads: [], join_requests: [], payments: [], payment_signals: [],
   }
   const writes: string[] = []
+  const activityEvents: Array<Record<string, unknown>> = []
   const failures = new Map<string, { code: string; message: string }>()
   const missingColumns = new Set<string>()
   const selects: Array<{ table: string; fields?: string }> = []
@@ -116,6 +117,21 @@ function fixture() {
               ))
             }
           }
+          if (operation === 'insert' && table === 'payments') {
+            const proposedPayments = Array.isArray(values) ? values : [values]
+            const duplicateCountedPayment = proposedPayments.some(payment =>
+              payment.is_counted === true && (tables.payments ?? []).some(existing =>
+                existing.participant_id === payment.participant_id && existing.is_counted === true
+              )
+            )
+            if (duplicateCountedPayment) {
+              resolve({
+                data: null,
+                error: { code: '23505', message: 'duplicate counted payment confirmation' },
+              })
+              return
+            }
+          }
           if (operation !== 'select') writes.push(`${table}:${operation}`)
           if (operation === 'update') rows.forEach(row => Object.assign(row, values))
           if (operation === 'delete') {
@@ -126,7 +142,7 @@ function fixture() {
           }
           if (operation === 'insert') {
             rows = (Array.isArray(values) ? values : [values]).map((row, i) => ({
-              id: `new-${i}`,
+              id: `new-${tables[table].length + i}`,
               ...(table === 'participants' ? { left_at: null } : {}),
               ...row,
             }))
@@ -141,7 +157,7 @@ function fixture() {
   const modules: Record<string, unknown> = {
     '@/lib/supabaseAdmin': { supabaseAdmin: db },
     '@/lib/supabaseServer': { getCurrentUserId: async () => currentUserId },
-    '@/lib/activityLog': { recordProjectActivity: async () => {} },
+    '@/lib/activityLog': { recordProjectActivity: async (input: Record<string, unknown>) => { activityEvents.push(input) } },
     '@/lib/projectFinance': finance,
     '@/lib/projectJoinRequests': joinRequests,
     '@/lib/projectInvite': projectInvite,
@@ -223,6 +239,7 @@ function fixture() {
   return {
     tables,
     writes,
+    activityEvents,
     failures,
     missingColumns,
     selects,
@@ -256,6 +273,29 @@ function pendingJoinFixture(role: string, collectorParticipantId = 'collector') 
     status: 'pending',
     created_at: '2026-09-24T10:00:00.000Z',
   }]
+  return f
+}
+
+function paymentConfirmationFixture() {
+  const f = fixture()
+  Object.assign(f.tables.projects[0], {
+    status: 'collecting',
+    finance_mode: 'managed',
+    collector_participant_id: 'collector',
+    date_mode: 'fixed',
+    selected_date_option_id: null,
+  })
+  f.tables.participants = [
+    {
+      id: 'collector', project_id: 'project', user_id: 'collector-user', role: 'organizer',
+      left_at: null, attendance_status: 'confirmed',
+    },
+    {
+      id: 'member', project_id: 'project', user_id: 'member-user', role: 'member',
+      left_at: null, attendance_status: 'confirmed',
+    },
+  ]
+  f.setCurrentUserId('collector-user')
   return f
 }
 
@@ -1164,4 +1204,128 @@ test('read-only Chat renders existing messages and replies without any posting c
   const active = renderToStaticMarkup(createElement(exports.default, { ...props, canPost: true }))
   assert.match(active, /<form/)
   assert.match(active, />Reply<\/button>/)
+})
+
+test('only the active project collector can confirm a base payment', async () => {
+  const f = paymentConfirmationFixture()
+  f.setCurrentUserId('member-user')
+
+  await assert.rejects(
+    f.actions.markReceived('member'),
+    /Only the active collector can confirm participant payments/
+  )
+  assert.deepEqual(f.tables.payments, [])
+  assert.deepEqual(f.activityEvents, [])
+})
+
+test('legacy projects without an assigned collector let an active organizer confirm a base payment', async () => {
+  const f = paymentConfirmationFixture()
+  f.tables.projects[0].collector_participant_id = null
+
+  await f.actions.markReceived('member')
+
+  assert.equal(f.tables.payments.length, 1)
+  assert.equal(f.tables.payments[0].participant_id, 'member')
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
+})
+
+test('legacy collector fallback does not authorize an ordinary participant', async () => {
+  const f = paymentConfirmationFixture()
+  f.tables.projects[0].collector_participant_id = null
+  f.setCurrentUserId('member-user')
+
+  await assert.rejects(
+    f.actions.markReceived('collector'),
+    /Only the active collector can confirm participant payments/
+  )
+  assert.deepEqual(f.tables.payments, [])
+  assert.deepEqual(f.activityEvents, [])
+})
+
+test('a signed-out caller cannot confirm a base payment', async () => {
+  const f = paymentConfirmationFixture()
+  f.setCurrentUserId(null)
+
+  await assert.rejects(
+    f.actions.markReceived('member'),
+    /You must be signed in/
+  )
+  assert.deepEqual(f.tables.payments, [])
+  assert.deepEqual(f.activityEvents, [])
+})
+
+test('a former collector cannot confirm a base payment', async () => {
+  const f = paymentConfirmationFixture()
+  f.tables.participants[0].left_at = '2026-10-01T00:00:00.000Z'
+
+  await assert.rejects(
+    f.actions.markReceived('member'),
+    /Only the active collector can confirm participant payments/
+  )
+  assert.deepEqual(f.tables.payments, [])
+  assert.deepEqual(f.activityEvents, [])
+})
+
+test('repeated base payment confirmation is idempotent', async () => {
+  const f = paymentConfirmationFixture()
+
+  await f.actions.markReceived('member')
+  await f.actions.markReceived('member')
+
+  assert.equal(f.tables.payments.length, 1)
+  assert.equal(f.tables.payments[0].participant_id, 'member')
+  assert.equal(f.tables.payments[0].is_counted, true)
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
+})
+
+test('concurrent base payment confirmations preserve one row and one activity', async () => {
+  const f = paymentConfirmationFixture()
+
+  await Promise.all([
+    f.actions.markReceived('member'),
+    f.actions.markReceived('member'),
+  ])
+
+  assert.equal(f.tables.payments.length, 1)
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
+})
+
+test('concurrent collector self-confirmations preserve one counted row and one activity', async () => {
+  const f = paymentConfirmationFixture()
+
+  await Promise.all([
+    f.actions.markCollectorSelfPaid('project'),
+    f.actions.markCollectorSelfPaid('project'),
+  ])
+
+  assert.equal(f.tables.payments.length, 1)
+  assert.equal(f.tables.payments[0].participant_id, 'collector')
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
+})
+
+test('legacy organizer self-confirmation uses the organizer identity when collector is null', async () => {
+  const f = paymentConfirmationFixture()
+  f.tables.projects[0].collector_participant_id = null
+
+  await f.actions.markCollectorSelfPaid('project')
+
+  assert.equal(f.tables.payments.length, 1)
+  assert.equal(f.tables.payments[0].participant_id, 'collector')
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
+})
+
+test('concurrent legacy start-collecting requests preserve one counted organizer payment', async () => {
+  const f = paymentConfirmationFixture()
+  f.tables.projects[0].status = 'pending'
+  f.tables.projects[0].collector_participant_id = null
+
+  await Promise.all([
+    f.actions.startCollecting('project'),
+    f.actions.startCollecting('project'),
+  ])
+
+  assert.equal(f.tables.projects[0].status, 'collecting')
+  assert.equal(f.tables.payments.length, 1)
+  assert.equal(f.tables.payments[0].participant_id, 'collector')
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
 })

@@ -56,6 +56,26 @@ const nextJoinRequestOccurrenceAt = (previousCreatedAt: string | null | undefine
   return new Date(Number.isNaN(previousTime) ? Date.now() : Math.max(Date.now(), previousTime + 1)).toISOString()
 }
 
+async function createCountedPaymentOnce(participantId: string): Promise<string | null> {
+  const { data: existingCounted, error: existingErr } = await supabaseAdmin
+    .from('payments')
+    .select('id')
+    .eq('participant_id', participantId)
+    .eq('is_counted', true)
+    .limit(1)
+  if (existingErr) throw existingErr
+  if ((existingCounted?.length ?? 0) > 0) return null
+
+  const { data: paymentRow, error: paymentErr } = await supabaseAdmin
+    .from('payments')
+    .insert({ participant_id: participantId, is_counted: true })
+    .select('id')
+    .single()
+  if (paymentErr?.code === '23505') return null
+  if (paymentErr) throw paymentErr
+  return paymentRow?.id ?? null
+}
+
 export async function setCollector(projectId: string, participantId: string) {
   'use server'
   const uid = await getCurrentUserId()
@@ -164,7 +184,8 @@ export async function startCollecting(projectId: string) {
     .single()
   if (projectErr || !project) throw projectErr || new Error('Project not found')
 
-  if (!project.collector_participant_id || manager.id !== project.collector_participant_id) {
+  const collectorParticipantId = project.collector_participant_id ?? manager.id
+  if (manager.id !== collectorParticipantId) {
     throw new Error('Only the collector can start collecting')
   }
 
@@ -180,7 +201,7 @@ export async function startCollecting(projectId: string) {
     throw new Error('Select a final project date before opening payments')
   }
 
-  await requireDateReadyForPayment(projectId, project.collector_participant_id)
+  await requireDateReadyForPayment(projectId, collectorParticipantId)
 
   const { count: activeParticipantsCount, error: countErr } = await supabaseAdmin
     .from('participants')
@@ -222,29 +243,12 @@ export async function startCollecting(projectId: string) {
     }
   }
 
-  const { data: existingCounted, error: existingErr } = await supabaseAdmin
-    .from('payments')
-    .select('id')
-    .eq('participant_id', project.collector_participant_id)
-    .eq('is_counted', true)
-    .limit(1)
-  if (existingErr) throw existingErr
-
-  let basePaymentId: string | null = null
-  if ((existingCounted?.length ?? 0) === 0) {
-    const { data: paymentRow, error: paymentErr } = await supabaseAdmin
-      .from('payments')
-      .insert({ participant_id: project.collector_participant_id, is_counted: true })
-      .select('id')
-      .single()
-    if (paymentErr) throw paymentErr
-    basePaymentId = paymentRow?.id ?? null
-  }
+  const basePaymentId = await createCountedPaymentOnce(collectorParticipantId)
 
   const { error: clrErr } = await supabaseAdmin
     .from('payment_signals')
     .update({ cleared_at: startedAtIso })
-    .eq('participant_id', project.collector_participant_id)
+    .eq('participant_id', collectorParticipantId)
     .is('cleared_at', null)
   if (clrErr) {
     const code = typeof clrErr === 'object' && clrErr !== null && 'code' in clrErr
@@ -308,13 +312,13 @@ export async function startCollecting(projectId: string) {
         left_at: membership.left_at,
       })),
       activeParticipantIds,
-      projectCollectorParticipantId: project.collector_participant_id,
+      projectCollectorParticipantId: collectorParticipantId,
     })
 
     const selfRows = dueRows.filter(
       row =>
-        row.payer_participant_id === project.collector_participant_id &&
-        row.collector_participant_id === project.collector_participant_id &&
+        row.payer_participant_id === collectorParticipantId &&
+        row.collector_participant_id === collectorParticipantId &&
         row.amount_cents > 0
     )
 
@@ -323,7 +327,7 @@ export async function startCollecting(projectId: string) {
       const { data: existingExtraPayments, error: existingExtraErr } = await supabaseAdmin
         .from('extra_payments')
         .select('id, extra_id, payer_participant_id, reported_at, confirmed_at')
-        .eq('payer_participant_id', project.collector_participant_id)
+        .eq('payer_participant_id', collectorParticipantId)
         .in('extra_id', selfExtraIds)
       if (existingExtraErr) {
         if (missingTable(existingExtraErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
@@ -339,11 +343,11 @@ export async function startCollecting(projectId: string) {
           const { error: updateErr } = await supabaseAdmin
             .from('extra_payments')
             .update({
-              collector_participant_id: project.collector_participant_id,
+              collector_participant_id: collectorParticipantId,
               amount_cents: row.amount_cents,
               reported_at: existingPayment.reported_at ?? null,
               confirmed_at: startedAtIso,
-              confirmed_by_participant_id: project.collector_participant_id,
+              confirmed_by_participant_id: collectorParticipantId,
             })
             .eq('id', existingPayment.id)
           if (updateErr) {
@@ -359,7 +363,7 @@ export async function startCollecting(projectId: string) {
               collector_participant_id: row.collector_participant_id,
               amount_cents: row.amount_cents,
               confirmed_at: startedAtIso,
-              confirmed_by_participant_id: project.collector_participant_id,
+              confirmed_by_participant_id: collectorParticipantId,
             })
           if (insertErr) {
             if (missingTable(insertErr, 'extra_payments')) throw friendlyExtraPaymentsUnavailableError()
@@ -373,7 +377,7 @@ export async function startCollecting(projectId: string) {
           actorUserId,
           actorParticipantId,
           targetUserId: uid,
-          targetParticipantId: project.collector_participant_id,
+          targetParticipantId: collectorParticipantId,
           extraId: row.extra_id,
           metadata: {
             scope: 'extra',
@@ -406,7 +410,7 @@ export async function startCollecting(projectId: string) {
       actorUserId,
       actorParticipantId,
       targetUserId: uid,
-      targetParticipantId: project.collector_participant_id,
+      targetParticipantId: collectorParticipantId,
       paymentId: basePaymentId,
       metadata: {
         is_counted: true,
@@ -2631,24 +2635,38 @@ export async function confirmLateJoinReceipt(transferId: string) {
  * Mark a participant's payment as received.
  */
 export async function markReceived(participantId: string) {
+  'use server'
   const uid = await getCurrentUserId()
+  if (!uid) throw new Error('You must be signed in')
   const { data: participant, error: e1 } = await supabaseAdmin
     .from('participants')
-    .select('id, user_id, project_id')
+    .select('id, user_id, project_id, left_at')
     .eq('id', participantId)
+    .is('left_at', null)
     .single()
   if (e1 || !participant) throw new Error('Participant not found')
   await requireManagedFinanceProject(participant.project_id)
-  const actor = uid
-    ? await getActiveParticipantContext(participant.project_id, uid)
-    : { actorUserId: null, actorParticipantId: null as string | null }
 
   const { data: project, error: projectErr } = await supabaseAdmin
     .from('projects')
-    .select('status')
+    .select('status, collector_participant_id')
     .eq('id', participant.project_id)
     .maybeSingle()
   if (projectErr || !project) throw projectErr || new Error('Project not found')
+
+  let collector: { id: string }
+  try {
+    collector = await requireActiveManager(participant.project_id, uid)
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Not authorized') {
+      throw new Error('Only the active collector can confirm participant payments')
+    }
+    throw error
+  }
+  if (participant.id === collector.id) {
+    throw new Error('Only the active collector can confirm participant payments')
+  }
+
   const projectStatus = normalizeProjectStatus(project.status)
   if (projectStatus === 'pending') {
     throw new Error('Start collecting before recording payments')
@@ -2658,21 +2676,20 @@ export async function markReceived(participantId: string) {
   }
   await requireDateReadyForPayment(participant.project_id, participant.id)
 
-  const { data: paymentRow, error: e3 } = await supabaseAdmin
-    .from('payments')
-    .insert({ participant_id: participantId, is_counted: true })
-    .select('id')
-    .single()
-  if (e3) throw e3
+  const paymentId = await createCountedPaymentOnce(participantId)
+  if (!paymentId) {
+    revalidatePath(`/project/${participant.project_id}`)
+    return
+  }
 
   await recordProjectActivity({
     projectId: participant.project_id,
     entryType: 'payment_confirmed',
-    actorUserId: actor.actorUserId,
-    actorParticipantId: actor.actorParticipantId,
+    actorUserId: uid,
+    actorParticipantId: collector.id,
     targetUserId: participant.user_id ?? null,
     targetParticipantId: participant.id,
-    paymentId: paymentRow?.id ?? null,
+    paymentId,
     metadata: {
       is_counted: true,
     },
@@ -2719,7 +2736,8 @@ export async function markCollectorSelfPaid(projectId: string) {
     .single()
   if (projectErr || !project) throw projectErr || new Error('Project not found')
 
-  if (!project.collector_participant_id || manager.id !== project.collector_participant_id) {
+  const collectorParticipantId = project.collector_participant_id ?? manager.id
+  if (manager.id !== collectorParticipantId) {
     throw new Error('Only the collector can mark this payment')
   }
 
@@ -2727,7 +2745,7 @@ export async function markCollectorSelfPaid(projectId: string) {
   if (status !== 'collecting' || project.canceled_at || project.aborted_at) {
     throw new Error('Payments are not editable for this project status')
   }
-  await requireDateReadyForPayment(projectId, project.collector_participant_id)
+  await requireDateReadyForPayment(projectId, collectorParticipantId)
 
   const { count: activeParticipantsCount, error: countErr } = await supabaseAdmin
     .from('participants')
@@ -2742,24 +2760,11 @@ export async function markCollectorSelfPaid(projectId: string) {
     throw new Error('Waiting for minimum participants')
   }
 
-  const { data: existingCounted, error: existingErr } = await supabaseAdmin
-    .from('payments')
-    .select('id')
-    .eq('participant_id', project.collector_participant_id)
-    .eq('is_counted', true)
-    .limit(1)
-  if (existingErr) throw existingErr
-  if ((existingCounted?.length ?? 0) > 0) {
+  const paymentId = await createCountedPaymentOnce(collectorParticipantId)
+  if (!paymentId) {
     revalidatePath(`/project/${projectId}`)
     return
   }
-
-  const { data: paymentRow, error: paymentErr } = await supabaseAdmin
-    .from('payments')
-    .insert({ participant_id: project.collector_participant_id, is_counted: true })
-    .select('id')
-    .single()
-  if (paymentErr) throw paymentErr
 
   await recordProjectActivity({
     projectId,
@@ -2767,8 +2772,8 @@ export async function markCollectorSelfPaid(projectId: string) {
     actorUserId: actor.actorUserId,
     actorParticipantId: actor.actorParticipantId,
     targetUserId: uid,
-    targetParticipantId: project.collector_participant_id,
-    paymentId: paymentRow?.id ?? null,
+    targetParticipantId: collectorParticipantId,
+    paymentId,
     metadata: {
       is_counted: true,
       source: 'collector_self_marked',
@@ -2778,7 +2783,7 @@ export async function markCollectorSelfPaid(projectId: string) {
   const { error: clrErr } = await supabaseAdmin
     .from('payment_signals')
     .update({ cleared_at: new Date().toISOString() })
-    .eq('participant_id', project.collector_participant_id)
+    .eq('participant_id', collectorParticipantId)
     .is('cleared_at', null)
   if (clrErr) {
     const code = typeof clrErr === 'object' && clrErr !== null && 'code' in clrErr
