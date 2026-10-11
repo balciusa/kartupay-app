@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { getCurrentUserId } from '@/lib/supabaseServer'
+import { validatedPaymentOptionsForStorage } from '@/lib/paymentRecipient'
 
 export async function joinProjectSafe(projectId: string) {
   const uid = await getCurrentUserId()
@@ -73,20 +74,20 @@ export async function joinProjectSafe(projectId: string) {
 
   const existingPairs = new Set((existingPOs ?? []).map(po => `${po.type}::${po.value}`))
 
-  const rows =
+  const validatedOptions = validatedPaymentOptionsForStorage(
     (myUPOs ?? [])
       .filter(x => x.is_active)
       .filter(x => !existingPairs.has(`${x.type}::${x.value}`))
-      .map(x => ({
-        participant_id: participantId!,
-        type: x.type as 'revolut' | 'swedbank' | 'iban',
-        label: x.label,
-        value: x.value,
-        priority: x.priority ?? 1,
-        is_active: true,
-      }))
-
-  console.log('[joinProjectSafe] payment_options rows about to insert', rows)
+      .map(x => ({ ...x, recipientName: x.label }))
+  )
+  const rows = validatedOptions.map(x => ({
+    participant_id: participantId!,
+    type: x.type,
+    label: x.label,
+    value: x.value,
+    priority: x.priority ?? 1,
+    is_active: true,
+  }))
 
   if (rows.length > 0) {
     const { error: pErr } = await supabaseAdmin.from('payment_options').insert(rows)

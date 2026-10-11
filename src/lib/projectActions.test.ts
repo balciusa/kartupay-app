@@ -6,6 +6,8 @@ import ts from 'typescript'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import * as finance from './projectFinance.ts'
+import * as paymentRecipient from './paymentRecipient.ts'
+import * as projectPricing from './projectPricing.ts'
 import * as joinRequests from './projectJoinRequests.ts'
 import * as statusUi from './projectStatusUi.ts'
 import * as projectInvite from './projectInvite.ts'
@@ -39,6 +41,7 @@ function fixture() {
     poll_votes: [{ id: 'vote', poll_id: 'poll', option_id: 'option-a', user_id: 'voter' }],
     project_date_options: [], project_date_responses: [], project_notifications: [],
     messages: [], chat_reads: [], join_requests: [], payments: [], payment_signals: [],
+    user_payment_options: [], payment_options: [],
   }
   const writes: string[] = []
   const activityEvents: Array<Record<string, unknown>> = []
@@ -53,7 +56,7 @@ function fixture() {
   const resolvedNotificationTypes: Array<{ projectId: string; recipientUserId: string; types: string[] }> = []
   let joinNotificationResolutionError: Error | null = null
   let beforeEarlySelection: (() => void | Promise<void>) | null = null
-  let currentUserId = 'user'
+  let currentUserId: string | null = 'user'
   const db = {
     async rpc() { return { data: null, error: null } },
     from(table: string) {
@@ -159,6 +162,8 @@ function fixture() {
     '@/lib/supabaseServer': { getCurrentUserId: async () => currentUserId },
     '@/lib/activityLog': { recordProjectActivity: async (input: Record<string, unknown>) => { activityEvents.push(input) } },
     '@/lib/projectFinance': finance,
+    '@/lib/paymentRecipient': paymentRecipient,
+    '@/lib/projectPricing': projectPricing,
     '@/lib/projectJoinRequests': joinRequests,
     '@/lib/projectInvite': projectInvite,
     '@/lib/projectTransportServer': { cleanupParticipantTransport: async () => true },
@@ -250,7 +255,7 @@ function fixture() {
     resolvedAvailabilityNotifications,
     resolvedNotificationTypes,
     actions: exports as typeof import('../app/project/[id]/actions'),
-    setCurrentUserId(userId: string) {
+    setCurrentUserId(userId: string | null) {
       currentUserId = userId
     },
     setBeforeEarlySelection(callback: (() => void | Promise<void>) | null) {
@@ -422,6 +427,60 @@ const projectSettingsForm = (overrides: Record<string, string> = {}) => {
   })) data.set(key, value)
   return data
 }
+
+const managedFinanceSettingsForm = (overrides: Record<string, string> = {}) => projectSettingsForm({
+  finance_mode: 'managed',
+  confirm_finance_mode_change: 'true',
+  totalEur: '100',
+  total_is_per_person: 'false',
+  finance_payment_type: 'iban',
+  finance_payment_name: 'Élodie Martin',
+  finance_payment_value: 'fr14 2004 1010 0505 0001 3m02 606',
+  ...overrides,
+})
+
+test('managed-finance server action rejects invalid IBANs before writing project or payment data', async () => {
+  const f = fixture()
+  f.tables.projects[0].collector_participant_id = 'me'
+
+  await assert.rejects(
+    f.actions.updateProjectSettings('project', managedFinanceSettingsForm({
+      finance_payment_value: 'FR1520041010050500013M02606',
+    })),
+    /IBAN checksum is invalid/
+  )
+
+  assert.deepEqual(f.writes, [])
+  assert.equal(f.tables.user_payment_options.length, 0)
+  assert.equal(f.tables.payment_options.length, 0)
+})
+
+test('managed-finance server action requires the IBAN recipient name', async () => {
+  const f = fixture()
+  f.tables.projects[0].collector_participant_id = 'me'
+
+  await assert.rejects(
+    f.actions.updateProjectSettings('project', managedFinanceSettingsForm({ finance_payment_name: '' })),
+    /Recipient name is required/
+  )
+  assert.deepEqual(f.writes, [])
+})
+
+test('managed-finance server action normalizes recipient name and IBAN in both storage scopes', async () => {
+  const f = fixture()
+  f.tables.projects[0].collector_participant_id = 'me'
+
+  await f.actions.updateProjectSettings('project', managedFinanceSettingsForm({
+    finance_payment_name: '  Élodie   Martin ',
+  }))
+
+  assert.deepEqual(f.tables.user_payment_options.map(row => ({ type: row.type, label: row.label, value: row.value })), [{
+    type: 'iban', label: 'Élodie Martin', value: 'FR1420041010050500013M02606',
+  }])
+  assert.deepEqual(f.tables.payment_options.map(row => ({ type: row.type, label: row.label, value: row.value })), [{
+    type: 'iban', label: 'Élodie Martin', value: 'FR1420041010050500013M02606',
+  }])
+})
 
 test('fixed settings rederive the end when duration changes and ignore the submitted end date', async () => {
   const f = fixture()

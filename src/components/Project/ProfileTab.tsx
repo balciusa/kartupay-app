@@ -2,8 +2,10 @@ import { revalidatePath } from 'next/cache'
 import { getCurrentUserId, getSupabaseServer } from '@/lib/supabaseServer'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import SetPasswordForm from '@/app/settings/SetPasswordForm'
+import { PaymentRecipientFields } from '@/components/Project/PaymentRecipientFields'
 import { Button } from '@/components/ui/button'
 import type { ProjectFinanceMode } from '@/lib/projectFinance'
+import { validatePaymentRecipientInput } from '@/lib/paymentRecipient'
 
 async function updateDisplayName(projectId: string, formData: FormData) {
   'use server'
@@ -27,10 +29,11 @@ async function addLink(projectId: string, formData: FormData) {
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('Sign in required')
 
-  const type = (formData.get('ptype') as string) as 'revolut' | 'swedbank' | 'iban'
-  const label = (formData.get('plabel') as string) || null
-  const value = (formData.get('pvalue') as string) || ''
-  if (!value) return
+  const recipient = validatePaymentRecipientInput({
+    type: String(formData.get('ptype') ?? ''),
+    recipientName: String(formData.get('plabel') ?? ''),
+    value: String(formData.get('pvalue') ?? ''),
+  })
 
   const { data: existing, error: existingErr } = await supabaseAdmin
     .from('user_payment_options')
@@ -47,9 +50,9 @@ async function addLink(projectId: string, formData: FormData) {
     .from('user_payment_options')
     .insert({
       user_id: uid,
-      type,
-      label,
-      value,
+      type: recipient.type,
+      label: recipient.label,
+      value: recipient.value,
       priority,
       is_active: true,
     })
@@ -138,19 +141,15 @@ export async function ProfileTab({ projectId, financeMode = 'managed' }: { proje
       </section>
 
       {financeMode === 'managed' && <section className="surface-card p-4 space-y-3">
-        <h2 className="text-lg font-medium">Payment links</h2>
-        <form action={addLink.bind(null, projectId)} className="grid items-center gap-2 md:grid-cols-4">
-          <select name="ptype" className="control-select md:col-span-1">
-            <option value="revolut">Revolut</option>
-            <option value="swedbank">Swedbank</option>
-            <option value="iban">IBAN</option>
-          </select>
-          <select name="plabel" className="control-select md:col-span-1">
-            <option value="Payment Link">Payment Link</option>
-            <option value="IBAN">IBAN</option>
-          </select>
-          <input name="pvalue" placeholder="URL or IBAN" className="control-input md:col-span-2" />
-          <Button className="rounded-full md:col-span-4" size="sm">Add payment link</Button>
+        <h2 className="text-lg font-medium">Payment recipients</h2>
+        <form action={addLink.bind(null, projectId)} className="space-y-3">
+          <PaymentRecipientFields
+            typeName="ptype"
+            recipientNameName="plabel"
+            valueName="pvalue"
+            gridClassName="grid items-start gap-2 md:grid-cols-2"
+          />
+          <Button className="rounded-full" size="sm">Add payment recipient</Button>
         </form>
 
         <div className="space-y-2">

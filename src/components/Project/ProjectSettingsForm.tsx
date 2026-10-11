@@ -3,6 +3,7 @@
 import { FormEvent, useActionState, useEffect, useRef, useState } from 'react'
 import { EventDateTimeFields } from '@/components/Project/EventDateTimeFields'
 import { EventDurationField } from '@/components/Project/EventDurationField'
+import { PaymentRecipientFields } from '@/components/Project/PaymentRecipientFields'
 import { Button } from '@/components/ui/button'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { getProjectFinanceStrings } from '@/lib/projectFinanceStrings'
@@ -449,14 +450,12 @@ export function ProjectSettingsForm({ action, initial, locale = 'en' }: ProjectS
             <h3 className="text-sm font-semibold text-emerald-950">{financeStrings.paymentRecipient}</h3>
             <p className="mt-1 text-xs text-emerald-800">{financeStrings.paymentRecipientHelp}</p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-[160px_minmax(0,1fr)]">
-            <select name="finance_payment_type" className="control-select" defaultValue="revolut" required>
-              <option value="revolut">Revolut</option>
-              <option value="swedbank">Swedbank</option>
-              <option value="iban">IBAN</option>
-            </select>
-            <input name="finance_payment_value" className="control-input" placeholder={financeStrings.paymentRecipientPlaceholder} required />
-          </div>
+          <PaymentRecipientFields
+            typeName="finance_payment_type"
+            recipientNameName="finance_payment_name"
+            valueName="finance_payment_value"
+            locale={locale}
+          />
         </div>
       )}
       <div className="grid gap-3 md:grid-cols-[minmax(220px,1fr)_minmax(0,1.4fr)]">

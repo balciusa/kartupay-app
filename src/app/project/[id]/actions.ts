@@ -12,6 +12,7 @@ import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { isProjectCanceled } from '@/lib/projectInvite'
 import { cleanupParticipantTransport } from '@/lib/projectTransportServer'
 import { buildExtraDueRows } from '@/lib/extraPayments'
+import { validatePaymentRecipientInput, validatedPaymentOptionsForStorage } from '@/lib/paymentRecipient'
 import {
   applyTimeToDateOption,
   canRemoveDateOption,
@@ -696,18 +697,20 @@ async function clonePaymentOptionsForParticipant(participantId: string, userId: 
   if (existingErr) throw existingErr
 
   const existingPairs = new Set((existingOpts ?? []).map(po => `${po.type}::${po.value}`))
-  const rows =
+  const validatedOptions = validatedPaymentOptionsForStorage(
     (userOptions ?? [])
       .filter(x => x.is_active)
       .filter(x => !existingPairs.has(`${x.type}::${x.value}`))
-      .map(x => ({
-        participant_id: participantId,
-        type: x.type as 'revolut' | 'swedbank' | 'iban',
-        label: x.label,
-        value: x.value,
-        priority: x.priority ?? 1,
-        is_active: true,
-      }))
+      .map(x => ({ ...x, recipientName: x.label }))
+  )
+  const rows = validatedOptions.map(x => ({
+    participant_id: participantId,
+    type: x.type,
+    label: x.label,
+    value: x.value,
+    priority: x.priority ?? 1,
+    is_active: true,
+  }))
 
   if (rows.length === 0) return
 
@@ -4890,6 +4893,13 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   if (requestedFinanceMode !== currentFinanceMode && missingFields.has('finance_mode')) {
     throw new Error('Shared cost management is unavailable until the latest database migration is applied.')
   }
+  const requestedPaymentRecipient = currentFinanceMode === 'none' && requestedFinanceMode === 'managed'
+    ? validatePaymentRecipientInput({
+        type: String(formData.get('finance_payment_type') ?? ''),
+        recipientName: String(formData.get('finance_payment_name') ?? ''),
+        value: String(formData.get('finance_payment_value') ?? ''),
+      })
+    : null
   const visibility = String(formData.get('visibility') ?? (project.is_public === true ? 'public' : 'private')).trim().toLowerCase()
   const isPublic = visibility === 'public'
   const transportEnabled = formData.get('transport_enabled') === 'true'
@@ -5110,18 +5120,13 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
   if (error) throw error
 
   if (currentFinanceMode === 'none' && requestedFinanceMode === 'managed') {
-    const paymentTypeRaw = String(formData.get('finance_payment_type') ?? '').trim()
-    const paymentValue = String(formData.get('finance_payment_value') ?? '').trim()
-    if (!['revolut', 'swedbank', 'iban'].includes(paymentTypeRaw) || !paymentValue) {
-      throw new Error('A payment recipient is required to enable shared cost management')
-    }
-    const paymentType = paymentTypeRaw as 'revolut' | 'swedbank' | 'iban'
+    if (!requestedPaymentRecipient) throw new Error('A payment recipient is required to enable shared cost management')
     const { data: existingUserPaymentOption, error: existingUserPaymentError } = await supabaseAdmin
       .from('user_payment_options')
       .select('id')
       .eq('user_id', uid)
-      .eq('type', paymentType)
-      .eq('value', paymentValue)
+      .eq('type', requestedPaymentRecipient.type)
+      .eq('value', requestedPaymentRecipient.value)
       .maybeSingle()
     if (existingUserPaymentError) throw new Error(existingUserPaymentError.message ?? 'Failed to verify payment recipient')
     if (!existingUserPaymentOption) {
@@ -5134,9 +5139,9 @@ export async function updateProjectSettings(projectId: string, formData: FormDat
         .from('user_payment_options')
         .insert({
           user_id: uid,
-          type: paymentType,
-          label: paymentType === 'iban' ? 'IBAN' : 'Payment Link',
-          value: paymentValue,
+          type: requestedPaymentRecipient.type,
+          label: requestedPaymentRecipient.label,
+          value: requestedPaymentRecipient.value,
           priority: existingPaymentOptionsCount ?? 0,
           is_active: true,
         })
@@ -5231,6 +5236,11 @@ export async function addMeAsOrganizerWithPayment(opts: {
 }) {
   const { projectId, paymentType, paymentLabel, paymentValue } = opts
   await requireManagedFinanceProject(projectId)
+  const recipient = validatePaymentRecipientInput({
+    type: paymentType,
+    recipientName: paymentLabel,
+    value: paymentValue,
+  })
   const priority = opts.priority ?? 1
 
   let uid = await getCurrentUserId()
@@ -5274,9 +5284,9 @@ export async function addMeAsOrganizerWithPayment(opts: {
     .from('payment_options')
     .insert({
       participant_id: participantId,
-      type: paymentType,
-      label: paymentLabel?.trim() || null,
-      value: paymentValue.trim(),
+      type: recipient.type,
+      label: recipient.label,
+      value: recipient.value,
       priority,
       is_active: true,
     })

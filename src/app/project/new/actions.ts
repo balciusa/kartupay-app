@@ -16,6 +16,7 @@ import {
 } from '@/lib/projectEventDuration'
 import { validateBundlePricingConfig } from '@/lib/projectPricing'
 import { validateProjectFinanceInput } from '@/lib/projectFinance'
+import { validatedPaymentOptionsForStorage } from '@/lib/paymentRecipient'
 import { getCurrentUserId } from '@/lib/supabaseServer'
 
 const missingColumn = (
@@ -506,17 +507,20 @@ export async function createProject(formData: FormData) {
     if (eErr) throw new Error('Failed reading project payment options: ' + eErr.message)
 
     const existingPairs = new Set((existingPOs ?? []).map(po => `${po.type}::${po.value}`))
-    const rows = (upos ?? [])
-      .filter(x => x.is_active)
-      .filter(x => !existingPairs.has(`${x.type}::${x.value}`))
-      .map(x => ({
-        participant_id: part.id,
-        type: x.type as 'revolut'|'swedbank'|'iban',
-        label: x.label,
-        value: x.value,
-        priority: x.priority ?? 1,
-        is_active: true,
-      }))
+    const validatedOptions = validatedPaymentOptionsForStorage(
+      (upos ?? [])
+        .filter(x => x.is_active)
+        .filter(x => !existingPairs.has(`${x.type}::${x.value}`))
+        .map(x => ({ ...x, recipientName: x.label }))
+    )
+    const rows = validatedOptions.map(x => ({
+      participant_id: part.id,
+      type: x.type,
+      label: x.label,
+      value: x.value,
+      priority: x.priority ?? 1,
+      is_active: true,
+    }))
 
     if (rows.length > 0) {
       const { error: poErr } = await supabaseAdmin.from('payment_options').insert(rows)
