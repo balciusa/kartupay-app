@@ -40,7 +40,7 @@ function fixture() {
     ],
     poll_votes: [{ id: 'vote', poll_id: 'poll', option_id: 'option-a', user_id: 'voter' }],
     project_date_options: [], project_date_responses: [], project_notifications: [],
-    messages: [], chat_reads: [], join_requests: [], payments: [], payment_signals: [],
+    messages: [], chat_reads: [], join_requests: [], payments: [], payment_signals: [], addons: [],
     user_payment_options: [], payment_options: [],
   }
   const writes: string[] = []
@@ -1387,4 +1387,34 @@ test('concurrent legacy start-collecting requests preserve one counted organizer
   assert.equal(f.tables.payments.length, 1)
   assert.equal(f.tables.payments[0].participant_id, 'collector')
   assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
+})
+
+test('a signed-out caller cannot add a sample add-on through the service-role action', async () => {
+  const f = fixture()
+  f.tables.projects[0].finance_mode = 'managed'
+  f.setCurrentUserId(null)
+
+  await assert.rejects(f.actions.addSampleAddon('project'), /Not signed in/)
+  assert.deepEqual(f.tables.addons, [])
+})
+
+test('an active participant who is not the finance manager cannot add a sample add-on', async () => {
+  const f = fixture()
+  f.tables.projects[0].finance_mode = 'managed'
+  f.tables.projects[0].collector_participant_id = 'another-participant'
+
+  await assert.rejects(f.actions.addSampleAddon('project'), /Not authorized/)
+  assert.deepEqual(f.tables.addons, [])
+})
+
+test('the active finance manager can add a sample add-on', async () => {
+  const f = fixture()
+  f.tables.projects[0].finance_mode = 'managed'
+  f.tables.projects[0].collector_participant_id = 'me'
+
+  await f.actions.addSampleAddon('project')
+
+  assert.equal(f.tables.addons.length, 1)
+  assert.equal(f.tables.addons[0].project_id, 'project')
+  assert.equal(f.tables.addons[0].title, 'Sauna')
 })

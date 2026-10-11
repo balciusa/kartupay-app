@@ -5297,7 +5297,10 @@ export async function addMeAsOrganizerWithPayment(opts: {
 
 /** Add a sample add-on (demo) */
 export async function addSampleAddon(projectId: string) {
+  const uid = await getCurrentUserId()
+  if (!uid) throw new Error('Not signed in')
   await requireManagedFinanceProject(projectId)
+  await requireActiveManager(projectId, uid)
   const { error } = await supabaseAdmin
     .from('addons')
     .insert({

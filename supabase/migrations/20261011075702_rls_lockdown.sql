@@ -220,6 +220,49 @@ using (
 revoke all privileges on table public.extra_payments from anon, authenticated;
 grant select on table public.extra_payments to authenticated;
 
+-- Legacy add-ons contain project-specific financial details. The application
+-- has no public discovery dependency for these rows, and mutations already use
+-- an authorized service-role action.
+drop policy if exists "addon_insert" on public.addons;
+drop policy if exists "addon_select" on public.addons;
+drop policy if exists "addons_select_active_project" on public.addons;
+
+create policy "addons_select_active_project"
+on public.addons for select
+to authenticated
+using (private.kartupay_is_active_project_member(project_id));
+
+revoke all privileges on table public.addons from anon, authenticated;
+grant select on table public.addons to authenticated;
+
+-- Add-on votes follow their add-on's active-project boundary. There is no
+-- direct client vote workflow; future mutations must use an authorized server
+-- action rather than restoring broad Data API writes.
+drop policy if exists "votes_insert" on public.addon_votes;
+drop policy if exists "votes_select" on public.addon_votes;
+drop policy if exists "addon_votes_select_active_project" on public.addon_votes;
+
+create policy "addon_votes_select_active_project"
+on public.addon_votes for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.addons addon
+    where addon.id = addon_votes.addon_id
+      and private.kartupay_is_active_project_member(addon.project_id)
+  )
+);
+
+revoke all privileges on table public.addon_votes from anon, authenticated;
+grant select on table public.addon_votes to authenticated;
+
+-- No application or database writer currently depends on client access to the
+-- audit table. Keep it service-role-only so audit history cannot be read or
+-- tampered with through the Data API.
+alter table public.audit_logs enable row level security;
+revoke all privileges on table public.audit_logs from anon, authenticated;
+
 -- Join requests are created and decided by server actions so project status,
 -- privacy, authorization, and capacity checks cannot be bypassed.
 drop policy if exists "join_requests_insert_self" on public.join_requests;

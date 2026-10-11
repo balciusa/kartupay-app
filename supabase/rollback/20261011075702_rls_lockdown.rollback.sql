@@ -192,6 +192,28 @@ using (exists (
     and participant.left_at is null
 ));
 
+drop policy if exists "addons_select_active_project" on public.addons;
+create policy "addon_insert" on public.addons for insert to public
+with check (exists (
+  select 1 from public.projects project
+  where project.id = addons.project_id
+    and project.created_by = (select auth.uid())
+));
+create policy "addon_select" on public.addons for select to public using (true);
+
+drop policy if exists "addon_votes_select_active_project" on public.addon_votes;
+create policy "votes_insert" on public.addon_votes for insert to public
+with check (exists (
+  select 1
+  from public.participants participant
+  join public.addons addon on addon.project_id = participant.project_id
+  where addon.id = addon_votes.addon_id
+    and participant.user_id = (select auth.uid())
+));
+create policy "votes_select" on public.addon_votes for select to public using (true);
+
+alter table public.audit_logs disable row level security;
+
 drop policy if exists "join_requests_select_self" on public.join_requests;
 drop policy if exists "join_requests_select_active_organizer" on public.join_requests;
 create policy "join_requests_insert_self" on public.join_requests for insert to authenticated with check (requester_user_id = (select auth.uid()));
@@ -253,7 +275,8 @@ create policy "upo_write" on public.user_payment_options for insert to public wi
 
 grant all privileges on table public.projects, public.participants, public.messages,
   public.payment_options, public.payments, public.payment_signals,
-  public.late_join_transfers, public.extra_payments, public.join_requests,
+  public.late_join_transfers, public.extra_payments, public.addons,
+  public.addon_votes, public.audit_logs, public.join_requests,
   public.project_invites, public.users, public.user_payment_options
 to anon, authenticated;
 

@@ -27,6 +27,13 @@ permissive policies override the intended boundaries:
   exists, so any authenticated user can satisfy it.
 - `users_select_display` and `users_select_minimal` expose every profile row to
   any authenticated user.
+- `addons.addon_select` and `addon_votes.votes_select` expose project-specific
+  add-on details and votes through `to public using (true)`. Production contains
+  add-ons associated with private projects.
+- `audit_logs` has RLS disabled and grants all table privileges, including
+  `INSERT`, `UPDATE`, `DELETE`, and `TRUNCATE`, to `anon` and `authenticated`.
+  No application code, database function, or trigger currently reads or writes
+  this table, so it is restricted to the service role.
 
 The migration removes direct Data API writes from project authorization and
 manual ledger tables. Existing checked server actions use `supabaseAdmin` and
@@ -46,7 +53,8 @@ retain service-role access.
 
 Personal `user_payment_options` remain owner-readable and owner-writable for
 compatibility. Project copies in `payment_options` are member-readable and
-service-role writable.
+service-role writable. Legacy `addons` and `addon_votes` are active-member
+readable and service-role writable. `audit_logs` is service-role-only.
 
 ## Application dependencies reviewed
 
@@ -60,6 +68,13 @@ service-role writable.
   payment destination cloning, payment confirmations, payment signals, late
   transfers, and extra payments already write through authorized server actions
   using the service role.
+- Repository and Production dependency inspection found no reader or writer for
+  `audit_logs` and no database trigger or function referencing it. The only
+  `addons` writer is `addSampleAddon`, which now authenticates the caller and
+  requires the active finance manager before using the service role.
+- No application caller currently reads `addons` or reads/writes `addon_votes`.
+  Public project discovery does not load these tables, so it does not require an
+  anonymous add-on policy.
 - Display-name updates use the session client. The migration keeps only
   `UPDATE (display_name)` for the authenticated user's own profile.
 - `project_invites` remains service-role only. An invitation URL reveals the
@@ -79,19 +94,27 @@ service-role writable.
 | `payment_signals` | existing insert/select/update policies | `payment_signals_select_active_project` |
 | `late_join_transfers` | existing sender/recipient update and member-read policies | `late_join_transfers_select_active_project` |
 | `extra_payments` | `extra_payments_select_participants` | `extra_payments_select_active_project` |
+| `addons` | `addon_insert`, `addon_select` | `addons_select_active_project` |
+| `addon_votes` | `votes_insert`, `votes_select` | `addon_votes_select_active_project` |
+| `audit_logs` | none; RLS was disabled | RLS enabled with no client policy |
 | `join_requests` | ten duplicate/self/organizer policies | self-read and active-organizer-read policies |
 | `users` | two global read and two own-update policies | own/co-participant read and own display-name update |
 | `user_payment_options` | four owner policies scoped to `public` | four owner policies scoped to `authenticated` |
 
 `anon` retains only `SELECT` on `projects`. `authenticated` retains the reads
-listed in the matrix, owner CRUD on `user_payment_options`, and column-level
-`UPDATE (display_name)` on `users`. Service-role grants are unchanged.
+listed in the matrix, including active-project `SELECT` on legacy add-ons, owner
+CRUD on `user_payment_options`, and column-level `UPDATE (display_name)` on
+`users`. Neither client role has any `audit_logs` privilege. Service-role grants
+are unchanged.
 
 ## Isolated test evidence
 
-Tests used Supabase CLI 2.120.0 with local Supabase Postgres 17.11.0.004 on a
-dedicated Docker port. The fixture contains only fixed UUIDs, `.invalid` email
-addresses, and synthetic project/payment data.
+Tests used Supabase CLI 2.120.0 and dedicated local Supabase Postgres
+17.6.1.158 containers. One portable run used the committed minimal schema
+fixture. A second run loaded a complete Production `public` schema export
+without data, then inserted schema-valid synthetic rows. Both fixtures contain
+only fixed UUIDs, `.invalid` email addresses, and synthetic project/payment
+data.
 
 Executed in order:
 
@@ -104,14 +127,27 @@ Executed in order:
 The matrix passed for anonymous, unrelated authenticated, member, organizer,
 collector, former-member, and service-role contexts. Negative tests proved that
 direct organizer escalation, counted-payment insert, transfer confirmation,
-join approval, project update, and payment update are denied. Rollback parsed
-and executed, and the forward migration passed again after rollback.
+join approval, project update, payment update, add-on mutation, add-on voting,
+and audit-log read/tampering are denied. Active members retained scoped add-on
+reads and the service role retained add-on and audit-log reads and writes.
+
+Public function, trigger, constraint, index, and column fingerprints were
+unchanged. Rollback preserved all synthetic row counts, restored the exact
+captured vulnerable policies/grants, and the forward migration and matrix passed
+again after reapplication.
+
+`supabase db lint --level warning` against the final clone completed and reported
+one pre-existing `project_has_financial_activity` reference to the absent
+`participant_refund_requests` table. The migration does not modify that public
+function or any public function fingerprint; treat it as a separate reliability
+follow-up rather than migration regression.
 
 ## Deployment gate
 
 Deployment requires separate product-owner approval.
 
-1. Confirm the PR exact head and successful CI/Vercel Preview.
+1. Record the PR exact head from `git rev-parse HEAD` in the release record and
+   confirm GitHub E2E and Vercel Preview report that same SHA.
 2. Confirm the migration history discrepancy is understood; do not rewrite or
    repair Production migration history as part of this deployment.
 3. Export the current Production policy, grant, function, and migration-history
@@ -120,8 +156,11 @@ Deployment requires separate product-owner approval.
 5. Deploy the backward-compatible application change first. Verify public
    discovery, private invite preview, login, and an active private member view.
 6. Apply `20261011075702_rls_lockdown.sql` in a maintenance window.
-7. Verify policy names and grants match this document. Use read-only role tests
-   to confirm anonymous/private and unrelated-user denial.
+7. Verify policy names and grants match this document. Confirm `audit_logs` has
+   RLS enabled, no `anon`/`authenticated` grants or policies, and service-role
+   access. Confirm `addons` and `addon_votes` expose only their active-member
+   `SELECT` policies and no client write privileges. Use read-only role tests to
+   confirm anonymous/private and unrelated-user denial.
 8. With disposable accounts, verify invite request, organizer approval,
    capacity rejection, chat, payment recipient display, participant paid signal,
    collector confirmation, former-member denial, and desktop/mobile navigation.
@@ -135,9 +174,10 @@ The tested rollback is
 `supabase/rollback/20261011075702_rls_lockdown.rollback.sql`.
 
 It intentionally restores the vulnerable pre-migration policies and broad
-grants. Use it only for a confirmed outage, with explicit product-owner and
-security approval, after capturing logs and current policy state. The
-application preview change is backward-compatible and does not need to be
+grants, including public add-on reads/writes and client control of `audit_logs`,
+and disables `audit_logs` RLS. Use it only for a confirmed outage, with explicit
+product-owner and security approval, after capturing logs and current policy
+state. The application changes are backward-compatible and do not need to be
 rolled back. After emergency rollback, suspend the pilot until a forward fix is
 verified and deployed.
 
@@ -148,7 +188,7 @@ verified and deployed.
   not grant membership.
 - Join approval capacity checking still has a count-then-write concurrency
   window. Direct database bypass is removed, but atomic approval is separate.
-- Existing service-role development actions and `audit_logs` RLS require their
-  own reviewed remediation tasks.
+- Future service-role actions must keep explicit caller authorization because
+  the service role bypasses all RLS policies.
 - Production migration history is divergent from repository filenames; this
   PR does not repair it.

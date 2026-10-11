@@ -37,6 +37,19 @@ create table public.extra_payments (
   id uuid primary key, extra_id uuid not null references public.extras(id),
   payer_participant_id uuid not null references public.participants(id)
 );
+create table public.addons (
+  id uuid primary key, project_id uuid not null references public.projects(id),
+  title text not null, description text, extra_cents integer not null,
+  required_votes integer not null
+);
+create table public.addon_votes (
+  id uuid primary key, addon_id uuid not null references public.addons(id) on delete cascade,
+  user_id uuid not null, unique (addon_id, user_id)
+);
+create table public.audit_logs (
+  id uuid primary key, project_id uuid, actor_id uuid,
+  action text not null, details jsonb, created_at timestamptz not null default now()
+);
 create table public.join_requests (
   id uuid primary key, project_id uuid not null references public.projects(id),
   requester_user_id uuid not null references public.users(id), status text not null default 'pending'
@@ -59,13 +72,16 @@ alter table public.payment_signals enable row level security;
 alter table public.late_join_transfers enable row level security;
 alter table public.extras enable row level security;
 alter table public.extra_payments enable row level security;
+alter table public.addons enable row level security;
+alter table public.addon_votes enable row level security;
 alter table public.join_requests enable row level security;
 alter table public.project_invites enable row level security;
 alter table public.user_payment_options enable row level security;
 
 grant all privileges on table public.users, public.projects, public.participants,
   public.messages, public.payment_options, public.payments, public.payment_signals,
-  public.late_join_transfers, public.extras, public.extra_payments,
+  public.late_join_transfers, public.extras, public.extra_payments, public.addons,
+  public.addon_votes, public.audit_logs,
   public.join_requests, public.project_invites, public.user_payment_options
 to anon, authenticated, service_role;
 
@@ -101,6 +117,20 @@ using (exists (
     and participant.left_at is null
 ));
 create policy "extra_payments_select_participants" on public.extra_payments for select to public using (true);
+create policy "addon_insert" on public.addons for insert to public
+with check (exists (
+  select 1 from public.projects project
+  where project.id = addons.project_id and project.created_by = (select auth.uid())
+));
+create policy "addon_select" on public.addons for select to public using (true);
+create policy "votes_insert" on public.addon_votes for insert to public
+with check (exists (
+  select 1 from public.participants participant
+  join public.addons addon on addon.project_id = participant.project_id
+  where addon.id = addon_votes.addon_id
+    and participant.user_id = (select auth.uid())
+));
+create policy "votes_select" on public.addon_votes for select to public using (true);
 create policy "join_requests_insert_self" on public.join_requests for insert to authenticated with check (requester_user_id = (select auth.uid()));
 create policy "join_requests_select_self" on public.join_requests for select to authenticated using (requester_user_id = (select auth.uid()));
 create policy "users_select_display" on public.users for select to authenticated using (true);
@@ -133,6 +163,15 @@ insert into public.payment_signals values ('60000000-0000-0000-0000-000000000001
 insert into public.late_join_transfers values ('70000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000002', '20000000-0000-0000-0000-000000000002', '20000000-0000-0000-0000-000000000005', 1000, null, null);
 insert into public.extras values ('80000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000002');
 insert into public.extra_payments values ('90000000-0000-0000-0000-000000000001', '80000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000002');
+insert into public.addons (id, project_id, title, description, extra_cents, required_votes) values
+  ('81000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000002', 'Private add-on', null, 3000, 2),
+  ('81000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000003', 'Unrelated add-on', null, 1500, 1),
+  ('81000000-0000-0000-0000-000000000003', '10000000-0000-0000-0000-000000000001', 'Public project add-on', null, 500, 1);
+insert into public.addon_votes (id, addon_id, user_id) values
+  ('82000000-0000-0000-0000-000000000001', '81000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002'),
+  ('82000000-0000-0000-0000-000000000002', '81000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000003');
+insert into public.audit_logs (id, project_id, actor_id, action, details) values
+  ('83000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'fixture.created', '{"source":"synthetic"}');
 insert into public.join_requests values ('a0000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000003', 'pending');
 insert into public.project_invites values ('10000000-0000-0000-0000-000000000002', 1);
 insert into public.user_payment_options values ('b0000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'iban', 'Member', 'FR1420041010050500013M02606');
