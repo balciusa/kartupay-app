@@ -304,7 +304,7 @@ export default async function ProjectPage({
 
   while (true) {
     const selectList = [baseProjectFields, ...optionalFields].join(', ')
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('projects')
       .select(selectList)
       .eq('id', projectId)
@@ -316,7 +316,7 @@ export default async function ProjectPage({
       missingFields.add(missingField)
       optionalFields = optionalFields.filter(field => field !== missingField)
       if (optionalFields.length === 0) {
-        const fallback = await supabase
+        const fallback = await supabaseAdmin
           .from('projects')
           .select(baseProjectFields)
           .eq('id', projectId)
