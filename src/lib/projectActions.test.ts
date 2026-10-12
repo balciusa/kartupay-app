@@ -13,6 +13,7 @@ import * as statusUi from './projectStatusUi.ts'
 import * as projectInvite from './projectInvite.ts'
 import * as dateSelection from './projectDateSelection.ts'
 import * as eventDuration from './projectEventDuration.ts'
+import * as projectRefund from './projectRefund.ts'
 
 type Row = Record<string, unknown>
 type Tables = Record<string, Row[]>
@@ -41,6 +42,7 @@ function fixture() {
     poll_votes: [{ id: 'vote', poll_id: 'poll', option_id: 'option-a', user_id: 'voter' }],
     project_date_options: [], project_date_responses: [], project_notifications: [],
     messages: [], chat_reads: [], join_requests: [], payments: [], payment_signals: [], addons: [],
+    extras: [], extra_payments: [], late_join_transfers: [], participant_refund_requests: [],
     user_payment_options: [], payment_options: [],
   }
   const writes: string[] = []
@@ -77,6 +79,10 @@ function fixture() {
         },
         eq(key: string, value: unknown) { filters.push(row => row[key] === value); return query },
         neq(key: string, value: unknown) { filters.push(row => row[key] !== value); return query },
+        not(key: string, operator: string, value: unknown) {
+          if (operator === 'is') filters.push(row => row[key] !== value)
+          return query
+        },
         is(key: string, value: unknown) { filters.push(row => row[key] === value); return query },
         in(key: string, values: unknown[]) { filters.push(row => values.includes(row[key])); return query },
         order(key: string) { orders.push(key); return query },
@@ -135,6 +141,22 @@ function fixture() {
               return
             }
           }
+          if (operation === 'insert' && table === 'participant_refund_requests') {
+            const proposed = Array.isArray(values) ? values : [values]
+            const duplicateOpenRequest = proposed.some(request =>
+              ['pending', 'approved', 'sent'].includes(String(request.status)) &&
+              (tables.participant_refund_requests ?? []).some(existing =>
+                existing.project_id === request.project_id &&
+                existing.participant_id === request.participant_id &&
+                existing.collector_participant_id === request.collector_participant_id &&
+                ['pending', 'approved', 'sent'].includes(String(existing.status))
+              )
+            )
+            if (duplicateOpenRequest) {
+              resolve({ data: null, error: { code: '23505', message: 'duplicate open refund request' } })
+              return
+            }
+          }
           if (operation !== 'select') writes.push(`${table}:${operation}`)
           if (operation === 'update') rows.forEach(row => Object.assign(row, values))
           if (operation === 'delete') {
@@ -170,6 +192,7 @@ function fixture() {
     '@/lib/projectStatusUi': statusUi,
     '@/lib/projectDateSelection': dateSelection,
     '@/lib/projectEventDuration': eventDuration,
+    '@/lib/projectRefund': projectRefund,
     '@/lib/projectDateService': {
       applySelectedProjectDate: async (projectId: string, optionId: string, actor: { actorUserId: string; actorParticipantId: string }) => {
         appliedDateSelections.push({ projectId, optionId, ...actor })
@@ -1169,7 +1192,7 @@ test('organizer join-request panel shows its notification count and approval con
     'next/navigation': { useRouter: () => ({ refresh() {} }) },
     '@/components/Project/ActivityLogTab': { ActivityLogTab: () => null },
     '@/app/project/[id]/actions': {
-      abortProject: async () => {},
+      cancelProject: async () => {},
       approveJoinRequestFromForm: async () => {},
       rejectJoinRequestFromForm: async () => {},
       setCollector: async () => {},
@@ -1205,13 +1228,141 @@ test('organizer join-request panel shows its notification count and approval con
   assert.doesNotMatch(html, /permission to manage join requests/)
 })
 
+test('organizer cancellation with financial history is idempotent and preserves ledger rows', async () => {
+  const f = fixture()
+  f.tables.participants[0].role = 'organizer'
+  f.tables.payments = [{ id: 'payment', participant_id: 'me', is_counted: true, paid_at: '2026-10-01' }]
+  f.tables.payment_signals = [{ id: 'signal', participant_id: 'me', reported_at: '2026-10-01' }]
+  const ledgerBefore = structuredClone({ payments: f.tables.payments, signals: f.tables.payment_signals })
+
+  assert.deepEqual(await f.actions.cancelProject('project'), { ok: true, alreadyCanceled: false })
+  assert.deepEqual(await f.actions.cancelProject('project'), { ok: true, alreadyCanceled: true })
+
+  assert.equal(f.tables.projects[0].status, 'canceled')
+  assert.ok(f.tables.projects[0].canceled_at)
+  assert.deepEqual({ payments: f.tables.payments, signals: f.tables.payment_signals }, ledgerBefore)
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'project_status_changed').length, 1)
+})
+
+test('collector privileges alone cannot cancel and former organizers cannot cancel', async () => {
+  const collector = fixture()
+  collector.tables.projects[0].finance_mode = 'managed'
+  collector.tables.projects[0].collector_participant_id = 'me'
+  await assert.rejects(collector.actions.cancelProject('project'), /Only an active organizer/)
+
+  const formerOrganizer = fixture()
+  formerOrganizer.tables.participants[0].role = 'organizer'
+  formerOrganizer.tables.participants[0].left_at = '2026-10-01T00:00:00.000Z'
+  await assert.rejects(formerOrganizer.actions.cancelProject('project'), /Only an active organizer/)
+})
+
+function refundFixture() {
+  const f = fixture()
+  Object.assign(f.tables.projects[0], {
+    status: 'canceled',
+    canceled_at: '2026-10-01T00:00:00.000Z',
+    finance_mode: 'managed',
+    total_cents: 5000,
+    total_is_per_person: true,
+    bundle_size: null,
+    bundle_pay_for: null,
+    collector_participant_id: 'collector',
+  })
+  f.tables.participants = [
+    { id: 'me', project_id: 'project', user_id: 'user', role: 'member', left_at: null, attendance_status: 'confirmed' },
+    { id: 'collector', project_id: 'project', user_id: 'collector-user', role: 'organizer', left_at: null, attendance_status: 'confirmed' },
+    { id: 'extra-collector', project_id: 'project', user_id: 'extra-user', role: 'member', left_at: null, attendance_status: 'confirmed' },
+    { id: 'earlier-member', project_id: 'project', user_id: 'earlier-user', role: 'member', left_at: null, attendance_status: 'confirmed' },
+  ]
+  f.tables.payments = [{ id: 'payment', participant_id: 'me', is_counted: true, paid_at: '2026-10-01' }]
+  f.tables.extra_payments = [{
+    id: 'extra-payment', payer_participant_id: 'me', collector_participant_id: 'extra-collector',
+    amount_cents: 800, confirmed_at: '2026-10-01',
+  }]
+  f.tables.late_join_transfers = [{
+    id: 'late', project_id: 'project', from_participant_id: 'me', to_participant_id: 'earlier-member',
+    expected_cents: 700, received_at: '2026-10-01',
+  }]
+  return f
+}
+
+test('canceled-project refund requests preserve each actual recipient and retry safely', async () => {
+  const f = refundFixture()
+
+  await Promise.all([f.actions.requestParticipantRefund('project'), f.actions.requestParticipantRefund('project')])
+
+  const requests = f.tables.participant_refund_requests
+    .map(row => ({ collector: row.collector_participant_id, total: row.total_amount_cents }))
+    .sort((left, right) => String(left.collector).localeCompare(String(right.collector)))
+  assert.deepEqual(requests, [
+    { collector: 'collector', total: 5000 },
+    { collector: 'earlier-member', total: 700 },
+    { collector: 'extra-collector', total: 800 },
+  ])
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'refund_requested').length, 3)
+  assert.equal(f.tables.payments.length, 1)
+  assert.equal(f.tables.extra_payments.length, 1)
+  assert.equal(f.tables.late_join_transfers.length, 1)
+})
+
+test('only the actual active recipient can advance a refund and retries do not duplicate activity', async () => {
+  const f = refundFixture()
+  await f.actions.requestParticipantRefund('project')
+  const refund = f.tables.participant_refund_requests.find(row => row.collector_participant_id === 'extra-collector')
+  assert.ok(refund)
+
+  f.setCurrentUserId('collector-user')
+  await assert.rejects(f.actions.approveParticipantRefund(String(refund.id)), /active payment recipient/)
+
+  f.setCurrentUserId('extra-user')
+  await Promise.all([
+    f.actions.approveParticipantRefund(String(refund.id)),
+    f.actions.approveParticipantRefund(String(refund.id)),
+  ])
+  await Promise.all([
+    f.actions.markParticipantRefundSent(String(refund.id)),
+    f.actions.markParticipantRefundSent(String(refund.id)),
+  ])
+
+  assert.equal(refund.status, 'sent')
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'refund_approved').length, 1)
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'refund_sent').length, 1)
+})
+
+test('payer leaves only after manually confirming every completed refund obligation', async () => {
+  const f = refundFixture()
+  f.tables.extra_payments = []
+  f.tables.late_join_transfers = []
+  await f.actions.requestParticipantRefund('project')
+  const refund = f.tables.participant_refund_requests[0]
+
+  f.setCurrentUserId('collector-user')
+  await f.actions.approveParticipantRefund(String(refund.id))
+  await f.actions.markParticipantRefundSent(String(refund.id))
+  f.setCurrentUserId('user')
+  await Promise.all([
+    f.actions.confirmParticipantRefundReceived(String(refund.id)),
+    f.actions.confirmParticipantRefundReceived(String(refund.id)),
+  ])
+
+  assert.equal(refund.status, 'completed')
+  assert.ok(f.tables.participants.find(row => row.id === 'me')?.left_at)
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'refund_completed').length, 1)
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'participant_left').length, 1)
+  assert.equal(f.tables.payments.length, 1)
+})
+
 for (const role of ['collector', 'organizer']) {
   test(`refund completion cannot bypass ${role} leave protection or change financial history`, async () => {
     const f = fixture()
     f.tables.projects[0].finance_mode = 'managed'
     if (role === 'collector') f.tables.projects[0].collector_participant_id = 'me'
     else f.tables.participants[0].role = 'organizer'
-    f.tables.participant_refund_requests = [{ id: 'refund', project_id: 'project', participant_id: 'me', status: 'sent' }]
+    f.tables.participant_refund_requests = [{
+      id: 'refund', project_id: 'project', participant_id: 'me', collector_participant_id: 'other',
+      requested_by_participant_id: 'me', base_amount_cents: 0, extras_amount_cents: 0,
+      late_transfer_amount_cents: 0, total_amount_cents: 0, status: 'sent', created_at: '2026-10-01',
+    }]
     const before = structuredClone(f.tables)
     await assert.rejects(f.actions.confirmParticipantRefundReceived('refund'), /Assign another/)
     assert.deepEqual(f.tables, before)

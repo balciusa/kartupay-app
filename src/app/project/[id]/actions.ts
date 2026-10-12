@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { recordProjectActivity } from '@/lib/activityLog'
 import { calculateProjectPricing, validateBundlePricingConfig } from '@/lib/projectPricing'
+import { buildRefundObligations, refundObligationsCompleted, type RefundObligation } from '@/lib/projectRefund'
 import { getCurrentUserId } from '@/lib/supabaseServer'
 import { getProjectStatusUiKey } from '@/lib/projectStatusUi'
 import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
@@ -125,38 +126,53 @@ export async function cancelProject(projectId: string) {
   'use server'
   const uid = await getCurrentUserId()
   if (!uid) throw new Error('You must be signed in')
+  if (!projectId) throw new Error('Missing project id')
   const nowIso = new Date().toISOString()
-  await requireActiveManager(projectId, uid)
-  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
-  const { data: projectBefore } = await supabaseAdmin
+  const organizer = await requireActiveOrganizer(projectId, uid)
+  const { data: projectBefore, error: projectError } = await supabaseAdmin
     .from('projects')
     .select('status, canceled_at')
     .eq('id', projectId)
     .maybeSingle()
+  if (projectError || !projectBefore) throw projectError || new Error('Project not found')
 
-  const { error: uErr } = await supabaseAdmin
+  const currentStatus = normalizeProjectStatus(projectBefore.status)
+  if (currentStatus === 'canceled' || currentStatus === 'cancelled' || projectBefore.canceled_at) {
+    revalidatePath(`/project/${projectId}`)
+    return { ok: true, alreadyCanceled: true }
+  }
+  if (currentStatus !== 'pending' && currentStatus !== 'collecting') {
+    throw new Error('Only pending or collecting projects can be canceled')
+  }
+
+  const { data: canceled, error: cancelError } = await supabaseAdmin
     .from('projects')
     .update({ status: 'canceled', canceled_at: nowIso })
     .eq('id', projectId)
-  if (uErr) {
-    const needsFallback = uErr?.code === '23514' || uErr?.message?.includes('projects_status_check')
-    if (needsFallback) {
-      console.warn('[cancelProject] status value not allowed by constraint, falling back to canceled_at only', uErr)
-      const { error: fbErr } = await supabaseAdmin
-        .from('projects')
-        .update({ canceled_at: nowIso })
-        .eq('id', projectId)
-      if (fbErr) throw fbErr
-    } else {
-      throw uErr
+    .in('status', ['pending', 'collecting'])
+    .select('id')
+    .maybeSingle()
+  if (cancelError) throw new Error(cancelError.message ?? 'Failed to cancel project')
+  if (!canceled?.id) {
+    const { data: current, error: currentError } = await supabaseAdmin
+      .from('projects')
+      .select('status, canceled_at')
+      .eq('id', projectId)
+      .maybeSingle()
+    if (currentError || !current) throw currentError || new Error('Project not found')
+    const status = normalizeProjectStatus(current.status)
+    if (status === 'canceled' || status === 'cancelled' || current.canceled_at) {
+      revalidatePath(`/project/${projectId}`)
+      return { ok: true, alreadyCanceled: true }
     }
+    throw new Error('Project status changed before cancellation; refresh and try again')
   }
 
   await recordProjectActivity({
     projectId,
     entryType: 'project_status_changed',
-    actorUserId,
-    actorParticipantId,
+    actorUserId: uid,
+    actorParticipantId: organizer.id,
     metadata: {
       from_status: projectBefore?.status ?? null,
       to_status: 'canceled',
@@ -166,6 +182,7 @@ export async function cancelProject(projectId: string) {
   })
 
   revalidatePath(`/project/${projectId}`)
+  return { ok: true, alreadyCanceled: false }
 }
 
 export async function startCollecting(projectId: string) {
@@ -532,73 +549,7 @@ export async function reopenProject(projectId: string) {
 
 export async function abortProject(projectId: string) {
   'use server'
-  const uid = await getCurrentUserId()
-  if (!uid) throw new Error('Not signed in')
-  await requireActiveManager(projectId, uid)
-  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(projectId, uid)
-  const { data: projectBefore } = await supabaseAdmin
-    .from('projects')
-    .select('status')
-    .eq('id', projectId)
-    .maybeSingle()
-
-  const { data: participants, error: participantsErr } = await supabaseAdmin
-    .from('participants')
-    .select('id')
-    .eq('project_id', projectId)
-  if (participantsErr) throw participantsErr
-
-  const participantIds = (participants ?? []).map(p => p.id)
-  if (participantIds.length > 0) {
-    const { data: payments, error: paymentsErr } = await supabaseAdmin
-      .from('payments')
-      .select('id')
-      .in('participant_id', participantIds)
-      .limit(1)
-    if (paymentsErr) throw paymentsErr
-    if ((payments?.length ?? 0) > 0) {
-      throw new Error('Cannot abort: some payments were already recorded')
-    }
-  }
-
-  const values = { status: 'cancelled' as const, aborted_at: new Date().toISOString() }
-  const { error } = await supabaseAdmin
-    .from('projects')
-    .update(values)
-    .eq('id', projectId)
-    .in('status', ['pending', 'collecting', 'closed'])
-  if (error) {
-    if (missingColumn(error, 'aborted_at')) {
-      const { error: retryErr } = await supabaseAdmin
-        .from('projects')
-        .update({ status: 'cancelled' })
-        .eq('id', projectId)
-        .in('status', ['collecting', 'closed'])
-      if (retryErr) throw new Error(retryErr.message ?? 'Failed to abort project')
-    } else if (statusConstraintViolated(error)) {
-      const { error: fallbackErr } = await supabaseAdmin
-        .from('projects')
-        .update({ aborted_at: values.aborted_at })
-        .eq('id', projectId)
-      if (fallbackErr) throw new Error(fallbackErr.message ?? 'Failed to abort project')
-    } else {
-      throw new Error(error.message ?? 'Failed to abort project')
-    }
-  }
-
-  await recordProjectActivity({
-    projectId,
-    entryType: 'project_status_changed',
-    actorUserId,
-    actorParticipantId,
-    metadata: {
-      from_status: projectBefore?.status ?? null,
-      to_status: 'cancelled',
-      aborted_at: values.aborted_at,
-    },
-  })
-
-  revalidatePath(`/project/${projectId}`)
+  return cancelProject(projectId)
 }
 
 export async function leaveProject(projectId: string) {
@@ -622,28 +573,29 @@ export async function leaveProject(projectId: string) {
   const financeMode = await getProjectFinanceMode(projectId)
   const refundSummary = financeMode === 'managed'
     ? await computeParticipantRefundSummary(projectId, me.id)
-    : { totalAmountCents: 0 }
+    : { totalAmountCents: 0, obligations: [] as RefundObligation[] }
   if (financeMode === 'managed' && refundSummary.totalAmountCents > 0) {
-    const latestRefund = await getLatestParticipantRefundRequest(projectId, me.id)
-    if (!latestRefund) {
+    const refundRequests = await getParticipantRefundRequests(projectId, me.id)
+    if (refundRequests.length === 0) {
       throw new Error(
         `You have ${formatEurCents(refundSummary.totalAmountCents)} in confirmed payments. Request a refund in Payments before leaving.`
       )
     }
-    if (latestRefund.status !== 'completed') {
-      if (latestRefund.status === 'pending') {
-        throw new Error('Your refund request is pending collector approval.')
+    if (!refundObligationsCompleted(
+      refundSummary.obligations,
+      refundRequests.map(refundRequestSnapshot)
+    )) {
+      const openStatuses = new Set(refundRequests.map(request => request.status))
+      if (openStatuses.has('sent')) {
+        throw new Error('A collector marked a refund as sent. Confirm every refund receipt in Payments before leaving.')
       }
-      if (latestRefund.status === 'approved') {
-        throw new Error('Refund was approved. Wait for the collector to mark it as sent.')
+      if (openStatuses.has('approved')) {
+        throw new Error('A refund was approved. Wait for every collector to mark their refund as sent.')
       }
-      if (latestRefund.status === 'sent') {
-        throw new Error('Collector marked refund as sent. Confirm receipt in Payments to finish leaving.')
+      if (openStatuses.has('pending')) {
+        throw new Error('Your refund requests are pending collector approval.')
       }
-      if (latestRefund.status === 'rejected' || latestRefund.status === 'canceled') {
-        throw new Error('Your refund request was not completed. Submit a new refund request in Payments before leaving.')
-      }
-      throw new Error('Your refund request must be completed before leaving.')
+      throw new Error('Your refunds are incomplete. Submit any missing refund request in Payments before leaving.')
     }
   }
 
@@ -751,6 +703,34 @@ async function requireActiveManager(projectId: string, userId: string) {
   if (meErr) throw meErr
   if (!me?.length) throw new Error('Not authorized')
   return me[0]
+}
+
+async function requireActiveOrganizer(projectId: string, userId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('participants')
+    .select('id, role')
+    .eq('project_id', projectId)
+    .eq('user_id', userId)
+    .eq('role', 'organizer')
+    .is('left_at', null)
+    .maybeSingle()
+  if (error) throw error
+  if (!data) throw new Error('Only an active organizer can cancel this project')
+  return data
+}
+
+async function requireActiveRefundCollector(projectId: string, participantId: string, userId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('participants')
+    .select('id, role')
+    .eq('id', participantId)
+    .eq('project_id', projectId)
+    .eq('user_id', userId)
+    .is('left_at', null)
+    .maybeSingle()
+  if (error) throw error
+  if (!data) throw new Error('Only the active payment recipient can manage this refund')
+  return data
 }
 
 async function requireActiveJoinRequestManager(projectId: string, userId: string) {
@@ -912,61 +892,72 @@ export async function requestParticipantRefund(projectId: string) {
   if (summary.projectStatus === 'closed' || summary.projectStatus === 'finalized') {
     throw new Error('Refund requests are locked after finalization')
   }
-  if (summary.projectStatus === 'canceled' || summary.projectStatus === 'cancelled') {
-    throw new Error('Refunds are disabled for canceled projects')
-  }
   if (summary.totalAmountCents <= 0) {
     throw new Error('No confirmed payments are eligible for refund')
   }
-  if (!summary.collectorParticipantId) {
-    throw new Error('Set an active collector before requesting a refund')
-  }
-  if (summary.collectorParticipantId === me.id) {
-    throw new Error('Collectors cannot request participant refunds from themselves')
-  }
 
-  const existing = await getLatestParticipantRefundRequest(projectId, me.id)
-  if (existing && (existing.status === 'pending' || existing.status === 'approved' || existing.status === 'sent')) {
-    revalidatePath(`/project/${projectId}`)
-    return
-  }
+  const existingRequests = await getParticipantRefundRequests(projectId, me.id)
+  const openRequests = existingRequests.filter(request =>
+    request.status === 'pending' || request.status === 'approved' || request.status === 'sent'
+  )
 
   const nowIso = new Date().toISOString()
-  const { data: created, error: createErr } = await supabaseAdmin
-    .from('participant_refund_requests')
-    .insert({
-      project_id: projectId,
-      participant_id: me.id,
-      collector_participant_id: summary.collectorParticipantId,
-      requested_by_participant_id: me.id,
-      base_amount_cents: summary.baseAmountCents,
-      extras_amount_cents: summary.extrasAmountCents,
-      total_amount_cents: summary.totalAmountCents,
-      status: 'pending',
-      requested_at: nowIso,
-      updated_at: nowIso,
-    })
-    .select('id')
-    .single()
-  if (createErr) {
-    if (missingTable(createErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
-    throw new Error(createErr.message ?? 'Failed to create refund request')
-  }
+  for (const obligation of summary.obligations) {
+    const existing = openRequests.find(request =>
+      request.collector_participant_id === obligation.collectorParticipantId
+    )
+    if (existing) {
+      const matches =
+        Number(existing.base_amount_cents ?? 0) === obligation.baseAmountCents
+        && Number(existing.extras_amount_cents ?? 0) === obligation.extrasAmountCents
+        && Number(existing.late_transfer_amount_cents ?? 0) === obligation.lateTransferAmountCents
+        && Number(existing.total_amount_cents ?? 0) === obligation.totalAmountCents
+      if (!matches) {
+        throw new Error('Confirmed payment history changed after this refund request; resolve the open request before retrying')
+      }
+      continue
+    }
 
-  await recordProjectActivity({
-    projectId,
-    entryType: 'refund_requested',
-    actorUserId: uid,
-    actorParticipantId: me.id,
-    targetUserId: uid,
-    targetParticipantId: me.id,
-    metadata: {
-      refund_request_id: created?.id ?? null,
-      base_amount_cents: summary.baseAmountCents,
-      extras_amount_cents: summary.extrasAmountCents,
-      total_amount_cents: summary.totalAmountCents,
-    },
-  })
+    const { data: created, error: createErr } = await supabaseAdmin
+      .from('participant_refund_requests')
+      .insert({
+        project_id: projectId,
+        participant_id: me.id,
+        collector_participant_id: obligation.collectorParticipantId,
+        requested_by_participant_id: me.id,
+        base_amount_cents: obligation.baseAmountCents,
+        extras_amount_cents: obligation.extrasAmountCents,
+        late_transfer_amount_cents: obligation.lateTransferAmountCents,
+        total_amount_cents: obligation.totalAmountCents,
+        status: 'pending',
+        requested_at: nowIso,
+        updated_at: nowIso,
+      })
+      .select('id')
+      .single()
+    if (createErr?.code === '23505') continue
+    if (createErr) {
+      if (missingTable(createErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
+      throw new Error(createErr.message ?? 'Failed to create refund request')
+    }
+
+    await recordProjectActivity({
+      projectId,
+      entryType: 'refund_requested',
+      actorUserId: uid,
+      actorParticipantId: me.id,
+      targetUserId: uid,
+      targetParticipantId: me.id,
+      metadata: {
+        refund_request_id: created?.id ?? null,
+        collector_participant_id: obligation.collectorParticipantId,
+        base_amount_cents: obligation.baseAmountCents,
+        extras_amount_cents: obligation.extrasAmountCents,
+        late_transfer_amount_cents: obligation.lateTransferAmountCents,
+        total_amount_cents: obligation.totalAmountCents,
+      },
+    })
+  }
 
   revalidatePath(`/project/${projectId}`)
 }
@@ -980,7 +971,7 @@ export async function approveParticipantRefund(refundRequestId: string) {
   const { data: refund, error: refundErr } = await supabaseAdmin
     .from('participant_refund_requests')
     .select(
-      'id, project_id, participant_id, collector_participant_id, requested_by_participant_id, base_amount_cents, extras_amount_cents, total_amount_cents, status'
+      'id, project_id, participant_id, collector_participant_id, requested_by_participant_id, base_amount_cents, extras_amount_cents, late_transfer_amount_cents, total_amount_cents, status'
     )
     .eq('id', refundRequestId)
     .maybeSingle()
@@ -992,8 +983,7 @@ export async function approveParticipantRefund(refundRequestId: string) {
 
   await requireManagedFinanceProject(refund.project_id)
 
-  await requireActiveManager(refund.project_id, uid)
-  const actor = await getActiveParticipantContext(refund.project_id, uid)
+  const collector = await requireActiveRefundCollector(refund.project_id, refund.collector_participant_id, uid)
 
   if (refund.status === 'approved' || refund.status === 'sent' || refund.status === 'completed') {
     revalidatePath(`/project/${refund.project_id}`)
@@ -1002,26 +992,33 @@ export async function approveParticipantRefund(refundRequestId: string) {
   if (refund.status !== 'pending') throw new Error('Refund request is no longer pending')
 
   const nowIso = new Date().toISOString()
-  const { error: updateErr } = await supabaseAdmin
+  const { data: updated, error: updateErr } = await supabaseAdmin
     .from('participant_refund_requests')
     .update({
       status: 'approved',
       decided_at: nowIso,
-      decided_by_participant_id: actor.actorParticipantId,
+      decided_by_participant_id: collector.id,
       updated_at: nowIso,
     })
     .eq('id', refundRequestId)
     .eq('status', 'pending')
+    .select('id')
+    .maybeSingle()
   if (updateErr) {
     if (missingTable(updateErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
     throw new Error(updateErr.message ?? 'Failed to approve refund request')
+  }
+  if (!updated?.id) {
+    const current = await getRefundRequestStatus(refundRequestId)
+    if (current === 'approved' || current === 'sent' || current === 'completed') return
+    throw new Error('Refund request status changed before approval; refresh and try again')
   }
 
   await recordProjectActivity({
     projectId: refund.project_id,
     entryType: 'refund_approved',
-    actorUserId: actor.actorUserId,
-    actorParticipantId: actor.actorParticipantId,
+    actorUserId: uid,
+    actorParticipantId: collector.id,
     targetParticipantId: refund.participant_id,
     metadata: {
       refund_request_id: refund.id,
@@ -1040,7 +1037,7 @@ export async function rejectParticipantRefund(refundRequestId: string) {
 
   const { data: refund, error: refundErr } = await supabaseAdmin
     .from('participant_refund_requests')
-    .select('id, project_id, participant_id, total_amount_cents, status')
+    .select('id, project_id, participant_id, collector_participant_id, total_amount_cents, status')
     .eq('id', refundRequestId)
     .maybeSingle()
   if (refundErr) {
@@ -1051,8 +1048,7 @@ export async function rejectParticipantRefund(refundRequestId: string) {
 
   await requireManagedFinanceProject(refund.project_id)
 
-  const manager = await requireActiveManager(refund.project_id, uid)
-  const actor = await getActiveParticipantContext(refund.project_id, uid)
+  const collector = await requireActiveRefundCollector(refund.project_id, refund.collector_participant_id, uid)
 
   if (refund.status === 'rejected' || refund.status === 'canceled') {
     revalidatePath(`/project/${refund.project_id}`)
@@ -1063,25 +1059,33 @@ export async function rejectParticipantRefund(refundRequestId: string) {
   }
 
   const nowIso = new Date().toISOString()
-  const { error: updateErr } = await supabaseAdmin
+  const { data: updated, error: updateErr } = await supabaseAdmin
     .from('participant_refund_requests')
     .update({
       status: 'rejected',
       decided_at: nowIso,
-      decided_by_participant_id: manager.id,
+      decided_by_participant_id: collector.id,
       updated_at: nowIso,
     })
     .eq('id', refundRequestId)
+    .in('status', ['pending', 'approved'])
+    .select('id')
+    .maybeSingle()
   if (updateErr) {
     if (missingTable(updateErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
     throw new Error(updateErr.message ?? 'Failed to reject refund request')
+  }
+  if (!updated?.id) {
+    const current = await getRefundRequestStatus(refundRequestId)
+    if (current === 'rejected' || current === 'canceled') return
+    throw new Error('Refund request status changed before rejection; refresh and try again')
   }
 
   await recordProjectActivity({
     projectId: refund.project_id,
     entryType: 'refund_rejected',
-    actorUserId: actor.actorUserId,
-    actorParticipantId: actor.actorParticipantId,
+    actorUserId: uid,
+    actorParticipantId: collector.id,
     targetParticipantId: refund.participant_id,
     metadata: {
       refund_request_id: refund.id,
@@ -1100,7 +1104,7 @@ export async function markParticipantRefundSent(refundRequestId: string) {
 
   const { data: refund, error: refundErr } = await supabaseAdmin
     .from('participant_refund_requests')
-    .select('id, project_id, participant_id, total_amount_cents, status')
+    .select('id, project_id, participant_id, collector_participant_id, total_amount_cents, status')
     .eq('id', refundRequestId)
     .maybeSingle()
   if (refundErr) {
@@ -1111,8 +1115,7 @@ export async function markParticipantRefundSent(refundRequestId: string) {
 
   await requireManagedFinanceProject(refund.project_id)
 
-  await requireActiveManager(refund.project_id, uid)
-  const actor = await getActiveParticipantContext(refund.project_id, uid)
+  const collector = await requireActiveRefundCollector(refund.project_id, refund.collector_participant_id, uid)
 
   if (refund.status === 'sent' || refund.status === 'completed') {
     revalidatePath(`/project/${refund.project_id}`)
@@ -1121,7 +1124,7 @@ export async function markParticipantRefundSent(refundRequestId: string) {
   if (refund.status !== 'approved') throw new Error('Refund must be approved before marking as sent')
 
   const nowIso = new Date().toISOString()
-  const { error: updateErr } = await supabaseAdmin
+  const { data: updated, error: updateErr } = await supabaseAdmin
     .from('participant_refund_requests')
     .update({
       status: 'sent',
@@ -1130,16 +1133,23 @@ export async function markParticipantRefundSent(refundRequestId: string) {
     })
     .eq('id', refundRequestId)
     .eq('status', 'approved')
+    .select('id')
+    .maybeSingle()
   if (updateErr) {
     if (missingTable(updateErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
     throw new Error(updateErr.message ?? 'Failed to mark refund as sent')
+  }
+  if (!updated?.id) {
+    const current = await getRefundRequestStatus(refundRequestId)
+    if (current === 'sent' || current === 'completed') return
+    throw new Error('Refund request status changed before it was marked sent; refresh and try again')
   }
 
   await recordProjectActivity({
     projectId: refund.project_id,
     entryType: 'refund_sent',
-    actorUserId: actor.actorUserId,
-    actorParticipantId: actor.actorParticipantId,
+    actorUserId: uid,
+    actorParticipantId: collector.id,
     targetParticipantId: refund.participant_id,
     metadata: {
       refund_request_id: refund.id,
@@ -1158,7 +1168,7 @@ export async function confirmParticipantRefundReceived(refundRequestId: string) 
 
   const { data: refund, error: refundErr } = await supabaseAdmin
     .from('participant_refund_requests')
-    .select('id, project_id, participant_id, total_amount_cents, status')
+    .select('id, project_id, participant_id, collector_participant_id, total_amount_cents, status')
     .eq('id', refundRequestId)
     .maybeSingle()
   if (refundErr) {
@@ -1169,20 +1179,47 @@ export async function confirmParticipantRefundReceived(refundRequestId: string) 
 
   await requireManagedFinanceProject(refund.project_id)
 
-  const me = await requireActiveProjectParticipant(refund.project_id, uid)
+  const { data: me, error: participantError } = await supabaseAdmin
+    .from('participants')
+    .select('id, role, left_at')
+    .eq('project_id', refund.project_id)
+    .eq('user_id', uid)
+    .maybeSingle()
+  if (participantError) throw participantError
+  if (!me) throw new Error('Only the requesting participant can confirm refund receipt')
   if (me.id !== refund.participant_id) throw new Error('Only the requesting participant can confirm refund receipt')
   if (refund.status === 'completed') {
+    if (!me.left_at) {
+      const currentSummary = await computeParticipantRefundSummary(refund.project_id, me.id)
+      const currentRequests = await getParticipantRefundRequests(refund.project_id, me.id)
+      if (refundObligationsCompleted(currentSummary.obligations, currentRequests.map(refundRequestSnapshot))) {
+        await requireSafeParticipantLeave(refund.project_id, me)
+        await markParticipantLeftWithActivity({
+          projectId: refund.project_id,
+          participantId: refund.participant_id,
+          targetUserId: uid,
+          actorUserId: uid,
+          actorParticipantId: me.id,
+        })
+      }
+    }
     revalidatePath(`/project/${refund.project_id}`)
     return
   }
   if (refund.status !== 'sent') throw new Error('Refund is not marked as sent yet')
 
-  // Completing this refund also leaves the project; validate before either write.
-  await requireSafeParticipantLeave(refund.project_id, me)
+  if (me.left_at) throw new Error('Former participants cannot confirm an incomplete refund')
 
-  const actor = await getActiveParticipantContext(refund.project_id, uid)
+  const summary = await computeParticipantRefundSummary(refund.project_id, me.id)
+  const allRequests = await getParticipantRefundRequests(refund.project_id, me.id)
+  const requestsAfterConfirmation = allRequests.map(request =>
+    request.id === refundRequestId ? { ...refundRequestSnapshot(request), status: 'completed' as const } : refundRequestSnapshot(request)
+  )
+  const completesAllObligations = refundObligationsCompleted(summary.obligations, requestsAfterConfirmation)
+  if (completesAllObligations) await requireSafeParticipantLeave(refund.project_id, me)
+
   const nowIso = new Date().toISOString()
-  const { error: updateErr } = await supabaseAdmin
+  const { data: updated, error: updateErr } = await supabaseAdmin
     .from('participant_refund_requests')
     .update({
       status: 'completed',
@@ -1192,16 +1229,23 @@ export async function confirmParticipantRefundReceived(refundRequestId: string) 
     })
     .eq('id', refundRequestId)
     .eq('status', 'sent')
+    .select('id')
+    .maybeSingle()
   if (updateErr) {
     if (missingTable(updateErr, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
     throw new Error(updateErr.message ?? 'Failed to complete refund')
+  }
+  if (!updated?.id) {
+    const current = await getRefundRequestStatus(refundRequestId)
+    if (current === 'completed') return
+    throw new Error('Refund request status changed before confirmation; refresh and try again')
   }
 
   await recordProjectActivity({
     projectId: refund.project_id,
     entryType: 'refund_completed',
-    actorUserId: actor.actorUserId,
-    actorParticipantId: actor.actorParticipantId,
+    actorUserId: uid,
+    actorParticipantId: me.id,
     targetUserId: uid,
     targetParticipantId: refund.participant_id,
     metadata: {
@@ -1210,13 +1254,18 @@ export async function confirmParticipantRefundReceived(refundRequestId: string) 
     },
   })
 
-  await markParticipantLeftWithActivity({
-    projectId: refund.project_id,
-    participantId: refund.participant_id,
-    targetUserId: uid,
-    actorUserId: actor.actorUserId,
-    actorParticipantId: actor.actorParticipantId,
-  })
+  const refreshedSummary = await computeParticipantRefundSummary(refund.project_id, me.id)
+  const refreshedRequests = await getParticipantRefundRequests(refund.project_id, me.id)
+  if (refundObligationsCompleted(refreshedSummary.obligations, refreshedRequests.map(refundRequestSnapshot))) {
+    if (!completesAllObligations) await requireSafeParticipantLeave(refund.project_id, me)
+    await markParticipantLeftWithActivity({
+      projectId: refund.project_id,
+      participantId: refund.participant_id,
+      targetUserId: uid,
+      actorUserId: uid,
+      actorParticipantId: me.id,
+    })
+  }
 
   revalidatePath(`/project/${refund.project_id}`)
 }
@@ -1304,6 +1353,7 @@ type ParticipantRefundRequestRow = {
   requested_by_participant_id: string
   base_amount_cents: number
   extras_amount_cents: number
+  late_transfer_amount_cents: number
   total_amount_cents: number
   status: RefundRequestStatus
   requested_at: string
@@ -1320,11 +1370,12 @@ type ParticipantRefundRequestRow = {
 type ParticipantRefundSummary = {
   projectId: string
   participantId: string
-  collectorParticipantId: string | null
   projectStatus: string
   baseAmountCents: number
   extrasAmountCents: number
+  lateTransferAmountCents: number
   totalAmountCents: number
+  obligations: RefundObligation[]
 }
 
 const formatEurCents = (cents: number) => `EUR ${(Math.max(0, Number(cents ?? 0)) / 100).toFixed(2)}`
@@ -1394,7 +1445,11 @@ const computeParticipantRefundSummary = async (
   const hasBasePayment = Number(basePaidCount ?? 0) > 0
   const baseAmountCents = hasBasePayment ? pricing.perPersonCents : 0
 
-  let extrasAmountCents = 0
+  let extraPayments: Array<{
+    collectorParticipantId: string | null
+    amountCents: number
+    confirmed: boolean
+  }> = []
   const { data: confirmedExtraPayments, error: extraPaidErr } = await supabaseAdmin
     .from('extra_payments')
     .select('amount_cents, collector_participant_id')
@@ -1405,11 +1460,11 @@ const computeParticipantRefundSummary = async (
       throw new Error(extraPaidErr.message ?? 'Failed to load extra payment state')
     }
   } else {
-    for (const row of confirmedExtraPayments ?? []) {
-      if (!row) continue
-      if (!row.collector_participant_id || row.collector_participant_id === participantId) continue
-      extrasAmountCents += Math.max(0, Number(row.amount_cents ?? 0))
-    }
+    extraPayments = (confirmedExtraPayments ?? []).map(row => ({
+      collectorParticipantId: row.collector_participant_id ?? null,
+      amountCents: Number(row.amount_cents ?? 0),
+      confirmed: true,
+    }))
   }
 
   const collectorParticipantId = await resolveActiveCollectorParticipantId(
@@ -1417,37 +1472,114 @@ const computeParticipantRefundSummary = async (
     (project.collector_participant_id as string | null) ?? null
   )
 
+  let lateTransfers: Array<{
+    toParticipantId: string | null
+    amountCents: number
+    received: boolean
+  }> = []
+  const { data: receivedLateTransfers, error: lateTransferError } = await supabaseAdmin
+    .from('late_join_transfers')
+    .select('to_participant_id, expected_cents, received_at')
+    .eq('project_id', projectId)
+    .eq('from_participant_id', participantId)
+    .not('received_at', 'is', null)
+  if (lateTransferError) {
+    if (!missingTable(lateTransferError, 'late_join_transfers')) {
+      throw new Error(lateTransferError.message ?? 'Failed to load late-join payment state')
+    }
+  } else {
+    lateTransfers = (receivedLateTransfers ?? []).map(row => ({
+      toParticipantId: row.to_participant_id ?? null,
+      amountCents: Number(row.expected_cents ?? 0),
+      received: !!row.received_at,
+    }))
+  }
+
+  const obligations = buildRefundObligations({
+    participantId,
+    projectCollectorParticipantId: collectorParticipantId,
+    baseAmountCents,
+    extraPayments,
+    lateTransfers,
+  })
+
+  const collectorIds = obligations.map(obligation => obligation.collectorParticipantId)
+  if (collectorIds.length > 0) {
+    const { data: activeCollectors, error: collectorsError } = await supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('project_id', projectId)
+      .in('id', collectorIds)
+      .is('left_at', null)
+    if (collectorsError) throw new Error(collectorsError.message ?? 'Failed to verify refund recipients')
+    const activeCollectorIds = new Set((activeCollectors ?? []).map(row => row.id))
+    if (collectorIds.some(id => !activeCollectorIds.has(id))) {
+      throw new Error('A payment recipient is no longer an active participant; the organizer must resolve the refund recipient')
+    }
+  }
+
+  const extrasAmountCents = obligations.reduce((sum, obligation) => sum + obligation.extrasAmountCents, 0)
+  const lateTransferAmountCents = obligations.reduce(
+    (sum, obligation) => sum + obligation.lateTransferAmountCents,
+    0
+  )
+  const refundableBaseAmountCents = obligations.reduce(
+    (sum, obligation) => sum + obligation.baseAmountCents,
+    0
+  )
+
   return {
     projectId,
     participantId,
-    collectorParticipantId,
     projectStatus,
-    baseAmountCents,
+    baseAmountCents: refundableBaseAmountCents,
     extrasAmountCents,
-    totalAmountCents: baseAmountCents + extrasAmountCents,
+    lateTransferAmountCents,
+    totalAmountCents: refundableBaseAmountCents + extrasAmountCents + lateTransferAmountCents,
+    obligations,
   }
 }
 
-const getLatestParticipantRefundRequest = async (
+const getParticipantRefundRequests = async (
   projectId: string,
   participantId: string
-): Promise<ParticipantRefundRequestRow | null> => {
+): Promise<ParticipantRefundRequestRow[]> => {
   const { data, error } = await supabaseAdmin
     .from('participant_refund_requests')
     .select(
-      'id, project_id, participant_id, collector_participant_id, requested_by_participant_id, base_amount_cents, extras_amount_cents, total_amount_cents, status, requested_at, decided_at, decided_by_participant_id, collector_marked_sent_at, participant_confirmed_at, completed_at, rejection_reason, created_at, updated_at'
+      'id, project_id, participant_id, collector_participant_id, requested_by_participant_id, base_amount_cents, extras_amount_cents, late_transfer_amount_cents, total_amount_cents, status, requested_at, decided_at, decided_by_participant_id, collector_marked_sent_at, participant_confirmed_at, completed_at, rejection_reason, created_at, updated_at'
     )
     .eq('project_id', projectId)
     .eq('participant_id', participantId)
     .order('created_at', { ascending: false })
-    .limit(1)
+  if (error) {
+    if (missingTable(error, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
+    throw new Error(error.message ?? 'Failed to load refund requests')
+  }
+  return (data as ParticipantRefundRequestRow[] | null) ?? []
+}
+
+const getRefundRequestStatus = async (refundRequestId: string): Promise<RefundRequestStatus | null> => {
+  const { data, error } = await supabaseAdmin
+    .from('participant_refund_requests')
+    .select('status')
+    .eq('id', refundRequestId)
     .maybeSingle()
   if (error) {
     if (missingTable(error, 'participant_refund_requests')) throw friendlyRefundsUnavailableError()
-    throw new Error(error.message ?? 'Failed to load refund request')
+    throw new Error(error.message ?? 'Failed to reload refund request')
   }
-  return (data as ParticipantRefundRequestRow | null) ?? null
+  return (data?.status as RefundRequestStatus | undefined) ?? null
 }
+
+const refundRequestSnapshot = (request: ParticipantRefundRequestRow) => ({
+  collectorParticipantId: request.collector_participant_id,
+  baseAmountCents: Number(request.base_amount_cents ?? 0),
+  extrasAmountCents: Number(request.extras_amount_cents ?? 0),
+  lateTransferAmountCents: Number(request.late_transfer_amount_cents ?? 0),
+  totalAmountCents: Number(request.total_amount_cents ?? 0),
+  status: request.status,
+})
 
 async function requireSafeParticipantLeave(projectId: string, participant: { id: string; role: string }) {
   const { data: project, error: projectErr } = await supabaseAdmin

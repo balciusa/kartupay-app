@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { ActivityLogTab, type ActivityLogItem } from '@/components/Project/ActivityLogTab'
 import {
-  abortProject,
+  cancelProject,
   approveJoinRequestFromForm,
   rejectJoinRequestFromForm,
   setCollector,
@@ -73,6 +73,8 @@ export function AdminPanel({
   const [requestsOpen, setRequestsOpen] = useState(!!openRequestsOnMount)
   const [participantsOpen, setParticipantsOpen] = useState(false)
   const [assigningCollector, startAssigningCollector] = useTransition()
+  const [canceling, startCanceling] = useTransition()
+  const [cancelError, setCancelError] = useState<string | null>(null)
   const [selectedCollectorId, setSelectedCollectorId] = useState<string | null>(collectorId)
   const router = useRouter()
   const modalRef = useRef<HTMLDivElement | null>(null)
@@ -193,16 +195,33 @@ export function AdminPanel({
               Use the flow above to advance project status. Cancellation stays here because it is destructive.
             </div>
           </div>
-          <form className="w-full">
-            <button
-              type="submit"
-              className="w-full px-4 py-2 rounded-full border text-sm disabled:opacity-50 bg-white hover:bg-slate-50"
-              formAction={canManage && canCancel ? abortProject.bind(null, projectId) : undefined}
-              disabled={!canManage || !canCancel}
-            >
-              Cancel project
-            </button>
-          </form>
+          <p className="text-xs text-slate-600">
+            Cancellation stops new project activity and keeps payment history. Any refunds remain manual and require confirmation.
+          </p>
+          <button
+            type="button"
+            className="w-full px-4 py-2 rounded-full border text-sm disabled:opacity-50 bg-white hover:bg-slate-50"
+            disabled={!canCancel || canceling}
+            onClick={() => {
+              if (!window.confirm('Cancel this project? Payment history will be kept and refunds must be handled manually.')) return
+              setCancelError(null)
+              startCanceling(async () => {
+                try {
+                  await cancelProject(projectId)
+                  router.refresh()
+                } catch (error) {
+                  setCancelError(error instanceof Error ? error.message : 'Failed to cancel project')
+                }
+              })
+            }}
+          >
+            {canceling ? 'Canceling…' : 'Cancel project'}
+          </button>
+          {cancelError && (
+            <p role="alert" className="text-sm text-red-700">
+              {cancelError}
+            </p>
+          )}
         </div>
       </div>
       <section className="border rounded-xl p-5 md:p-6">
