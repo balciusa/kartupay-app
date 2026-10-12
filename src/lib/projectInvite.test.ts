@@ -153,6 +153,8 @@ test('private nonmember returns before full and related project data queries', (
     pageSource.indexOf('// Load only deliberately public invite fields'),
     pageSource.indexOf('const uid = await getCurrentUserId()')
   )
+  assert.match(previewLoad, /supabaseAdmin\s*\.from\('projects'\)/)
+  assert.doesNotMatch(previewLoad, /await supabase\s*\.from\('projects'\)/)
   for (const protectedField of [
     'total_cents', 'collector_participant_id', 'bundle_size', 'event_location_address',
     'date_voting_deadline_at', 'selected_date_option_id', 'confirmation_deadline_at',
