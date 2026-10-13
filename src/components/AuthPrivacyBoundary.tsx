@@ -14,25 +14,80 @@ type AuthPrivacyContextValue = {
 const AuthPrivacyContext = createContext<AuthPrivacyContextValue | null>(null)
 const AUTH_PRIVACY_CHANNEL = 'kartupay-auth-privacy'
 const AUTH_PRIVACY_STORAGE_KEY = 'kartupay-auth-exit'
+const AUTH_PRIVACY_ATTEMPT_PREFIX = `${AUTH_PRIVACY_STORAGE_KEY}:`
+const AUTH_EXIT_RECORD_TTL_MS = 5 * 60 * 1000
 type AuthExitPhase = 'started' | 'completed' | 'canceled'
-type AuthExitMessage = { type: 'auth-exit'; phase: AuthExitPhase; attemptId: string }
+type AuthExitMessage = {
+  type: 'auth-exit'
+  phase: AuthExitPhase
+  attemptId: string
+  recordedAt?: number
+}
+
+function readPersistedAuthExitRecords() {
+  const records = new Map<string, AuthExitMessage>()
+  if (typeof window === 'undefined') return records
+
+  const now = Date.now()
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index)
+    if (!key?.startsWith(AUTH_PRIVACY_ATTEMPT_PREFIX)) continue
+
+    try {
+      const message = JSON.parse(window.localStorage.getItem(key) ?? '') as AuthExitMessage
+      if (
+        message.type !== 'auth-exit' ||
+        typeof message.attemptId !== 'string' ||
+        !['started', 'completed', 'canceled'].includes(message.phase)
+      ) continue
+
+      if (
+        typeof message.recordedAt === 'number' &&
+        now - message.recordedAt > AUTH_EXIT_RECORD_TTL_MS
+      ) {
+        window.localStorage.removeItem(key)
+        index -= 1
+        continue
+      }
+
+      records.set(message.attemptId, message)
+    } catch {
+      // Ignore malformed or obsolete records.
+    }
+  }
+
+  return records
+}
 
 export function notifyOtherTabsOfAuthExit(phase: AuthExitPhase, attemptId: string) {
   if (typeof window === 'undefined') return
-  const message: AuthExitMessage = { type: 'auth-exit', phase, attemptId }
+  const message: AuthExitMessage = {
+    type: 'auth-exit',
+    phase,
+    attemptId,
+    recordedAt: Date.now(),
+  }
+
+  try {
+    // The attempt-specific record is durable shared state. A tab handling a
+    // failed logout can synchronously see another in-flight attempt even when
+    // BroadcastChannel or storage events have not been delivered yet.
+    window.localStorage.setItem(
+      `${AUTH_PRIVACY_ATTEMPT_PREFIX}${attemptId}`,
+      JSON.stringify(message),
+    )
+    // Keep the original key during rolling deployments for older open tabs.
+    window.localStorage.setItem(AUTH_PRIVACY_STORAGE_KEY, JSON.stringify(message))
+  } catch {
+    // BroadcastChannel and Supabase auth events remain available.
+  }
 
   try {
     const channel = new BroadcastChannel(AUTH_PRIVACY_CHANNEL)
     channel.postMessage(message)
     channel.close()
   } catch {
-    // The storage event below is the compatibility fallback.
-  }
-
-  try {
-    window.localStorage.setItem(AUTH_PRIVACY_STORAGE_KEY, JSON.stringify(message))
-  } catch {
-    // Supabase's SIGNED_OUT event still handles environments without storage.
+    // The storage events above are the compatibility fallback.
   }
 }
 
@@ -71,6 +126,17 @@ export function AuthPrivacyBoundary({ children }: { children: React.ReactNode })
     blockContent()
   }, [blockContent])
 
+  const reconcilePersistedAuthExits = useCallback(() => {
+    for (const [attemptId, message] of readPersistedAuthExitRecords()) {
+      if (message.phase === 'started' && !finishedAuthExits.current.has(attemptId)) {
+        activeAuthExits.current.add(attemptId)
+      } else {
+        activeAuthExits.current.delete(attemptId)
+        finishedAuthExits.current.add(attemptId)
+      }
+    }
+  }, [])
+
   const beginAuthExit = useCallback(() => {
     const attemptId = crypto.randomUUID()
     registerAuthExit(attemptId, true)
@@ -92,6 +158,7 @@ export function AuthPrivacyBoundary({ children }: { children: React.ReactNode })
     const verificationGeneration = ++sessionVerificationGeneration.current
     blockContent()
     const { data } = await supabaseBrowser.auth.getSession()
+    reconcilePersistedAuthExits()
 
     // A logout may start while the session lookup is in flight. Never let an
     // earlier lookup override that newer privacy state.
@@ -106,13 +173,14 @@ export function AuthPrivacyBoundary({ children }: { children: React.ReactNode })
     }
 
     setContentBlocked(false)
-  }, [blockAndRedirect, blockContent])
+  }, [blockAndRedirect, blockContent, reconcilePersistedAuthExits])
 
   const cancelAuthExit = useCallback((attemptId: string, message?: string) => {
     sessionVerificationGeneration.current += 1
     finishedAuthExits.current.add(attemptId)
     activeAuthExits.current.delete(attemptId)
     localAuthExits.current.delete(attemptId)
+    reconcilePersistedAuthExits()
     if (message) setAuthExitError(message)
 
     if (activeAuthExits.current.size > 0) {
@@ -123,7 +191,7 @@ export function AuthPrivacyBoundary({ children }: { children: React.ReactNode })
     // A SIGNED_OUT event may have raced with the failed request. Revalidate
     // instead of revealing cached content solely because this attempt ended.
     void verifyRestoredSession(true)
-  }, [blockContent, verifyRestoredSession])
+  }, [blockContent, reconcilePersistedAuthExits, verifyRestoredSession])
 
   useEffect(() => {
     const { data: { subscription } } = supabaseBrowser.auth.onAuthStateChange((event, session) => {
@@ -162,7 +230,11 @@ export function AuthPrivacyBoundary({ children }: { children: React.ReactNode })
     }
 
     const handleStorage = (event: StorageEvent) => {
-      if (event.key !== AUTH_PRIVACY_STORAGE_KEY || !event.newValue) return
+      if (
+        (event.key !== AUTH_PRIVACY_STORAGE_KEY &&
+          !event.key?.startsWith(AUTH_PRIVACY_ATTEMPT_PREFIX)) ||
+        !event.newValue
+      ) return
       try {
         handleAuthExitMessage(JSON.parse(event.newValue) as AuthExitMessage)
       } catch {

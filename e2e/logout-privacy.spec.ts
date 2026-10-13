@@ -67,6 +67,31 @@ async function delayRoute(route: Route, delayMs: number, status: number) {
   await route.fulfill({ status })
 }
 
+async function clickLogoutAt(page: Page, triggerAt: number) {
+  await page.getByRole('button', { name: 'Logout' }).evaluate((button, at) => (
+    new Promise<void>(resolve => {
+      window.setTimeout(() => {
+        (button as HTMLButtonElement).click()
+        resolve()
+      }, Math.max(0, at - Date.now()))
+    })
+  ), triggerAt)
+}
+
+async function countStartedAuthExitAttempts(page: Page) {
+  return page.evaluate(() => {
+    const prefix = 'kartupay-auth-exit:'
+    return Object.keys(window.localStorage).filter(key => {
+      if (!key.startsWith(prefix)) return false
+      try {
+        return JSON.parse(window.localStorage.getItem(key) ?? '').phase === 'started'
+      } catch {
+        return false
+      }
+    }).length
+  })
+}
+
 test('logout stays blocked through visibility and BFCache revalidation races', async ({ context, page }) => {
   await login(context, page)
   await recordPrivateExposureAfterBlock(page, 'revalidation-race-exposure')
@@ -133,12 +158,19 @@ test('a failed concurrent logout cannot reveal content while another attempt is 
   await recordPrivateExposureAfterBlock(page, 'first-concurrent-exposure')
   await recordPrivateExposureAfterBlock(secondTab, 'second-concurrent-exposure')
 
-  await page.route(logoutEndpoint, route => delayRoute(route, 200, 500))
+  await page.route(logoutEndpoint, async route => {
+    // Supabase serializes auth work across tabs. Hold the first response until
+    // both logical attempts have durable IDs, then fail it while the second
+    // attempt remains queued and privacy-blocked.
+    await expect.poll(() => countStartedAuthExitAttempts(secondTab)).toBe(2)
+    await delayRoute(route, 200, 500)
+  })
   await secondTab.route(logoutEndpoint, route => delayRoute(route, 900, 204))
 
+  const triggerAt = Date.now() + 1_000
   await Promise.all([
-    page.getByRole('button', { name: 'Logout' }).click(),
-    secondTab.getByRole('button', { name: 'Logout' }).click(),
+    clickLogoutAt(page, triggerAt),
+    clickLogoutAt(secondTab, triggerAt),
   ])
 
   // The first attempt has failed, but the second stable attempt ID remains

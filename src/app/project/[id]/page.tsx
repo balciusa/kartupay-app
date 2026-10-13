@@ -107,6 +107,7 @@ type RefundRequestRow = {
   requested_by_participant_id: string
   base_amount_cents: number
   extras_amount_cents: number
+  late_transfer_amount_cents: number
   total_amount_cents: number
   status: string
   requested_at: string
@@ -711,7 +712,7 @@ export default async function ProjectPage({
     ? await supabaseAdmin
         .from('participant_refund_requests')
         .select(
-          'id, project_id, participant_id, collector_participant_id, requested_by_participant_id, base_amount_cents, extras_amount_cents, total_amount_cents, status, requested_at, decided_at, decided_by_participant_id, collector_marked_sent_at, participant_confirmed_at, completed_at, rejection_reason, created_at, updated_at'
+          'id, project_id, participant_id, collector_participant_id, requested_by_participant_id, base_amount_cents, extras_amount_cents, late_transfer_amount_cents, total_amount_cents, status, requested_at, decided_at, decided_by_participant_id, collector_marked_sent_at, participant_confirmed_at, completed_at, rejection_reason, created_at, updated_at'
         )
         .eq('project_id', projectId)
         .order('created_at', { ascending: false })
@@ -1308,12 +1309,14 @@ export default async function ProjectPage({
   const pendingExtraCollectorCount = extraIncomingForViewer.length
   const pendingExtraOutgoingCount = extraOutgoingForViewer.length
   const pendingExtraSelfMarkCount = extraSelfMarkRowsForViewer.length
-  const myLatestRefundRequest = myParticipantId
-    ? refundRequestRows.find(row => row.participant_id === myParticipantId) ?? null
-    : null
-  const collectorRefundRequests = viewerIsCollector
+  const myRefundRequests = myParticipantId
+    ? refundRequestRows.filter(row => row.participant_id === myParticipantId)
+    : []
+  const collectorRefundRequests = myParticipantId
     ? refundRequestRows.filter(
-        row => row.status === 'pending' || row.status === 'approved' || row.status === 'sent'
+        row =>
+          row.collector_participant_id === myParticipantId &&
+          (row.status === 'pending' || row.status === 'approved' || row.status === 'sent')
       )
     : []
   const myBaseRefundableCents = myParticipantId && basePaidSet.has(myParticipantId) ? perPersonCents : 0
@@ -1327,20 +1330,27 @@ export default async function ProjectPage({
         )
         .reduce((sum, row) => sum + Math.max(0, Number(row.amount_cents ?? 0)), 0)
     : 0
-  const myRefundEligibleTotalCents = myBaseRefundableCents + myExtrasRefundableCents
+  const myLateTransferRefundableCents = myParticipantId
+    ? lateTransfers
+        .filter(
+          row =>
+            row.from_participant_id === myParticipantId &&
+            !!row.received_at &&
+            row.to_participant_id !== myParticipantId
+        )
+        .reduce((sum, row) => sum + Math.max(0, Number(row.expected_cents ?? 0)), 0)
+    : 0
+  const myRefundEligibleTotalCents =
+    myBaseRefundableCents + myExtrasRefundableCents + myLateTransferRefundableCents
   const showMyRefundSection =
     !!myParticipantId &&
     isMeParticipant &&
-    !viewerIsCollector &&
     !isFinalized &&
-    !isAborted &&
-    (myRefundEligibleTotalCents > 0 || !!myLatestRefundRequest)
-  const showCollectorRefundSection = viewerIsCollector && !isAborted && collectorRefundRequests.length > 0
-  const pendingRefundApprovalCount = viewerIsCollector
-    ? collectorRefundRequests.filter(row => row.status === 'pending').length
-    : 0
+    (myRefundEligibleTotalCents > 0 || myRefundRequests.length > 0)
+  const showCollectorRefundSection = collectorRefundRequests.length > 0
+  const pendingRefundApprovalCount = collectorRefundRequests.filter(row => row.status === 'pending').length
   const pendingRefundReceiptCount =
-    !viewerIsCollector && myLatestRefundRequest?.status === 'sent' ? 1 : 0
+    myRefundRequests.filter(row => row.status === 'sent').length
   const pendingPaymentsCountWithExtras =
     pendingPaymentsCount +
     pendingExtraCollectorCount +
@@ -2541,72 +2551,67 @@ export default async function ProjectPage({
                           {formatEuro(myRefundEligibleTotalCents)}
                         </div>
                         <div className="mt-1 text-xs text-slate-600">
-                          Base {formatEuro(myBaseRefundableCents)} + Extras {formatEuro(myExtrasRefundableCents)}
+                          Base {formatEuro(myBaseRefundableCents)} + Extras {formatEuro(myExtrasRefundableCents)} + Late transfers{' '}
+                          {formatEuro(myLateTransferRefundableCents)}
                         </div>
                       </div>
 
-                      {myLatestRefundRequest ? (
-                        <div className="rounded-xl border border-slate-200 bg-white p-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-medium text-slate-900">
-                              Refund status: {String(myLatestRefundRequest.status).replaceAll('_', ' ')}
-                            </span>
-                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-700">
-                              Requested {new Date(myLatestRefundRequest.requested_at).toLocaleString()}
-                            </span>
+                      {myRefundRequests.map(refund => {
+                        const recipient = participantsById.get(refund.collector_participant_id)
+                        const recipientLabel = recipient
+                          ? participantName(recipient)
+                          : `#${refund.collector_participant_id.slice(0, 6)}`
+                        return (
+                          <div key={refund.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-medium text-slate-900">
+                                {recipientLabel}: {String(refund.status).replaceAll('_', ' ')}
+                              </span>
+                              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-medium text-slate-700">
+                                Requested {new Date(refund.requested_at).toLocaleString()}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-xs text-slate-600">
+                              Amount {formatEuro(Number(refund.total_amount_cents ?? 0))} · Base{' '}
+                              {formatEuro(Number(refund.base_amount_cents ?? 0))} + Extras{' '}
+                              {formatEuro(Number(refund.extras_amount_cents ?? 0))} + Late transfers{' '}
+                              {formatEuro(Number(refund.late_transfer_amount_cents ?? 0))}
+                            </div>
+                            {refund.status === 'pending' && (
+                              <div className="mt-2 text-xs text-amber-700">Waiting for this recipient to approve.</div>
+                            )}
+                            {refund.status === 'approved' && (
+                              <div className="mt-2 text-xs text-slate-600">Approved. Waiting for the recipient to mark it sent.</div>
+                            )}
+                            {refund.status === 'sent' && (
+                              <div className="mt-2">
+                                <form action={confirmParticipantRefundReceived.bind(null, refund.id)}>
+                                  <button
+                                    className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
+                                    type="submit"
+                                  >
+                                    Confirm this refund received
+                                  </button>
+                                </form>
+                              </div>
+                            )}
+                            {(refund.status === 'rejected' || refund.status === 'canceled') && (
+                              <div className="mt-2 text-xs text-red-700">This request was not approved.</div>
+                            )}
+                            {refund.status === 'completed' && (
+                              <div className="mt-2 text-xs text-emerald-700">Receipt manually confirmed.</div>
+                            )}
                           </div>
-                          <div className="mt-1 text-xs text-slate-600">
-                            Amount {formatEuro(Number(myLatestRefundRequest.total_amount_cents ?? 0))}
-                          </div>
+                        )
+                      })}
 
-                          {myLatestRefundRequest.status === 'pending' && (
-                            <div className="mt-2 text-xs text-amber-700">
-                              Waiting for collector approval.
-                            </div>
-                          )}
-                          {myLatestRefundRequest.status === 'approved' && (
-                            <div className="mt-2 text-xs text-slate-600">
-                              Approved. Waiting for collector to mark refund as sent.
-                            </div>
-                          )}
-                          {myLatestRefundRequest.status === 'sent' && (
-                            <div className="mt-2">
-                              <form action={confirmParticipantRefundReceived.bind(null, myLatestRefundRequest.id)}>
-                                <button
-                                  className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
-                                  type="submit"
-                                >
-                                  Confirm refund received and leave
-                                </button>
-                              </form>
-                            </div>
-                          )}
-                          {(myLatestRefundRequest.status === 'rejected' || myLatestRefundRequest.status === 'canceled') && (
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <span className="text-xs text-red-700">Request was not approved.</span>
-                              <form action={requestParticipantRefund.bind(null, projectId)}>
-                                <button
-                                  className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
-                                  type="submit"
-                                >
-                                  Request again
-                                </button>
-                              </form>
-                            </div>
-                          )}
-                          {myLatestRefundRequest.status === 'completed' && (
-                            <div className="mt-2 text-xs text-emerald-700">
-                              Refund completed. You can leave the project now.
-                            </div>
-                          )}
-                        </div>
-                      ) : myRefundEligibleTotalCents > 0 ? (
+                      {myRefundEligibleTotalCents > 0 ? (
                         <form action={requestParticipantRefund.bind(null, projectId)}>
                           <button
                             className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
                             type="submit"
                           >
-                            Request refund approval
+                            Request eligible refunds
                           </button>
                         </form>
                       ) : (
@@ -2639,10 +2644,11 @@ export default async function ProjectPage({
                               </div>
                               <div className="text-xs text-slate-600">
                                 Base {formatEuro(Number(refund.base_amount_cents ?? 0))} + Extras{' '}
-                                {formatEuro(Number(refund.extras_amount_cents ?? 0))}
+                                {formatEuro(Number(refund.extras_amount_cents ?? 0))} + Late transfers{' '}
+                                {formatEuro(Number(refund.late_transfer_amount_cents ?? 0))}
                               </div>
                               <div className="text-[11px] text-slate-500">
-                                Status {refund.status.replaceAll('_', ' ')} � Requested{' '}
+                                Status {refund.status.replaceAll('_', ' ')} · Requested{' '}
                                 {new Date(refund.requested_at).toLocaleString()}
                               </div>
                             </div>
@@ -2733,7 +2739,7 @@ export default async function ProjectPage({
               pendingCount={pendingJoinRequestsCount}
               canManage={viewerIsCollector}
               canManageJoinRequests={viewerCanManageJoinRequests}
-              canCancel={!isAborted && !isFinalized}
+              canCancel={myParticipantRole === 'organizer' && !isAborted && !isFinalized}
               openRequestsOnMount={openRequestsOnLoad}
               activityItems={activityItems}
               financeMode={financeMode}

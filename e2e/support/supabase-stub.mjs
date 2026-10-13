@@ -5,6 +5,7 @@ const port = 54321
 const userId = '00000000-0000-4000-8000-000000000001'
 const projectId = '00000000-0000-4000-8000-000000000002'
 const participantId = '00000000-0000-4000-8000-000000000003'
+const collectorParticipantId = '00000000-0000-4000-8000-000000000004'
 const tokenPayload = Buffer.from(JSON.stringify({
   sub: userId,
   email: 'member@example.test',
@@ -46,7 +47,7 @@ const project = {
   total_is_per_person: false,
   min_participants: 1,
   max_participants: null,
-  collector_participant_id: participantId,
+  collector_participant_id: collectorParticipantId,
   bundle_size: null,
   bundle_pay_for: null,
   event_location_address: null,
@@ -73,6 +74,47 @@ const participant = {
   attendance_status: 'confirmed',
   users: { email: testUser.email, display_name: 'Private Member' },
 }
+const collectorParticipant = {
+  id: collectorParticipantId,
+  project_id: projectId,
+  user_id: '00000000-0000-4000-8000-000000000005',
+  role: 'member',
+  short_code: 'COL001',
+  joined_at: '2026-01-01T00:00:00.000Z',
+  left_at: null,
+  attendance_status: 'confirmed',
+  users: { email: 'collector@example.test', display_name: 'Test Collector' },
+}
+const countedPayment = {
+  id: '00000000-0000-4000-8000-000000000006',
+  participant_id: participantId,
+  is_counted: true,
+  amount_cents: 5000,
+  marked_received_at: '2026-01-02T00:00:00.000Z',
+  created_by: collectorParticipant.user_id,
+  created_at: '2026-01-02T00:00:00.000Z',
+}
+const refundRequest = {
+  id: '00000000-0000-4000-8000-000000000007',
+  project_id: projectId,
+  participant_id: participantId,
+  collector_participant_id: collectorParticipantId,
+  requested_by_participant_id: participantId,
+  base_amount_cents: 5000,
+  extras_amount_cents: 0,
+  late_transfer_amount_cents: 0,
+  total_amount_cents: 5000,
+  status: 'sent',
+  requested_at: '2026-01-03T00:00:00.000Z',
+  decided_at: '2026-01-03T01:00:00.000Z',
+  decided_by_participant_id: collectorParticipantId,
+  collector_marked_sent_at: '2026-01-03T02:00:00.000Z',
+  participant_confirmed_at: null,
+  completed_at: null,
+  rejection_reason: null,
+  created_at: '2026-01-03T00:00:00.000Z',
+  updated_at: '2026-01-03T02:00:00.000Z',
+}
 
 const json = (response, status, body, headers = {}) => {
   response.writeHead(status, { 'Content-Type': 'application/json', ...headers })
@@ -83,7 +125,9 @@ const hasSession = request => request.headers.authorization?.includes(accessToke
 
 const rowsForTable = table => {
   if (table === 'projects') return [project]
-  if (table === 'participants') return [participant]
+  if (table === 'participants') return [participant, collectorParticipant]
+  if (table === 'payments') return [countedPayment]
+  if (table === 'participant_refund_requests') return [refundRequest]
   return []
 }
 
