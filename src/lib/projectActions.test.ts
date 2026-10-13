@@ -1305,11 +1305,73 @@ test('canceled-project refund requests preserve each actual recipient and retry 
   assert.equal(f.tables.late_join_transfers.length, 1)
 })
 
+test('refund request supports the Production schema without bundle columns', async () => {
+  const f = refundFixture()
+  f.tables.extra_payments = []
+  f.tables.late_join_transfers = []
+  f.missingColumns.add('projects.bundle_size')
+  f.missingColumns.add('projects.bundle_pay_for')
+
+  await f.actions.requestParticipantRefund('project')
+
+  assert.equal(f.tables.participant_refund_requests.length, 1)
+  assert.equal(f.tables.participant_refund_requests[0].base_amount_cents, 5000)
+  assert.equal(f.tables.participant_refund_requests[0].total_amount_cents, 5000)
+})
+
+test('refund request uses configured bundle pricing when both columns are available', async () => {
+  const f = refundFixture()
+  f.tables.extra_payments = []
+  f.tables.late_join_transfers = []
+  f.tables.projects[0].bundle_size = 4
+  f.tables.projects[0].bundle_pay_for = 3
+
+  await f.actions.requestParticipantRefund('project')
+
+  assert.equal(f.tables.participant_refund_requests.length, 1)
+  assert.equal(f.tables.participant_refund_requests[0].base_amount_cents, 3750)
+  assert.equal(f.tables.participant_refund_requests[0].total_amount_cents, 3750)
+})
+
+test('refund request fails safely when a surviving bundle column contains configuration', async () => {
+  const f = refundFixture()
+  f.tables.extra_payments = []
+  f.tables.late_join_transfers = []
+  f.tables.projects[0].bundle_pay_for = 3
+  f.missingColumns.add('projects.bundle_size')
+
+  await assert.rejects(
+    f.actions.requestParticipantRefund('project'),
+    /cannot be calculated safely because bundle pricing is unavailable or incomplete/
+  )
+  assert.equal(f.tables.participant_refund_requests.length, 0)
+})
+
+test('an unconfirmed payment signal does not create a refund obligation', async () => {
+  const f = refundFixture()
+  f.tables.payments = []
+  f.tables.extra_payments = []
+  f.tables.late_join_transfers = []
+  f.tables.payment_signals = [{ id: 'signal', participant_id: 'me', cleared_at: null }]
+
+  await assert.rejects(
+    f.actions.requestParticipantRefund('project'),
+    /No confirmed payments are eligible for refund/
+  )
+  assert.equal(f.tables.participant_refund_requests.length, 0)
+})
+
 test('only the actual active recipient can advance a refund and retries do not duplicate activity', async () => {
   const f = refundFixture()
   await f.actions.requestParticipantRefund('project')
   const refund = f.tables.participant_refund_requests.find(row => row.collector_participant_id === 'extra-collector')
   assert.ok(refund)
+  const amountBefore = {
+    base: refund.base_amount_cents,
+    extras: refund.extras_amount_cents,
+    late: refund.late_transfer_amount_cents,
+    total: refund.total_amount_cents,
+  }
 
   f.setCurrentUserId('collector-user')
   await assert.rejects(f.actions.approveParticipantRefund(String(refund.id)), /active payment recipient/)
@@ -1325,6 +1387,12 @@ test('only the actual active recipient can advance a refund and retries do not d
   ])
 
   assert.equal(refund.status, 'sent')
+  assert.deepEqual({
+    base: refund.base_amount_cents,
+    extras: refund.extras_amount_cents,
+    late: refund.late_transfer_amount_cents,
+    total: refund.total_amount_cents,
+  }, amountBefore)
   assert.equal(f.activityEvents.filter(event => event.entryType === 'refund_approved').length, 1)
   assert.equal(f.activityEvents.filter(event => event.entryType === 'refund_sent').length, 1)
 })
