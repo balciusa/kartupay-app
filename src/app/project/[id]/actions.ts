@@ -1405,16 +1405,85 @@ const resolveActiveCollectorParticipantId = async (projectId: string, collectorP
   return organizer?.id ?? null
 }
 
+type RefundPricingProjectRow = {
+  id: string
+  status: string | null
+  total_cents: number | null
+  total_is_per_person: boolean | null
+  collector_participant_id: string | null
+  bundle_size: number | null
+  bundle_pay_for: number | null
+}
+
+const unsafeRefundBundlePricingError = () =>
+  new Error('Refund amount cannot be calculated safely because bundle pricing is unavailable or incomplete')
+
+const getRefundPricingProject = async (projectId: string): Promise<RefundPricingProjectRow> => {
+  const baseFields = [
+    'id',
+    'status',
+    'total_cents',
+    'total_is_per_person',
+    'collector_participant_id',
+  ] as const
+  const bundleFields = ['bundle_size', 'bundle_pay_for'] as const
+  let selectedBundleFields = [...bundleFields]
+  const missingBundleFields = new Set<string>()
+
+  while (true) {
+    const result = await supabaseAdmin
+      .from('projects')
+      .select([...baseFields, ...selectedBundleFields].join(', '))
+      .eq('id', projectId)
+      .maybeSingle()
+
+    const missingField = selectedBundleFields.find(field => missingColumn(result.error, field))
+    if (missingField) {
+      missingBundleFields.add(missingField)
+      selectedBundleFields = selectedBundleFields.filter(field => field !== missingField)
+      continue
+    }
+    if (result.error) throw result.error
+    if (!result.data) throw new Error('Project not found')
+
+    const row = result.data as unknown as Partial<RefundPricingProjectRow>
+    const bundleSize = missingBundleFields.has('bundle_size') ? null : row.bundle_size ?? null
+    const bundlePayFor = missingBundleFields.has('bundle_pay_for') ? null : row.bundle_pay_for ?? null
+
+    if ((bundleSize === null) !== (bundlePayFor === null)) {
+      throw unsafeRefundBundlePricingError()
+    }
+
+    let validatedBundle = { bundleSize: null as number | null, bundlePayFor: null as number | null }
+    if (bundleSize !== null && bundlePayFor !== null) {
+      try {
+        validatedBundle = validateBundlePricingConfig(
+          row.total_is_per_person === true,
+          bundleSize,
+          bundlePayFor
+        )
+      } catch {
+        throw unsafeRefundBundlePricingError()
+      }
+    }
+
+    return {
+      id: String(row.id),
+      status: row.status ?? null,
+      total_cents: row.total_cents ?? null,
+      total_is_per_person: row.total_is_per_person ?? null,
+      collector_participant_id: row.collector_participant_id ?? null,
+      bundle_size: validatedBundle.bundleSize,
+      bundle_pay_for: validatedBundle.bundlePayFor,
+    }
+  }
+}
+
 const computeParticipantRefundSummary = async (
   projectId: string,
   participantId: string
 ): Promise<ParticipantRefundSummary> => {
-  const { data: project, error: projectErr } = await supabaseAdmin
-    .from('projects')
-    .select('id, status, total_cents, total_is_per_person, bundle_size, bundle_pay_for, collector_participant_id')
-    .eq('id', projectId)
-    .maybeSingle()
-  if (projectErr || !project) throw projectErr || new Error('Project not found')
+  const project = await getRefundPricingProject(projectId)
 
   const projectStatus = normalizeProjectStatus(project.status)
 
