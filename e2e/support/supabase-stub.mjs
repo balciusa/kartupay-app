@@ -78,7 +78,7 @@ const collectorParticipant = {
   id: collectorParticipantId,
   project_id: projectId,
   user_id: '00000000-0000-4000-8000-000000000005',
-  role: 'member',
+  role: 'organizer',
   short_code: 'COL001',
   joined_at: '2026-01-01T00:00:00.000Z',
   left_at: null,
@@ -115,6 +115,7 @@ const refundRequest = {
   created_at: '2026-01-03T00:00:00.000Z',
   updated_at: '2026-01-03T02:00:00.000Z',
 }
+let participantActive = true
 
 const json = (response, status, body, headers = {}) => {
   response.writeHead(status, { 'Content-Type': 'application/json', ...headers })
@@ -125,15 +126,58 @@ const hasSession = request => request.headers.authorization?.includes(accessToke
 
 const rowsForTable = table => {
   if (table === 'projects') return [project]
-  if (table === 'participants') return [participant, collectorParticipant]
+  if (table === 'participants') return [
+    { ...participant, left_at: participantActive ? null : '2026-01-04T00:00:00.000Z' },
+    collectorParticipant,
+  ]
   if (table === 'payments') return [countedPayment]
   if (table === 'participant_refund_requests') return [refundRequest]
   return []
 }
 
-const restResponse = (request, response, table) => {
-  const rows = rowsForTable(table)
+const parseBody = request => new Promise((resolve, reject) => {
+  let body = ''
+  request.on('data', chunk => { body += chunk })
+  request.on('end', () => {
+    try { resolve(body ? JSON.parse(body) : {}) } catch (error) { reject(error) }
+  })
+})
+
+const applyFilters = (rows, url) => rows.filter(row => {
+  for (const [key, raw] of url.searchParams) {
+    if (['select', 'order', 'limit', 'offset'].includes(key)) continue
+    if (raw === 'is.null' && row[key] !== null) return false
+    if (raw.startsWith('eq.') && String(row[key]) !== decodeURIComponent(raw.slice(3))) return false
+    if (raw.startsWith('neq.') && String(row[key]) === decodeURIComponent(raw.slice(4))) return false
+  }
+  return true
+})
+
+const restResponse = async (request, response, table, url) => {
+  let rows = applyFilters(rowsForTable(table), url)
   const wantsObject = String(request.headers.accept ?? '').includes('application/vnd.pgrst.object+json')
+
+  if (request.method === 'PATCH') {
+    const values = await parseBody(request)
+    if (table === 'participant_refund_requests' && rows.some(row => row.id === refundRequest.id)) {
+      await new Promise(resolve => setTimeout(resolve, 250))
+      Object.assign(refundRequest, values)
+      rows = [refundRequest]
+    }
+    if (table === 'participants' && rows.some(row => row.id === participant.id) && values.left_at) {
+      participantActive = false
+      rows = [{ ...participant, left_at: values.left_at }]
+    }
+    json(response, 200, wantsObject ? (rows[0] ?? null) : rows)
+    return
+  }
+
+  if (request.method === 'POST') {
+    await parseBody(request)
+    json(response, 201, wantsObject ? (rows[0] ?? {}) : rows)
+    return
+  }
+
   const body = wantsObject ? (rows[0] ?? null) : rows
   const range = rows.length ? `0-${rows.length - 1}/${rows.length}` : '*/0'
 
@@ -175,6 +219,13 @@ const server = createServer((request, response) => {
   }
 
   if (url.pathname === '/auth/v1/token' && request.method === 'POST') {
+    participantActive = true
+    Object.assign(refundRequest, {
+      status: 'sent',
+      participant_confirmed_at: null,
+      completed_at: null,
+      updated_at: '2026-01-03T02:00:00.000Z',
+    })
     json(response, 200, {
       access_token: accessToken,
       token_type: 'bearer',
@@ -195,7 +246,7 @@ const server = createServer((request, response) => {
   }
 
   if (url.pathname.startsWith('/rest/v1/')) {
-    restResponse(request, response, url.pathname.slice('/rest/v1/'.length))
+    void restResponse(request, response, url.pathname.slice('/rest/v1/'.length), url)
     return
   }
 

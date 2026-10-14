@@ -312,6 +312,10 @@ function paymentConfirmationFixture() {
     collector_participant_id: 'collector',
     date_mode: 'fixed',
     selected_date_option_id: null,
+    total_cents: 10000,
+    total_is_per_person: false,
+    bundle_size: null,
+    bundle_pay_for: null,
   })
   f.tables.participants = [
     {
@@ -1231,7 +1235,10 @@ test('organizer join-request panel shows its notification count and approval con
 test('organizer cancellation with financial history is idempotent and preserves ledger rows', async () => {
   const f = fixture()
   f.tables.participants[0].role = 'organizer'
-  f.tables.payments = [{ id: 'payment', participant_id: 'me', is_counted: true, paid_at: '2026-10-01' }]
+  f.tables.payments = [{
+    id: 'payment', participant_id: 'me', is_counted: true, amount_cents: 5000,
+    collector_participant_id: 'collector', paid_at: '2026-10-01',
+  }]
   f.tables.payment_signals = [{ id: 'signal', participant_id: 'me', reported_at: '2026-10-01' }]
   const ledgerBefore = structuredClone({ payments: f.tables.payments, signals: f.tables.payment_signals })
 
@@ -1274,7 +1281,10 @@ function refundFixture() {
     { id: 'extra-collector', project_id: 'project', user_id: 'extra-user', role: 'member', left_at: null, attendance_status: 'confirmed' },
     { id: 'earlier-member', project_id: 'project', user_id: 'earlier-user', role: 'member', left_at: null, attendance_status: 'confirmed' },
   ]
-  f.tables.payments = [{ id: 'payment', participant_id: 'me', is_counted: true, paid_at: '2026-10-01' }]
+  f.tables.payments = [{
+    id: 'payment', participant_id: 'me', is_counted: true, amount_cents: 5000,
+    collector_participant_id: 'collector', paid_at: '2026-10-01',
+  }]
   f.tables.extra_payments = [{
     id: 'extra-payment', payer_participant_id: 'me', collector_participant_id: 'extra-collector',
     amount_cents: 800, confirmed_at: '2026-10-01',
@@ -1319,30 +1329,57 @@ test('refund request supports the Production schema without bundle columns', asy
   assert.equal(f.tables.participant_refund_requests[0].total_amount_cents, 5000)
 })
 
-test('refund request uses configured bundle pricing when both columns are available', async () => {
+test('refund request preserves the confirmed amount when pricing or membership later changes', async () => {
   const f = refundFixture()
   f.tables.extra_payments = []
   f.tables.late_join_transfers = []
   f.tables.projects[0].bundle_size = 4
   f.tables.projects[0].bundle_pay_for = 3
+  f.tables.projects[0].total_cents = 10000
+  f.tables.participants.push({
+    id: 'late-member', project_id: 'project', user_id: 'late-user', role: 'member',
+    left_at: '2026-10-02T00:00:00.000Z', attendance_status: 'confirmed',
+  })
 
   await f.actions.requestParticipantRefund('project')
 
   assert.equal(f.tables.participant_refund_requests.length, 1)
-  assert.equal(f.tables.participant_refund_requests[0].base_amount_cents, 3750)
-  assert.equal(f.tables.participant_refund_requests[0].total_amount_cents, 3750)
+  assert.equal(f.tables.participant_refund_requests[0].base_amount_cents, 5000)
+  assert.equal(f.tables.participant_refund_requests[0].total_amount_cents, 5000)
 })
 
-test('refund request fails safely when a surviving bundle column contains configuration', async () => {
+test('three-user historical base obligation keeps its confirmed amount and original recipient', async () => {
   const f = refundFixture()
   f.tables.extra_payments = []
   f.tables.late_join_transfers = []
-  f.tables.projects[0].bundle_pay_for = 3
-  f.missingColumns.add('projects.bundle_size')
+  f.tables.payments[0].amount_cents = 3333
+  f.tables.payments[0].collector_participant_id = 'collector'
+  f.tables.projects[0].total_cents = 10000
+  f.tables.projects[0].total_is_per_person = false
+  f.tables.projects[0].collector_participant_id = 'extra-collector'
+  f.tables.participants.find(row => row.id === 'earlier-member')!.left_at = '2026-10-02T00:00:00.000Z'
+
+  await f.actions.requestParticipantRefund('project')
+
+  assert.deepEqual(
+    f.tables.participant_refund_requests.map(row => ({
+      collector: row.collector_participant_id,
+      amount: row.total_amount_cents,
+    })),
+    [{ collector: 'collector', amount: 3333 }]
+  )
+})
+
+test('legacy counted payment without an amount or recipient fails safely instead of inventing a refund', async () => {
+  const f = refundFixture()
+  f.tables.extra_payments = []
+  f.tables.late_join_transfers = []
+  delete f.tables.payments[0].amount_cents
+  delete f.tables.payments[0].collector_participant_id
 
   await assert.rejects(
     f.actions.requestParticipantRefund('project'),
-    /cannot be calculated safely because bundle pricing is unavailable or incomplete/
+    /Historical base payment amount was not recorded/
   )
   assert.equal(f.tables.participant_refund_requests.length, 0)
 })
@@ -1359,6 +1396,47 @@ test('an unconfirmed payment signal does not create a refund obligation', async 
     /No confirmed payments are eligible for refund/
   )
   assert.equal(f.tables.participant_refund_requests.length, 0)
+})
+
+test('a completed EUR 50 refund never becomes EUR 100 after another participant leaves', async () => {
+  const f = refundFixture()
+  f.tables.extra_payments = []
+  f.tables.late_join_transfers = []
+  f.tables.projects[0].total_cents = 10000
+  f.tables.projects[0].total_is_per_person = false
+  f.tables.participants.find(row => row.id === 'extra-collector')!.left_at = '2026-10-02T00:00:00.000Z'
+  f.tables.participants.find(row => row.id === 'earlier-member')!.left_at = '2026-10-02T00:00:00.000Z'
+  f.tables.participant_refund_requests = [{
+    id: 'completed-refund', project_id: 'project', participant_id: 'me', collector_participant_id: 'collector',
+    requested_by_participant_id: 'me', base_amount_cents: 5000, extras_amount_cents: 0,
+    late_transfer_amount_cents: 0, total_amount_cents: 5000, status: 'completed',
+    requested_at: '2026-10-01', completed_at: '2026-10-02', created_at: '2026-10-01',
+  }]
+
+  await assert.rejects(
+    f.actions.requestParticipantRefund('project'),
+    /No confirmed payments are eligible for refund/
+  )
+  assert.equal(f.tables.participant_refund_requests.length, 1)
+})
+
+test('a legacy unknown payment may finish its existing EUR 50 request but cannot create a new amount', async () => {
+  const f = refundFixture()
+  f.tables.extra_payments = []
+  f.tables.late_join_transfers = []
+  delete f.tables.payments[0].amount_cents
+  delete f.tables.payments[0].collector_participant_id
+  f.tables.participant_refund_requests = [{
+    id: 'legacy-refund', project_id: 'project', participant_id: 'me', collector_participant_id: 'collector',
+    requested_by_participant_id: 'me', base_amount_cents: 5000, extras_amount_cents: 0,
+    late_transfer_amount_cents: 0, total_amount_cents: 5000, status: 'sent',
+    requested_at: '2026-10-01', created_at: '2026-10-01',
+  }]
+
+  const result = await f.actions.confirmParticipantRefundReceived('legacy-refund')
+  assert.deepEqual(result, { accessRevoked: true })
+  assert.equal(f.tables.participant_refund_requests[0].status, 'completed')
+  assert.ok(f.tables.participants.find(row => row.id === 'me')?.left_at)
 })
 
 test('only the actual active recipient can advance a refund and retries do not duplicate activity', async () => {
@@ -1504,6 +1582,8 @@ test('legacy projects without an assigned collector let an active organizer conf
 
   assert.equal(f.tables.payments.length, 1)
   assert.equal(f.tables.payments[0].participant_id, 'member')
+  assert.equal(f.tables.payments[0].amount_cents, 5000)
+  assert.equal(f.tables.payments[0].collector_participant_id, 'collector')
   assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
 })
 
@@ -1553,6 +1633,8 @@ test('repeated base payment confirmation is idempotent', async () => {
   assert.equal(f.tables.payments.length, 1)
   assert.equal(f.tables.payments[0].participant_id, 'member')
   assert.equal(f.tables.payments[0].is_counted, true)
+  assert.equal(f.tables.payments[0].amount_cents, 5000)
+  assert.equal(f.tables.payments[0].collector_participant_id, 'collector')
   assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
 })
 

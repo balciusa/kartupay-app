@@ -6,7 +6,14 @@ import { randomUUID } from 'crypto'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { recordProjectActivity } from '@/lib/activityLog'
 import { calculateProjectPricing, validateBundlePricingConfig } from '@/lib/projectPricing'
-import { buildRefundObligations, refundObligationsCompleted, type RefundObligation } from '@/lib/projectRefund'
+import {
+  buildLegacyBasePaymentSnapshots,
+  buildRefundObligations,
+  outstandingRefundObligations,
+  refundObligationsCompleted,
+  type ConfirmedBasePayment,
+  type RefundObligation,
+} from '@/lib/projectRefund'
 import { getCurrentUserId } from '@/lib/supabaseServer'
 import { getProjectStatusUiKey } from '@/lib/projectStatusUi'
 import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
@@ -58,7 +65,17 @@ const nextJoinRequestOccurrenceAt = (previousCreatedAt: string | null | undefine
   return new Date(Number.isNaN(previousTime) ? Date.now() : Math.max(Date.now(), previousTime + 1)).toISOString()
 }
 
-async function createCountedPaymentOnce(participantId: string): Promise<string | null> {
+async function createCountedPaymentOnce({
+  participantId,
+  projectId,
+  collectorParticipantId,
+  createdBy,
+}: {
+  participantId: string
+  projectId: string
+  collectorParticipantId: string
+  createdBy: string
+}): Promise<string | null> {
   const { data: existingCounted, error: existingErr } = await supabaseAdmin
     .from('payments')
     .select('id')
@@ -68,11 +85,21 @@ async function createCountedPaymentOnce(participantId: string): Promise<string |
   if (existingErr) throw existingErr
   if ((existingCounted?.length ?? 0) > 0) return null
 
+  const amountCents = await calculateCurrentBasePaymentAmount(projectId)
   const { data: paymentRow, error: paymentErr } = await supabaseAdmin
     .from('payments')
-    .insert({ participant_id: participantId, is_counted: true })
+    .insert({
+      participant_id: participantId,
+      is_counted: true,
+      amount_cents: amountCents,
+      collector_participant_id: collectorParticipantId,
+      created_by: createdBy,
+    })
     .select('id')
     .single()
+  if (missingColumn(paymentErr, 'collector_participant_id') || missingColumn(paymentErr, 'amount_cents')) {
+    throw new Error('Payment confirmation is unavailable until the refund accounting migration is applied')
+  }
   if (paymentErr?.code === '23505') return null
   if (paymentErr) throw paymentErr
   return paymentRow?.id ?? null
@@ -261,7 +288,12 @@ export async function startCollecting(projectId: string) {
     }
   }
 
-  const basePaymentId = await createCountedPaymentOnce(collectorParticipantId)
+  const basePaymentId = await createCountedPaymentOnce({
+    participantId: collectorParticipantId,
+    projectId,
+    collectorParticipantId,
+    createdBy: uid,
+  })
 
   const { error: clrErr } = await supabaseAdmin
     .from('payment_signals')
@@ -573,7 +605,7 @@ export async function leaveProject(projectId: string) {
   const financeMode = await getProjectFinanceMode(projectId)
   const refundSummary = financeMode === 'managed'
     ? await computeParticipantRefundSummary(projectId, me.id)
-    : { totalAmountCents: 0, obligations: [] as RefundObligation[] }
+    : { totalAmountCents: 0, obligations: [] as RefundObligation[], outstandingObligations: [] as RefundObligation[] }
   if (financeMode === 'managed' && refundSummary.totalAmountCents > 0) {
     const refundRequests = await getParticipantRefundRequests(projectId, me.id)
     if (refundRequests.length === 0) {
@@ -900,9 +932,18 @@ export async function requestParticipantRefund(projectId: string) {
   const openRequests = existingRequests.filter(request =>
     request.status === 'pending' || request.status === 'approved' || request.status === 'sent'
   )
+  const requestableObligations = outstandingRefundObligations(
+    summary.obligations,
+    existingRequests.map(refundRequestSnapshot),
+    new Set(['completed', 'pending', 'approved', 'sent'])
+  )
+  if (requestableObligations.length === 0) {
+    revalidatePath(`/project/${projectId}`)
+    return
+  }
 
   const nowIso = new Date().toISOString()
-  for (const obligation of summary.obligations) {
+  for (const obligation of requestableObligations) {
     const existing = openRequests.find(request =>
       request.collector_participant_id === obligation.collectorParticipantId
     )
@@ -1189,6 +1230,7 @@ export async function confirmParticipantRefundReceived(refundRequestId: string) 
   if (!me) throw new Error('Only the requesting participant can confirm refund receipt')
   if (me.id !== refund.participant_id) throw new Error('Only the requesting participant can confirm refund receipt')
   if (refund.status === 'completed') {
+    let accessRevoked = !!me.left_at
     if (!me.left_at) {
       const currentSummary = await computeParticipantRefundSummary(refund.project_id, me.id)
       const currentRequests = await getParticipantRefundRequests(refund.project_id, me.id)
@@ -1201,10 +1243,11 @@ export async function confirmParticipantRefundReceived(refundRequestId: string) 
           actorUserId: uid,
           actorParticipantId: me.id,
         })
+        accessRevoked = true
       }
     }
     revalidatePath(`/project/${refund.project_id}`)
-    return
+    return { accessRevoked }
   }
   if (refund.status !== 'sent') throw new Error('Refund is not marked as sent yet')
 
@@ -1237,7 +1280,14 @@ export async function confirmParticipantRefundReceived(refundRequestId: string) 
   }
   if (!updated?.id) {
     const current = await getRefundRequestStatus(refundRequestId)
-    if (current === 'completed') return
+    if (current === 'completed') {
+      const { data: currentParticipant } = await supabaseAdmin
+        .from('participants')
+        .select('left_at')
+        .eq('id', refund.participant_id)
+        .maybeSingle()
+      return { accessRevoked: !!currentParticipant?.left_at }
+    }
     throw new Error('Refund request status changed before confirmation; refresh and try again')
   }
 
@@ -1256,6 +1306,7 @@ export async function confirmParticipantRefundReceived(refundRequestId: string) 
 
   const refreshedSummary = await computeParticipantRefundSummary(refund.project_id, me.id)
   const refreshedRequests = await getParticipantRefundRequests(refund.project_id, me.id)
+  let accessRevoked = false
   if (refundObligationsCompleted(refreshedSummary.obligations, refreshedRequests.map(refundRequestSnapshot))) {
     if (!completesAllObligations) await requireSafeParticipantLeave(refund.project_id, me)
     await markParticipantLeftWithActivity({
@@ -1265,9 +1316,11 @@ export async function confirmParticipantRefundReceived(refundRequestId: string) 
       actorUserId: uid,
       actorParticipantId: me.id,
     })
+    accessRevoked = true
   }
 
   revalidatePath(`/project/${refund.project_id}`)
+  return { accessRevoked }
 }
 
 const missingColumn = (
@@ -1376,6 +1429,7 @@ type ParticipantRefundSummary = {
   lateTransferAmountCents: number
   totalAmountCents: number
   obligations: RefundObligation[]
+  outstandingObligations: RefundObligation[]
 }
 
 const formatEurCents = (cents: number) => `EUR ${(Math.max(0, Number(cents ?? 0)) / 100).toFixed(2)}`
@@ -1479,6 +1533,25 @@ const getRefundPricingProject = async (projectId: string): Promise<RefundPricing
   }
 }
 
+const calculateCurrentBasePaymentAmount = async (projectId: string) => {
+  const project = await getRefundPricingProject(projectId)
+  const { count, error } = await supabaseAdmin
+    .from('participants')
+    .select('id', { count: 'exact', head: true })
+    .eq('project_id', projectId)
+    .is('left_at', null)
+    .eq('attendance_status', 'confirmed')
+  if (error) throw new Error(error.message ?? 'Failed to calculate the confirmed payment amount')
+
+  return calculateProjectPricing({
+    totalCents: Number(project.total_cents ?? 0),
+    totalIsPerPerson: project.total_is_per_person === true,
+    participantCount: Number(count ?? 0),
+    bundleSize: project.bundle_size ?? null,
+    bundlePayFor: project.bundle_pay_for ?? null,
+  }).perPersonCents
+}
+
 const computeParticipantRefundSummary = async (
   projectId: string,
   participantId: string
@@ -1486,33 +1559,48 @@ const computeParticipantRefundSummary = async (
   const project = await getRefundPricingProject(projectId)
 
   const projectStatus = normalizeProjectStatus(project.status)
+  const refundRequests = await getParticipantRefundRequests(projectId, participantId)
+  const requestSnapshots = refundRequests.map(refundRequestSnapshot)
 
-  const [{ count: activeParticipantsCount, error: activeCountErr }, { count: basePaidCount, error: basePaidErr }] =
-    await Promise.all([
-      supabaseAdmin
-        .from('participants')
-        .select('id', { count: 'exact', head: true })
-        .eq('project_id', projectId)
-        .is('left_at', null)
-        .eq('attendance_status', 'confirmed'),
-      supabaseAdmin
-        .from('payments')
-        .select('id', { count: 'exact', head: true })
-        .eq('participant_id', participantId)
-        .eq('is_counted', true),
-    ])
-  if (activeCountErr) throw new Error(activeCountErr.message ?? 'Failed to count active participants')
-  if (basePaidErr) throw new Error(basePaidErr.message ?? 'Failed to load base payment state')
+  let basePaymentResult = await supabaseAdmin
+    .from('payments')
+    .select('id, amount_cents, collector_participant_id')
+    .eq('participant_id', participantId)
+    .eq('is_counted', true)
+  if (missingColumn(basePaymentResult.error, 'collector_participant_id')) {
+    const legacyResult = await supabaseAdmin
+      .from('payments')
+      .select('id, amount_cents')
+      .eq('participant_id', participantId)
+      .eq('is_counted', true)
+    basePaymentResult = {
+      data: (legacyResult.data ?? []).map(row => ({ ...row, collector_participant_id: null })),
+      error: legacyResult.error,
+    } as typeof basePaymentResult
+  }
+  if (basePaymentResult.error) {
+    throw new Error(basePaymentResult.error.message ?? 'Failed to load base payment history')
+  }
 
-  const pricing = calculateProjectPricing({
-    totalCents: Number(project.total_cents ?? 0),
-    totalIsPerPerson: project.total_is_per_person === true,
-    participantCount: Number(activeParticipantsCount ?? 0),
-    bundleSize: project.bundle_size ?? null,
-    bundlePayFor: project.bundle_pay_for ?? null,
-  })
-  const hasBasePayment = Number(basePaidCount ?? 0) > 0
-  const baseAmountCents = hasBasePayment ? pricing.perPersonCents : 0
+  const storedBasePayments: ConfirmedBasePayment[] = (basePaymentResult.data ?? []).map(row => ({
+    collectorParticipantId: row.collector_participant_id ?? null,
+    amountCents: row.amount_cents === null ? null : Number(row.amount_cents),
+  }))
+  const hasIncompleteBaseSnapshot = storedBasePayments.some(payment =>
+    payment.amountCents === null || !payment.collectorParticipantId
+  )
+  let basePayments = storedBasePayments.filter(payment =>
+    payment.amountCents !== null && !!payment.collectorParticipantId
+  )
+  if (hasIncompleteBaseSnapshot) {
+    const legacySnapshots = buildLegacyBasePaymentSnapshots(participantId, requestSnapshots)
+    if (legacySnapshots.length === 0) {
+      throw new Error(
+        'Historical base payment amount was not recorded. An organizer must review it before a refund can be requested.'
+      )
+    }
+    basePayments = [...basePayments, ...legacySnapshots]
+  }
 
   let extraPayments: Array<{
     collectorParticipantId: string | null
@@ -1535,11 +1623,6 @@ const computeParticipantRefundSummary = async (
       confirmed: true,
     }))
   }
-
-  const collectorParticipantId = await resolveActiveCollectorParticipantId(
-    projectId,
-    (project.collector_participant_id as string | null) ?? null
-  )
 
   let lateTransfers: Array<{
     toParticipantId: string | null
@@ -1566,13 +1649,14 @@ const computeParticipantRefundSummary = async (
 
   const obligations = buildRefundObligations({
     participantId,
-    projectCollectorParticipantId: collectorParticipantId,
-    baseAmountCents,
+    basePayments,
     extraPayments,
     lateTransfers,
   })
 
-  const collectorIds = obligations.map(obligation => obligation.collectorParticipantId)
+  const outstandingObligations = outstandingRefundObligations(obligations, requestSnapshots)
+
+  const collectorIds = outstandingObligations.map(obligation => obligation.collectorParticipantId)
   if (collectorIds.length > 0) {
     const { data: activeCollectors, error: collectorsError } = await supabaseAdmin
       .from('participants')
@@ -1587,12 +1671,12 @@ const computeParticipantRefundSummary = async (
     }
   }
 
-  const extrasAmountCents = obligations.reduce((sum, obligation) => sum + obligation.extrasAmountCents, 0)
-  const lateTransferAmountCents = obligations.reduce(
+  const extrasAmountCents = outstandingObligations.reduce((sum, obligation) => sum + obligation.extrasAmountCents, 0)
+  const lateTransferAmountCents = outstandingObligations.reduce(
     (sum, obligation) => sum + obligation.lateTransferAmountCents,
     0
   )
-  const refundableBaseAmountCents = obligations.reduce(
+  const refundableBaseAmountCents = outstandingObligations.reduce(
     (sum, obligation) => sum + obligation.baseAmountCents,
     0
   )
@@ -1606,6 +1690,7 @@ const computeParticipantRefundSummary = async (
     lateTransferAmountCents,
     totalAmountCents: refundableBaseAmountCents + extrasAmountCents + lateTransferAmountCents,
     obligations,
+    outstandingObligations,
   }
 }
 
@@ -2880,7 +2965,12 @@ export async function markReceived(participantId: string) {
   }
   await requireDateReadyForPayment(participant.project_id, participant.id)
 
-  const paymentId = await createCountedPaymentOnce(participantId)
+  const paymentId = await createCountedPaymentOnce({
+    participantId,
+    projectId: participant.project_id,
+    collectorParticipantId: collector.id,
+    createdBy: uid,
+  })
   if (!paymentId) {
     revalidatePath(`/project/${participant.project_id}`)
     return
@@ -2964,7 +3054,12 @@ export async function markCollectorSelfPaid(projectId: string) {
     throw new Error('Waiting for minimum participants')
   }
 
-  const paymentId = await createCountedPaymentOnce(collectorParticipantId)
+  const paymentId = await createCountedPaymentOnce({
+    participantId: collectorParticipantId,
+    projectId,
+    collectorParticipantId,
+    createdBy: uid,
+  })
   if (!paymentId) {
     revalidatePath(`/project/${projectId}`)
     return
