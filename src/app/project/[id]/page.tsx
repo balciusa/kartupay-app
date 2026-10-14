@@ -19,6 +19,7 @@ import { ExtrasTab } from '@/components/Project/ExtrasTab'
 import { LocationLinkMenu } from '@/components/Project/LocationLinkMenu'
 import { ProjectFlowBar } from '@/components/Project/ProjectFlowBar'
 import { BaseItineraryEditor } from '@/components/Project/BaseItineraryEditor'
+import { RefundReceiptButton } from '@/components/Project/RefundReceiptButton'
 import { ProjectDateFinder } from '@/components/Project/ProjectDateFinder'
 import { ProjectNotificationCenter } from '@/components/Project/ProjectNotificationCenter'
 import { ProjectTransport } from '@/components/Project/ProjectTransport'
@@ -44,10 +45,15 @@ import {
 import { isProjectCanceled } from '@/lib/projectInvite'
 import { canViewProjectTransport } from '@/lib/projectTransport'
 import { loadProjectTransport } from '@/lib/projectTransportServer'
+import {
+  buildLegacyBasePaymentSnapshots,
+  buildRefundObligations,
+  outstandingRefundObligations,
+  type ConfirmedBasePayment,
+} from '@/lib/projectRefund'
 import { headers } from 'next/headers'
 import {
   approveParticipantRefund,
-  confirmParticipantRefundReceived,
   confirmLateJoinReceipt,
   markParticipantRefundSent,
   markCollectorSelfPaid,
@@ -119,6 +125,14 @@ type RefundRequestRow = {
   rejection_reason: string | null
   created_at: string
   updated_at: string
+}
+
+type BasePaymentRow = {
+  participant_id: string
+  is_counted: boolean
+  amount_cents: number | null
+  collector_participant_id: string | null
+  created_at: string
 }
 
 type BaseItineraryItemRow = {
@@ -628,6 +642,31 @@ export default async function ProjectPage({
     }
   })()
 
+  const paymentsPromise = (async (): Promise<{ data: BasePaymentRow[] }> => {
+    if (!financeManaged) return { data: [] }
+    const withRecipient = await supabase
+      .from('payments')
+      .select('participant_id, is_counted, amount_cents, collector_participant_id, created_at')
+    if (!missingColumn(withRecipient.error, 'collector_participant_id')) {
+      if (withRecipient.error) {
+        console.error('[ProjectPage] payments fetch error', withRecipient.error)
+        return { data: [] }
+      }
+      return { data: (withRecipient.data ?? []) as BasePaymentRow[] }
+    }
+
+    const legacy = await supabase
+      .from('payments')
+      .select('participant_id, is_counted, amount_cents, created_at')
+    if (legacy.error) {
+      console.error('[ProjectPage] legacy payments fetch error', legacy.error)
+      return { data: [] }
+    }
+    return {
+      data: (legacy.data ?? []).map(row => ({ ...row, collector_participant_id: null })) as BasePaymentRow[],
+    }
+  })()
+
   const projectDateDataPromise = loadProjectDateFinderData(projectId, uid)
 
   const [
@@ -644,9 +683,7 @@ export default async function ProjectPage({
       .eq('project_id', projectId)
       .order('created_at', { ascending: true }),
     pollsPromise,
-    financeManaged
-      ? supabase.from('payments').select('participant_id, is_counted, created_at')
-      : Promise.resolve({ data: [] as Array<{ participant_id: string; is_counted: boolean; created_at: string }> }),
+    paymentsPromise,
     supabase
       .from('join_requests')
       .select('status')
@@ -1319,34 +1356,87 @@ export default async function ProjectPage({
           (row.status === 'pending' || row.status === 'approved' || row.status === 'sent')
       )
     : []
-  const myBaseRefundableCents = myParticipantId && basePaidSet.has(myParticipantId) ? perPersonCents : 0
-  const myExtrasRefundableCents = myParticipantId
-    ? extraPaymentRows
-        .filter(
-          row =>
-            row.payer_participant_id === myParticipantId &&
-            !!row.confirmed_at &&
-            row.collector_participant_id !== myParticipantId
+  let myRefundEligibleTotalCents = 0
+  let myBaseRefundableCents = 0
+  let myExtrasRefundableCents = 0
+  let myLateTransferRefundableCents = 0
+  let refundCalculationError: string | null = null
+  if (myParticipantId) {
+    const requestSnapshots = myRefundRequests.map(row => ({
+      collectorParticipantId: row.collector_participant_id,
+      baseAmountCents: Number(row.base_amount_cents ?? 0),
+      extrasAmountCents: Number(row.extras_amount_cents ?? 0),
+      lateTransferAmountCents: Number(row.late_transfer_amount_cents ?? 0),
+      totalAmountCents: Number(row.total_amount_cents ?? 0),
+      status: row.status,
+    }))
+    const participantBaseRows = payments.filter(row => row.participant_id === myParticipantId && row.is_counted)
+    const hasIncompleteBaseSnapshot = participantBaseRows.some(row =>
+      row.amount_cents === null || !row.collector_participant_id
+    )
+    let basePayments: ConfirmedBasePayment[] = participantBaseRows
+      .filter(row => row.amount_cents !== null && !!row.collector_participant_id)
+      .map(row => ({
+        collectorParticipantId: row.collector_participant_id,
+        amountCents: Number(row.amount_cents),
+      }))
+
+    if (hasIncompleteBaseSnapshot) {
+      const legacySnapshots = buildLegacyBasePaymentSnapshots(myParticipantId, requestSnapshots)
+      if (legacySnapshots.length === 0) {
+        refundCalculationError =
+          'This historical base payment has no stored amount. An organizer must review it before a refund can be requested.'
+      } else {
+        basePayments = [...basePayments, ...legacySnapshots]
+      }
+    }
+
+    if (!refundCalculationError) {
+      try {
+        const grossObligations = buildRefundObligations({
+          participantId: myParticipantId,
+          basePayments,
+          extraPayments: extraPaymentRows
+            .filter(row => row.payer_participant_id === myParticipantId)
+            .map(row => ({
+              collectorParticipantId: row.collector_participant_id,
+              amountCents: Number(row.amount_cents ?? 0),
+              confirmed: !!row.confirmed_at,
+            })),
+          lateTransfers: lateTransfers
+            .filter(row => row.from_participant_id === myParticipantId)
+            .map(row => ({
+              toParticipantId: row.to_participant_id,
+              amountCents: Number(row.expected_cents ?? 0),
+              received: !!row.received_at,
+            })),
+        })
+        const requestable = outstandingRefundObligations(
+          grossObligations,
+          requestSnapshots,
+          new Set(['completed', 'pending', 'approved', 'sent'])
         )
-        .reduce((sum, row) => sum + Math.max(0, Number(row.amount_cents ?? 0)), 0)
-    : 0
-  const myLateTransferRefundableCents = myParticipantId
-    ? lateTransfers
-        .filter(
-          row =>
-            row.from_participant_id === myParticipantId &&
-            !!row.received_at &&
-            row.to_participant_id !== myParticipantId
+        myRefundEligibleTotalCents = requestable.reduce(
+          (sum, obligation) => sum + obligation.totalAmountCents,
+          0
         )
-        .reduce((sum, row) => sum + Math.max(0, Number(row.expected_cents ?? 0)), 0)
-    : 0
-  const myRefundEligibleTotalCents =
-    myBaseRefundableCents + myExtrasRefundableCents + myLateTransferRefundableCents
+        myBaseRefundableCents = requestable.reduce((sum, obligation) => sum + obligation.baseAmountCents, 0)
+        myExtrasRefundableCents = requestable.reduce((sum, obligation) => sum + obligation.extrasAmountCents, 0)
+        myLateTransferRefundableCents = requestable.reduce(
+          (sum, obligation) => sum + obligation.lateTransferAmountCents,
+          0
+        )
+      } catch {
+        refundCalculationError =
+          'Refund history does not match confirmed payment history. An organizer must review it before another refund action.'
+      }
+    }
+  }
   const showMyRefundSection =
     !!myParticipantId &&
     isMeParticipant &&
     !isFinalized &&
-    (myRefundEligibleTotalCents > 0 || myRefundRequests.length > 0)
+    (myRefundEligibleTotalCents > 0 || myRefundRequests.length > 0 || !!refundCalculationError)
   const showCollectorRefundSection = collectorRefundRequests.length > 0
   const pendingRefundApprovalCount = collectorRefundRequests.filter(row => row.status === 'pending').length
   const pendingRefundReceiptCount =
@@ -2585,14 +2675,7 @@ export default async function ProjectPage({
                             )}
                             {refund.status === 'sent' && (
                               <div className="mt-2">
-                                <form action={confirmParticipantRefundReceived.bind(null, refund.id)}>
-                                  <button
-                                    className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"
-                                    type="submit"
-                                  >
-                                    Confirm this refund received
-                                  </button>
-                                </form>
+                                <RefundReceiptButton projectId={projectId} refundRequestId={refund.id} />
                               </div>
                             )}
                             {(refund.status === 'rejected' || refund.status === 'canceled') && (
@@ -2605,7 +2688,11 @@ export default async function ProjectPage({
                         )
                       })}
 
-                      {myRefundEligibleTotalCents > 0 ? (
+                      {refundCalculationError ? (
+                        <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900" role="alert">
+                          {refundCalculationError}
+                        </div>
+                      ) : myRefundEligibleTotalCents > 0 ? (
                         <form action={requestParticipantRefund.bind(null, projectId)}>
                           <button
                             className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300"

@@ -4,6 +4,7 @@ import Link from "next/link";
 import "./globals.css";
 import { UserWidget } from "@/components/UserWidget";
 import { AuthPrivacyBoundary } from "@/components/AuthPrivacyBoundary";
+import { PrivateProjectAccessBoundary } from "@/components/Project/PrivateProjectAccessBoundary";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -31,7 +32,8 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <AuthPrivacyBoundary>
-          <div className="min-h-screen bg-background text-foreground">
+          <PrivateProjectAccessBoundary>
+            <div className="min-h-screen bg-background text-foreground">
             <header className="sticky top-0 z-40 border-b border-border/80 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
               <div className="app-shell flex items-center justify-between py-4">
                 <Link href="/" className="text-lg font-semibold tracking-tight transition-colors hover:text-primary">KartuPay</Link>
@@ -39,7 +41,8 @@ export default function RootLayout({
               </div>
             </header>
             <main className="app-shell py-6 md:py-8">{children}</main>
-          </div>
+            </div>
+          </PrivateProjectAccessBoundary>
         </AuthPrivacyBoundary>
       </body>
     </html>

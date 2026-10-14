@@ -2,11 +2,11 @@
 
 import { useTransition } from 'react'
 import { leaveProjectFromForm } from '@/app/project/[id]/actions'
-import { useRouter } from 'next/navigation'
+import { usePrivateProjectAccess } from './PrivateProjectAccessBoundary'
 
 export function LeaveProjectButton({ projectId }: { projectId: string }) {
-  const router = useRouter()
   const [pending, startTransition] = useTransition()
+  const { beginAccessExit, cancelAccessExit, completeAccessExit } = usePrivateProjectAccess()
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -14,23 +14,24 @@ export function LeaveProjectButton({ projectId }: { projectId: string }) {
     if (!confirm('Are you sure you want to leave this project?')) return
 
     const formData = new FormData(e.currentTarget)
+    const attemptId = beginAccessExit(projectId)
     
     startTransition(async () => {
       try {
         console.log('[LeaveProjectButton] Leaving project...', { projectId })
         await leaveProjectFromForm(formData)
         console.log('[LeaveProjectButton] Left project successfully')
-        router.refresh()
+        completeAccessExit(projectId, attemptId)
       } catch (error: unknown) {
         // Redirect is expected; surface it without logging as a failure.
         const maybeError = error as { message?: string; digest?: string } | null
         if (maybeError?.message === 'NEXT_REDIRECT' || maybeError?.digest === 'NEXT_REDIRECT') {
-          router.refresh()
+          completeAccessExit(projectId, attemptId)
           return
         }
+        await cancelAccessExit(projectId, attemptId)
         console.error('[LeaveProjectButton] Error leaving project:', error)
         alert(maybeError?.message || 'Failed to leave project. Please try again.')
-        router.refresh()
       }
     })
   }
