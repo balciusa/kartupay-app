@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { selfReportPaid } from '@/app/project/[id]/actions'
+import { validatedPaymentOptionsForUse } from '@/lib/paymentRecipient'
 
 type PayOption = {
   label: string | null
@@ -51,14 +52,12 @@ export function OutgoingTransfer({
   const [open, setOpen] = useState(false)
   const modalRef = useRef<HTMLDivElement | null>(null)
   const resolvedReportPaidAction = reportPaidAction ?? (participantId ? selfReportPaid.bind(null, participantId) : null)
-  const canSelfReport = !!resolvedReportPaidAction && !viewerPaid && !viewerHasPendingSignal && !projectCanceled
   const options = useMemo(
-    () =>
-      (collectorOptions ?? [])
-        .filter(opt => opt && opt.is_active !== false)
-        .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999)),
+    () => validatedPaymentOptionsForUse(collectorOptions ?? [])
+      .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999)),
     [collectorOptions]
   )
+  const canSelfReport = !!resolvedReportPaidAction && options.length > 0 && !viewerPaid && !viewerHasPendingSignal && !projectCanceled
 
   const handlePaymentOption = (opt: { value: string; type: string }) => {
     if (!opt?.value) return
@@ -170,7 +169,7 @@ export function OutgoingTransfer({
             </div>
             <div className="p-4 space-y-2 overflow-y-auto flex-1">
               {options.length === 0 ? (
-                <div className="text-sm opacity-70">No payment methods yet. Ask the collector to add one in Settings.</div>
+                <div role="alert" className="text-sm text-red-700">No valid payment destination is available. Ask the collector to add or correct one in Settings.</div>
               ) : (
                 options.map((opt, idx) => (
                   <button

@@ -63,6 +63,13 @@ test('canonical URL ignores current paths, query parameters, and fragments', () 
   )
 })
 
+test('private share URL carries only the scoped invitation capability', () => {
+  assert.equal(
+    buildProjectShareUrl('https://example.com/current', 'private-project', 'v1.token.signature'),
+    'https://example.com/project/private-project?invite=v1.token.signature'
+  )
+})
+
 test('native share receives only the project title and canonical URL', async () => {
   const calls: ShareData[] = []
   const result = await performProjectShare({

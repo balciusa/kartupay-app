@@ -20,7 +20,11 @@ import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { isProjectCanceled } from '@/lib/projectInvite'
 import { cleanupParticipantTransport } from '@/lib/projectTransportServer'
 import { buildExtraDueRows } from '@/lib/extraPayments'
-import { validatePaymentRecipientInput, validatedPaymentOptionsForStorage } from '@/lib/paymentRecipient'
+import {
+  validatePaymentRecipientInput,
+  validatedPaymentOptionsForStorage,
+  validatedPaymentOptionsForUse,
+} from '@/lib/paymentRecipient'
 import {
   applyTimeToDateOption,
   canRemoveDateOption,
@@ -53,6 +57,7 @@ import {
 import {
   FINANCE_HISTORY_ERROR,
   assertManagedFinance,
+  getRemainingBaseObligationCents,
   getProjectJoinStrategy,
   normalizeExtraFinanceInput,
   normalizeProjectFinanceMode,
@@ -85,7 +90,8 @@ async function createCountedPaymentOnce({
   if (existingErr) throw existingErr
   if ((existingCounted?.length ?? 0) > 0) return null
 
-  const amountCents = await calculateCurrentBasePaymentAmount(projectId)
+  const amountCents = await calculateCurrentBasePaymentAmount(projectId, participantId)
+  if (amountCents <= 0) return null
   const { data: paymentRow, error: paymentErr } = await supabaseAdmin
     .from('payments')
     .insert({
@@ -700,6 +706,34 @@ async function clonePaymentOptionsForParticipant(participantId: string, userId: 
 
   const { error: insertErr } = await supabaseAdmin.from('payment_options').insert(rows)
   if (insertErr) throw insertErr
+}
+
+async function requireValidPaymentDestination(participantId: string) {
+  const { data: projectOptions, error: projectOptionsError } = await supabaseAdmin
+    .from('payment_options')
+    .select('type, label, value, priority, is_active')
+    .eq('participant_id', participantId)
+    .eq('is_active', true)
+  if (projectOptionsError) throw projectOptionsError
+  if (validatedPaymentOptionsForUse(projectOptions ?? []).length > 0) return
+
+  const { data: participant, error: participantError } = await supabaseAdmin
+    .from('participants')
+    .select('user_id')
+    .eq('id', participantId)
+    .is('left_at', null)
+    .maybeSingle()
+  if (participantError) throw participantError
+  if (participant?.user_id) {
+    const { data: userOptions, error: userOptionsError } = await supabaseAdmin
+      .from('user_payment_options')
+      .select('type, label, value, priority, is_active')
+      .eq('user_id', participant.user_id)
+      .eq('is_active', true)
+    if (userOptionsError) throw userOptionsError
+    if (validatedPaymentOptionsForUse(userOptions ?? []).length > 0) return
+  }
+  throw new Error('The payment recipient has no valid payment destination')
 }
 
 async function requireActiveManager(projectId: string, userId: string) {
@@ -1533,7 +1567,7 @@ const getRefundPricingProject = async (projectId: string): Promise<RefundPricing
   }
 }
 
-const calculateCurrentBasePaymentAmount = async (projectId: string) => {
+const calculateCurrentBasePaymentAmount = async (projectId: string, participantId?: string) => {
   const project = await getRefundPricingProject(projectId)
   const { count, error } = await supabaseAdmin
     .from('participants')
@@ -1543,13 +1577,26 @@ const calculateCurrentBasePaymentAmount = async (projectId: string) => {
     .eq('attendance_status', 'confirmed')
   if (error) throw new Error(error.message ?? 'Failed to calculate the confirmed payment amount')
 
-  return calculateProjectPricing({
+  const baseShareCents = calculateProjectPricing({
     totalCents: Number(project.total_cents ?? 0),
     totalIsPerPerson: project.total_is_per_person === true,
     participantCount: Number(count ?? 0),
     bundleSize: project.bundle_size ?? null,
     bundlePayFor: project.bundle_pay_for ?? null,
   }).perPersonCents
+
+  if (!participantId) return baseShareCents
+  const { data: outgoingLateTransfers, error: lateTransferError } = await supabaseAdmin
+    .from('late_join_transfers')
+    .select('expected_cents')
+    .eq('project_id', projectId)
+    .eq('from_participant_id', participantId)
+  if (lateTransferError) {
+    if (missingTable(lateTransferError, 'late_join_transfers')) return baseShareCents
+    throw new Error(lateTransferError.message ?? 'Failed to calculate the remaining base obligation')
+  }
+
+  return getRemainingBaseObligationCents(baseShareCents, outgoingLateTransfers ?? [])
 }
 
 const computeParticipantRefundSummary = async (
@@ -2769,7 +2816,7 @@ export async function selfReportPaid(participantId: string) {
 
   const { data: project, error: projectErr } = await supabaseAdmin
     .from('projects')
-    .select('status')
+    .select('status, collector_participant_id')
     .eq('id', participant.project_id)
     .maybeSingle()
   if (projectErr || !project) throw projectErr || new Error('Project not found')
@@ -2781,6 +2828,27 @@ export async function selfReportPaid(participantId: string) {
     throw new Error('Payments are not editable for this project status')
   }
   await requireDateReadyForPayment(participant.project_id, participant.id)
+
+  let paymentRecipientId = project.collector_participant_id as string | null
+  if (!paymentRecipientId) {
+    const { data: organizer, error: organizerError } = await supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('project_id', participant.project_id)
+      .eq('role', 'organizer')
+      .is('left_at', null)
+      .limit(1)
+      .maybeSingle()
+    if (organizerError) throw organizerError
+    paymentRecipientId = organizer?.id ?? null
+  }
+  if (!paymentRecipientId) throw new Error('No active payment recipient is available')
+  await requireValidPaymentDestination(paymentRecipientId)
+
+  const remainingBaseCents = await calculateCurrentBasePaymentAmount(participant.project_id, participant.id)
+  if (remainingBaseCents <= 0) {
+    throw new Error('Your base contribution is already covered by late-join transfers')
+  }
 
   const { data: existing, error: existingErr } = await supabaseAdmin
     .from('payment_signals')
@@ -2851,19 +2919,22 @@ export async function markLateJoinPaid(transferId: string) {
     .limit(1)
   if (senderErr) throw senderErr
   if (!sender || sender.length === 0) throw new Error('Not authorized to mark this transfer')
+  await requireValidPaymentDestination(transfer.to_participant_id)
 
-  const { error: updateErr } = await supabaseAdmin
+  const { data: updated, error: updateErr } = await supabaseAdmin
     .from('late_join_transfers')
     .update({ sender_marked_at: new Date().toISOString() })
     .eq('id', transfer.id)
     .is('sender_marked_at', null)
+    .select('id')
+    .maybeSingle()
   if (updateErr) {
     if (missingColumn(updateErr, 'sender_marked_at')) {
       console.warn('[markLateJoinPaid] sender_marked_at missing, skipping mark update')
     } else {
       throw updateErr
     }
-  } else {
+  } else if (updated?.id) {
     await recordProjectActivity({
       projectId: transfer.project_id,
       entryType: 'late_transfer_sender_marked',
@@ -2902,11 +2973,19 @@ export async function confirmLateJoinReceipt(transferId: string) {
   if (recipientErr || !recipient) throw new Error('Recipient participant not found')
   if (recipient.user_id !== uid) throw new Error('Only the recipient can confirm this payment')
 
-  const { error: updateErr } = await supabaseAdmin
+  const { data: updated, error: updateErr } = await supabaseAdmin
     .from('late_join_transfers')
     .update({ received_at: new Date().toISOString() })
     .eq('id', transferId)
+    .is('received_at', null)
+    .select('id')
+    .maybeSingle()
   if (updateErr) throw updateErr
+
+  if (!updated?.id) {
+    revalidatePath(`/project/${transfer.project_id}`)
+    return
+  }
 
   await recordProjectActivity({
     projectId: transfer.project_id,
@@ -2955,6 +3034,7 @@ export async function markReceived(participantId: string) {
   if (participant.id === collector.id) {
     throw new Error('Only the active collector can confirm participant payments')
   }
+  await requireValidPaymentDestination(collector.id)
 
   const projectStatus = normalizeProjectStatus(project.status)
   if (projectStatus === 'pending') {
@@ -3122,6 +3202,7 @@ export async function selfReportExtraPaid(extraId: string, payerParticipantId: s
   if (!due.minParticipantsReached) {
     throw new Error('Waiting for minimum participants')
   }
+  await requireValidPaymentDestination(due.collectorParticipantId)
 
   const nowIso = new Date().toISOString()
   const { data: existing, error: existingErr } = await supabaseAdmin

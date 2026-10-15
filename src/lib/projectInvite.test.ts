@@ -76,18 +76,29 @@ function renderInvite(overrides: Partial<Parameters<typeof inviteComponentExport
     requestStatus: null,
     isCanceled: false,
     locale: 'en',
+    hasInviteCapability: true,
+    inviteToken: 'v1.1792028800.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
     ...overrides,
   }))
 }
 
-test('private anonymous viewer gets invite preview and canonical sign-in return link', () => {
+test('valid private invitation capability gets a preview and preserves the capability through sign-in', () => {
   const html = renderInvite({ isAuthenticated: false })
   assert.match(html, /Private project/)
   assert.match(html, /You&#x27;ve been invited to join/)
   assert.match(html, /Weekend trip/)
   assert.match(html, /Sign in to continue/)
-  assert.match(html, /href="\/login\?redirect=%2Fproject%2Fprivate-project"/)
+  assert.match(html, /href="\/login\?redirect=%2Fproject%2Fprivate-project%3Finvite%3Dv1/)
   assert.doesNotMatch(html, /Request to join|Join project|ProjectTabs/)
+})
+
+test('anonymous and former-member contexts without a capability receive no project metadata', () => {
+  for (const isAuthenticated of [false, true]) {
+    const html = renderInvite({ isAuthenticated, hasInviteCapability: false, inviteToken: null })
+    assert.match(html, /Private invitation/)
+    assert.match(html, /Project details are hidden/)
+    assert.doesNotMatch(html, /Weekend trip|safe short description|Vilnius|Oct 3/)
+  }
 })
 
 test('managed nonmember can request access and pending request can be canceled', () => {
@@ -144,18 +155,19 @@ test('invite surface contains only selected preview and onboarding fields', () =
 })
 
 test('private nonmember returns before full and related project data queries', () => {
-  const inviteReturn = pageSource.indexOf('<PrivateProjectInvite\n          {...inviteProps}')
+  const inviteReturn = pageSource.indexOf('<PrivateProjectInvite', pageSource.indexOf('export default async function ProjectPage'))
   const fullProjectLoad = pageSource.indexOf('// Public viewers and active private-project participants may load the full page record.')
   const relatedDataLoad = pageSource.indexOf('// Fetch all related data in parallel')
   assert.ok(inviteReturn > 0 && inviteReturn < fullProjectLoad && fullProjectLoad < relatedDataLoad)
 
   const previewLoad = pageSource.slice(
-    pageSource.indexOf('// Load only deliberately public invite fields'),
+    pageSource.indexOf('// Load only access-control fields'),
     pageSource.indexOf('const uid = await getCurrentUserId()')
   )
   assert.match(previewLoad, /supabaseAdmin\s*\.from\('projects'\)/)
   assert.doesNotMatch(previewLoad, /await supabase\s*\.from\('projects'\)/)
   for (const protectedField of [
+    'title', 'description', 'event_start_at', 'event_location_label',
     'total_cents', 'collector_participant_id', 'bundle_size', 'event_location_address',
     'date_voting_deadline_at', 'selected_date_option_id', 'confirmation_deadline_at',
   ]) {
@@ -194,6 +206,15 @@ test('auth return paths accept only canonical internal project URLs', () => {
     assert.equal(getSafeProjectReturnPath(unsafe), '/')
   }
   assert.equal(buildProjectLoginHref('abc-123'), '/login?redirect=%2Fproject%2Fabc-123')
+  const token = 'v1.1792028800.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+  assert.equal(
+    getSafeProjectReturnPath(`/project/abc-123?invite=${token}`),
+    `/project/abc-123?invite=${token}`
+  )
+  assert.equal(
+    buildProjectLoginHref('abc-123', token),
+    `/login?redirect=${encodeURIComponent(`/project/abc-123?invite=${token}`)}`
+  )
   assert.match(loginPageSource, /getSafeProjectReturnPath\(redirect\)/)
   assert.match(loginFormSource, /window\.location\.assign\(redirectPath\)/)
   assert.match(loginFormSource, /callbackUrl\.searchParams\.set\('redirect', redirectPath\)/)

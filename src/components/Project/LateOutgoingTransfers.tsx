@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { markLateJoinPaid } from '@/app/project/[id]/actions'
+import { validatedPaymentOptionsForUse } from '@/lib/paymentRecipient'
 
 type Transfer = {
   id: string
@@ -89,7 +90,9 @@ export function LateOutgoingTransfers({
   )
   const modalTransfer = openTransferId ? outgoingTransfers.find(t => t.id === openTransferId) ?? null : null
   const modalRecipient = modalTransfer ? participantsById.get(modalTransfer.to_participant_id) ?? null : null
-  const modalOptions = modalTransfer ? allOptionsMap.get(modalTransfer.to_participant_id) ?? [] : []
+  const modalOptions = modalTransfer
+    ? validatedPaymentOptionsForUse(allOptionsMap.get(modalTransfer.to_participant_id) ?? [])
+    : []
 
   useEffect(() => {
     if (!openTransferId) return
@@ -212,7 +215,7 @@ export function LateOutgoingTransfers({
             </div>
             <div className="p-4 space-y-2 overflow-y-auto flex-1">
               {modalOptions.length === 0 ? (
-                <div className="text-sm opacity-70">No payment methods yet.</div>
+                <div role="alert" className="text-sm text-red-700">No valid payment destination is available. Ask the recipient to add or correct one.</div>
               ) : (
                 [...modalOptions]
                   .filter(opt => opt && opt.is_active !== false)
@@ -235,7 +238,7 @@ export function LateOutgoingTransfers({
               <button
                 type="button"
                 className="w-full rounded-md bg-slate-900 px-3 py-1.5 text-white transition-colors hover:bg-slate-700 disabled:opacity-50 sm:w-auto"
-                disabled={pending}
+                disabled={pending || modalOptions.length === 0}
                 onClick={() => {
                   startTransition(async () => {
                     await markLateJoinPaid(modalTransfer.id)

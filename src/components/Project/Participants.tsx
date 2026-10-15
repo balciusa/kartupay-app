@@ -11,6 +11,7 @@ import {
   confirmLateJoinReceipt,
   markLateJoinPaid,
 } from '@/app/project/[id]/actions'
+import { validatedPaymentOptionsForUse } from '@/lib/paymentRecipient'
 
 type Participant = {
   id: string
@@ -95,7 +96,6 @@ const displayName = (p: Participant) => {
 
 const formatEuro = (cents: number) => `€${(cents / 100).toFixed(2)}`
 const readableDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : '')
-const mapFromEntries = <T,>(entries: Array<[string, T]> = []) => new Map(entries)
 
 export function Participants(props: {
   projectId: string
@@ -129,7 +129,13 @@ export function Participants(props: {
   const showPayments = props.showPayments !== false
   const projectCanceled = props.projectCanceled === true
   const pendingSignalsSet = props.pendingSignalsSet ?? new Set<string>()
-  const allOptionsMap = useMemo(() => mapFromEntries(props.allOptions ?? []), [props.allOptions])
+  const allOptionsMap = useMemo(
+    () => new Map((props.allOptions ?? []).map(([participantId, options]) => [
+      participantId,
+      validatedPaymentOptionsForUse(options),
+    ])),
+    [props.allOptions]
+  )
   const transferAggregates = useMemo(() => {
     type Stats = {
       pendingCount: number
@@ -219,8 +225,8 @@ export function Participants(props: {
   const viewerSettled = viewerParticipantId ? props.paidSet.has(viewerParticipantId) : false
   const viewerHasPendingSignal = viewerParticipantId ? pendingSignalsSet.has(viewerParticipantId) : false
   const selfReportAction = viewerParticipantId ? selfReportPaid.bind(null, viewerParticipantId) : null
-  const canSelfReport = !!selfReportAction && !viewerSettled && !viewerHasPendingSignal && !projectCanceled
-  const collectorOptions = (props.collectorOptions ?? []).filter(opt => opt && opt.is_active !== false)
+  const collectorOptions = validatedPaymentOptionsForUse(props.collectorOptions ?? [])
+  const canSelfReport = !!selfReportAction && collectorOptions.length > 0 && !viewerSettled && !viewerHasPendingSignal && !projectCanceled
   const openPayForCollector = () => setPayOpenFor({ type: 'collector' })
   const openPayForParticipant = (participantId: string) => setPayOpenFor({ type: 'participant', participantId })
   const handlePaymentOption = (opt: { value: string; type: string }) => {
@@ -559,7 +565,7 @@ export function Participants(props: {
             <div className="px-4 py-3 border-b font-medium">{modalTitle}</div>
             <div className="p-4 space-y-2 overflow-y-auto flex-1">
               {modalOptions.length === 0 ? (
-                <div className="text-sm opacity-70">
+                <div role="alert" className="text-sm text-red-700">
                   {payOpenFor.type === 'collector'
                     ? 'No payment methods yet. Ask the collector to add one in Settings.'
                     : 'No payment link yet.'}
@@ -593,7 +599,7 @@ export function Participants(props: {
                     <button
                       type="submit"
                       className="px-3 py-1.5 rounded bg-black text-white disabled:opacity-50 w-full sm:w-auto"
-                      disabled={!canSelfReport}
+                      disabled={!canSelfReport || modalOptions.length === 0}
                     >
                       I&apos;ve paid
                     </button>
@@ -613,7 +619,7 @@ export function Participants(props: {
                     <button
                       className="px-3 py-1.5 rounded bg-black text-white w-full sm:w-auto disabled:opacity-50"
                       type="button"
-                      disabled={markingLatePaid}
+                      disabled={markingLatePaid || modalOptions.length === 0}
                       onClick={() => {
                         if (markingLatePaid) return
                         startMarkLatePaid(async () => {

@@ -4,6 +4,7 @@ import { useRef, useState } from 'react'
 import {
   PAYMENT_RECIPIENT_NAME_MAX_LENGTH,
   validateAndNormalizeIban,
+  validateAndNormalizePaymentLink,
   validatePaymentRecipientName,
   type PaymentRecipientType,
 } from '@/lib/paymentRecipient'
@@ -25,7 +26,7 @@ export function PaymentRecipientFields({
 }: PaymentRecipientFieldsProps) {
   const [type, setType] = useState<PaymentRecipientType>('revolut')
   const [nameError, setNameError] = useState<string | null>(null)
-  const [ibanError, setIbanError] = useState<string | null>(null)
+  const [valueError, setValueError] = useState<string | null>(null)
   const valueInputRef = useRef<HTMLInputElement>(null)
   const isIban = type === 'iban'
 
@@ -45,17 +46,25 @@ export function PaymentRecipientFields({
   const checkIban = (input: HTMLInputElement) => {
     if (!isIban) {
       input.setCustomValidity('')
-      setIbanError(null)
+      try {
+        validateAndNormalizePaymentLink(type, input.value)
+        input.setCustomValidity('')
+        setValueError(null)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Enter a valid payment link'
+        input.setCustomValidity(message)
+        setValueError(message)
+      }
       return
     }
     try {
       validateAndNormalizeIban(input.value)
       input.setCustomValidity('')
-      setIbanError(null)
+      setValueError(null)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Enter a valid IBAN'
       input.setCustomValidity(message)
-      setIbanError(message)
+      setValueError(message)
     }
   }
 
@@ -70,7 +79,7 @@ export function PaymentRecipientFields({
           onChange={event => {
             setType(event.target.value as PaymentRecipientType)
             setNameError(null)
-            setIbanError(null)
+            setValueError(null)
             valueInputRef.current?.setCustomValidity('')
           }}
           required
@@ -113,15 +122,15 @@ export function PaymentRecipientFields({
           autoCapitalize={isIban ? 'characters' : 'none'}
           autoCorrect="off"
           spellCheck={false}
-          aria-invalid={!!ibanError}
-          aria-describedby={ibanError ? `${valueName}-error` : undefined}
+          aria-invalid={!!valueError}
+          aria-describedby={valueError ? `${valueName}-error` : undefined}
           onBlur={event => checkIban(event.currentTarget)}
           onChange={event => {
-            if (ibanError) checkIban(event.currentTarget)
+            if (valueError) checkIban(event.currentTarget)
           }}
           required
         />
-        {ibanError && <span id={`${valueName}-error`} role="alert" className="block text-xs text-red-700">{ibanError}</span>}
+        {valueError && <span id={`${valueName}-error`} role="alert" className="block text-xs text-red-700">{valueError}</span>}
       </label>
     </div>
   )

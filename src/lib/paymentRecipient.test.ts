@@ -4,6 +4,8 @@ import {
   normalizePaymentRecipientName,
   validateAndNormalizeIban,
   validatePaymentRecipientInput,
+  validateAndNormalizePaymentLink,
+  validatedPaymentOptionsForUse,
   validatePaymentRecipientName,
   validatedPaymentOptionsForStorage,
 } from './paymentRecipient.ts'
@@ -70,9 +72,30 @@ test('validated recipients return normalized server storage values', () => {
 test('copying stored options omits invalid legacy IBANs without blocking other payment methods', () => {
   const options = validatedPaymentOptionsForStorage([
     { type: 'iban', recipientName: 'Alice', value: 'DE88370400440532013000', priority: 1 },
-    { type: 'revolut', recipientName: 'Payment Link', value: 'https://example.test/pay', priority: 2 },
+    { type: 'revolut', recipientName: 'Payment Link', value: 'https://revolut.me/safe-user', priority: 2 },
   ])
   assert.deepEqual(options, [{
-    type: 'revolut', recipientName: 'Payment Link', label: 'Payment Link', value: 'https://example.test/pay', priority: 2,
+    type: 'revolut', recipientName: 'Payment Link', label: 'Payment Link', value: 'https://revolut.me/safe-user', priority: 2,
   }])
+})
+
+test('supported payment links are normalized to provider-owned HTTPS destinations', () => {
+  assert.equal(validateAndNormalizePaymentLink('revolut', '@safe-user'), 'https://revolut.me/safe-user')
+  assert.equal(
+    validateAndNormalizePaymentLink('swedbank', 'https://www.swedbank.lt/private/d2d/payments'),
+    'https://www.swedbank.lt/private/d2d/payments'
+  )
+  assert.throws(() => validateAndNormalizePaymentLink('revolut', 'https://evil.example/revolut.me/user'), /official revolut\.me/)
+  assert.throws(() => validateAndNormalizePaymentLink('swedbank', 'http://swedbank.lt/pay'), /must use HTTPS/)
+})
+
+test('legacy read validation drops malformed entries and preserves valid priority fallback', () => {
+  const usable = validatedPaymentOptionsForUse([
+    { type: 'iban', label: 'Broken', value: 'IBAN1234', priority: 0, is_active: true },
+    { type: 'revolut', label: 'Unsafe', value: 'javascript:alert(1)', priority: 1, is_active: true },
+    { type: 'iban', label: 'Élodie', value: 'FR1420041010050500013M02606', priority: 2, is_active: true },
+  ])
+  assert.deepEqual(usable.map(option => ({ type: option.type, label: option.label, priority: option.priority })), [
+    { type: 'iban', label: 'Élodie', priority: 2 },
+  ])
 })

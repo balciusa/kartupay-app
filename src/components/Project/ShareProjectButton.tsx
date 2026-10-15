@@ -14,10 +14,12 @@ export function ShareProjectButton({
   projectId,
   projectTitle,
   locale = 'en',
+  inviteToken,
 }: {
   projectId: string
   projectTitle: string
   locale?: ProjectDateLocale
+  inviteToken?: string | null
 }) {
   const strings = getProjectShareStrings(locale)
   const feedbackId = useId()
@@ -41,6 +43,7 @@ export function ShareProjectButton({
       writeClipboard: navigator.clipboard?.writeText
         ? navigator.clipboard.writeText.bind(navigator.clipboard)
         : undefined,
+      inviteToken,
     })
 
     setResult(shareResult === 'canceled' || shareResult === 'shared' ? null : shareResult)

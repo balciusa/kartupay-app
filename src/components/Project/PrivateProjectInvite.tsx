@@ -15,9 +15,11 @@ export function PrivateProjectInvite({
   requestStatus,
   isCanceled,
   locale,
+  hasInviteCapability = false,
+  inviteToken,
 }: {
   projectId: string
-  title: string
+  title?: string | null
   description?: string | null
   eventDate?: string | null
   location?: string | null
@@ -25,6 +27,8 @@ export function PrivateProjectInvite({
   requestStatus?: string | null
   isCanceled: boolean
   locale: ProjectDateLocale
+  hasInviteCapability?: boolean
+  inviteToken?: string | null
 }) {
   const strings = getProjectInviteStrings(locale)
   const requestPending = requestStatus === 'pending'
@@ -37,14 +41,16 @@ export function PrivateProjectInvite({
             <p className="text-sm font-semibold uppercase tracking-[0.16em] text-emerald-700">
               {strings.privateProject}
             </p>
-            <p className="text-sm text-slate-600">{strings.invitedToJoin}</p>
+            <p className="text-sm text-slate-600">
+              {hasInviteCapability ? strings.invitedToJoin : strings.detailsHidden}
+            </p>
             <h1 id="private-project-title" className="break-words text-3xl font-semibold tracking-tight text-slate-950">
-              {title}
+              {hasInviteCapability ? title : strings.privateInvitation}
             </h1>
-            {description && <p className="line-clamp-3 text-sm leading-6 text-slate-600">{description}</p>}
+            {hasInviteCapability && description && <p className="line-clamp-3 text-sm leading-6 text-slate-600">{description}</p>}
           </div>
 
-          {(eventDate || location) && (
+          {hasInviteCapability && (eventDate || location) && (
             <dl className="grid gap-3 rounded-2xl border border-slate-200 bg-white/80 p-4 text-sm">
               {eventDate && (
                 <div className="flex min-w-0 items-start gap-3">
@@ -75,7 +81,7 @@ export function PrivateProjectInvite({
             <div className="space-y-3">
               <p className="text-sm text-slate-600">{strings.signInToContinue}</p>
               <Button asChild className="w-full rounded-full sm:w-auto">
-                <Link href={buildProjectLoginHref(projectId)}>{strings.signIn}</Link>
+                <Link href={buildProjectLoginHref(projectId, inviteToken)}>{strings.signIn}</Link>
               </Button>
             </div>
           ) : (

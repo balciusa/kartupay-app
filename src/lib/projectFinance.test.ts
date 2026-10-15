@@ -11,6 +11,7 @@ import {
   getProjectReadiness,
   getProjectJoinStrategy,
   getUniqueCountedPaymentParticipantIds,
+  getRemainingBaseObligationCents,
   hasMeaningfulFinancialActivity,
   isManagedFinance,
   normalizeProjectFinanceMode,
@@ -155,4 +156,22 @@ test('24. counted payment uniqueness migration has a non-destructive deployment 
   assert.match(migration, /raise exception[\s\S]*Duplicate counted base payment confirmations require review/i)
   assert.match(migration, /create unique index[\s\S]*on public\.payments \(participant_id\)[\s\S]*where is_counted is true/i)
   assert.doesNotMatch(migration, /delete from public\.payments/i)
+})
+
+test('25. late-join obligations replace the same economic base contribution', () => {
+  assert.equal(getRemainingBaseObligationCents(4000, [
+    { expected_cents: 2000 },
+    { expected_cents: 2000 },
+  ]), 0)
+  assert.equal(getRemainingBaseObligationCents(3000, [
+    { expected_cents: 1000 },
+    { expected_cents: 1000 },
+    { expected_cents: 1000 },
+  ]), 0)
+})
+
+test('26. partial and unconfirmed late transfers still reserve their economic contribution', () => {
+  assert.equal(getRemainingBaseObligationCents(4000, [{ expected_cents: 2000 }]), 2000)
+  assert.equal(getRemainingBaseObligationCents(4000, []), 4000)
+  assert.equal(getRemainingBaseObligationCents(4000, [{ expected_cents: 9000 }]), 0)
 })

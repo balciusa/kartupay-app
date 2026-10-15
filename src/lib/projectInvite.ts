@@ -3,6 +3,8 @@ import type { ProjectDateLocale } from './projectDateStrings'
 export const projectInviteStrings = {
   en: {
     privateProject: 'Private project',
+    privateInvitation: 'Private invitation',
+    detailsHidden: 'Project details are hidden until you open a valid invitation link and receive organizer approval.',
     invitedToJoin: "You've been invited to join",
     signInToContinue: 'Sign in to continue',
     signIn: 'Sign in',
@@ -19,6 +21,8 @@ export const projectInviteStrings = {
   },
   lt: {
     privateProject: 'Privatus projektas',
+    privateInvitation: 'Privatus kvietimas',
+    detailsHidden: 'Projekto informacija slepiama, kol neatidarote galiojančios kvietimo nuorodos ir organizatorius nepatvirtina prieigos.',
     invitedToJoin: 'Esate pakviesti prisijungti',
     signInToContinue: 'Prisijunkite, kad galėtumėte tęsti',
     signIn: 'Prisijungti',
@@ -48,7 +52,6 @@ export function getSafeProjectReturnPath(value: string | string[] | null | undef
     const segments = parsed.pathname.split('/').filter(Boolean)
     if (
       parsed.origin !== 'https://kartupay.invalid' ||
-      parsed.search ||
       parsed.hash ||
       segments.length !== 2 ||
       segments[0] !== 'project' ||
@@ -56,14 +59,23 @@ export function getSafeProjectReturnPath(value: string | string[] | null | undef
     ) {
       return '/'
     }
-    return parsed.pathname
+    if (parsed.searchParams.size === 0) return parsed.pathname
+    const inviteValues = parsed.searchParams.getAll('invite')
+    if (
+      parsed.searchParams.size !== 1 ||
+      inviteValues.length !== 1 ||
+      !/^v1\.\d{10}\.[A-Za-z0-9_-]{43}$/u.test(inviteValues[0])
+    ) {
+      return '/'
+    }
+    return `${parsed.pathname}?invite=${encodeURIComponent(inviteValues[0])}`
   } catch {
     return '/'
   }
 }
 
-export function buildProjectLoginHref(projectId: string) {
-  const returnPath = `/project/${encodeURIComponent(projectId)}`
+export function buildProjectLoginHref(projectId: string, inviteToken?: string | null) {
+  const returnPath = `/project/${encodeURIComponent(projectId)}${inviteToken ? `?invite=${encodeURIComponent(inviteToken)}` : ''}`
   return `/login?redirect=${encodeURIComponent(returnPath)}`
 }
 

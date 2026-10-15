@@ -25,6 +25,18 @@ export type CountedPaymentRow = {
 
 export type PaymentObligationKind = 'base' | 'extra' | 'late_join'
 
+export function getRemainingBaseObligationCents(
+  baseShareCents: number,
+  outgoingLateTransfers: Array<{ expected_cents?: number | null }>
+): number {
+  const share = Math.max(0, Math.round(Number(baseShareCents ?? 0)))
+  const reassigned = outgoingLateTransfers.reduce(
+    (sum, transfer) => sum + Math.max(0, Math.round(Number(transfer.expected_cents ?? 0))),
+    0
+  )
+  return Math.max(0, share - reassigned)
+}
+
 export function formatEuroCents(cents: number): string {
   return `€${(Math.max(0, Number(cents ?? 0)) / 100).toFixed(2)}`
 }

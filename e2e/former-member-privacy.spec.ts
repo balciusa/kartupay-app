@@ -48,6 +48,8 @@ test('refund completion removes former-member private content before the members
   await expectNoPrivateContent(page)
 
   await expect(page.getByText('Private project', { exact: true })).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText('Private browser regression project')).toHaveCount(0)
+  await expect(page.getByText('Invite-safe project description')).toHaveCount(0)
   await expectNoPrivateContent(page)
   await expect.poll(async () => {
     try {
@@ -60,6 +62,7 @@ test('refund completion removes former-member private content before the members
 
   await page.reload()
   await expect(page.getByText('Private project', { exact: true })).toBeVisible()
+  await expect(page.getByText('Private browser regression project')).toHaveCount(0)
   await expectNoPrivateContent(page)
 
   await page.goBack()
