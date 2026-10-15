@@ -327,6 +327,15 @@ function paymentConfirmationFixture() {
       left_at: null, attendance_status: 'confirmed',
     },
   ]
+  f.tables.payment_options = [{
+    id: 'collector-payment-option',
+    participant_id: 'collector',
+    type: 'iban',
+    label: 'Test Collector',
+    value: 'DE89370400440532013000',
+    priority: 0,
+    is_active: true,
+  }]
   f.setCurrentUserId('collector-user')
   return f
 }
@@ -1624,6 +1633,18 @@ test('a former collector cannot confirm a base payment', async () => {
   assert.deepEqual(f.activityEvents, [])
 })
 
+test('collector cannot confirm a base payment against a malformed legacy destination', async () => {
+  const f = paymentConfirmationFixture()
+  f.tables.payment_options[0].value = 'IBAN1234'
+
+  await assert.rejects(
+    f.actions.markReceived('member'),
+    /no valid payment destination/
+  )
+  assert.deepEqual(f.tables.payments, [])
+  assert.deepEqual(f.activityEvents, [])
+})
+
 test('repeated base payment confirmation is idempotent', async () => {
   const f = paymentConfirmationFixture()
 
@@ -1688,6 +1709,141 @@ test('concurrent legacy start-collecting requests preserve one counted organizer
   assert.equal(f.tables.payments.length, 1)
   assert.equal(f.tables.payments[0].participant_id, 'collector')
   assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 1)
+})
+
+function lateJoinSettlementFixture(recipientCount = 2) {
+  const f = paymentConfirmationFixture()
+  f.tables.projects[0].total_cents = recipientCount === 2 ? 12000 : 12000
+  f.tables.participants = [
+    { id: 'collector', project_id: 'project', user_id: 'collector-user', role: 'organizer', left_at: null, attendance_status: 'confirmed' },
+    ...Array.from({ length: recipientCount - 1 }, (_, index) => ({
+      id: `recipient-${index + 2}`, project_id: 'project', user_id: `recipient-user-${index + 2}`,
+      role: 'member', left_at: null, attendance_status: 'confirmed',
+    })),
+    { id: 'newcomer', project_id: 'project', user_id: 'newcomer-user', role: 'member', left_at: null, attendance_status: 'confirmed' },
+  ]
+  const expectedCents = recipientCount === 2 ? 2000 : 1000
+  const recipients = f.tables.participants.slice(0, recipientCount)
+  f.tables.payment_options = recipients.map((recipient, index) => ({
+    id: `payment-option-${index + 1}`,
+    participant_id: recipient.id,
+    type: 'iban',
+    label: `Recipient ${index + 1}`,
+    value: 'DE89370400440532013000',
+    priority: 0,
+    is_active: true,
+  }))
+  f.tables.late_join_transfers = recipients.map((recipient, index) => ({
+    id: `late-${index + 1}`,
+    project_id: 'project',
+    from_participant_id: 'newcomer',
+    to_participant_id: recipient.id,
+    expected_cents: expectedCents,
+    sender_marked_at: index === 0 ? '2026-10-15T10:00:00.000Z' : null,
+    received_at: index === 0 ? '2026-10-15T11:00:00.000Z' : null,
+  }))
+  return f
+}
+
+test('two-recipient late settlement cannot create a second EUR 40 base obligation', async () => {
+  const f = lateJoinSettlementFixture(2)
+  f.setCurrentUserId('newcomer-user')
+  await assert.rejects(f.actions.selfReportPaid('newcomer'), /already covered by late-join transfers/)
+
+  f.setCurrentUserId('collector-user')
+  await f.actions.markReceived('newcomer')
+  assert.equal(f.tables.payments.length, 0)
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'payment_confirmed').length, 0)
+})
+
+test('three-recipient late settlement reserves the full EUR 30 newcomer share', async () => {
+  const f = lateJoinSettlementFixture(3)
+  f.setCurrentUserId('newcomer-user')
+  await assert.rejects(f.actions.selfReportPaid('newcomer'), /already covered by late-join transfers/)
+
+  f.setCurrentUserId('collector-user')
+  await f.actions.markReceived('newcomer')
+  assert.equal(f.tables.payments.length, 0)
+})
+
+test('per-person pricing with no late transfers preserves the full base payment', async () => {
+  const f = lateJoinSettlementFixture(2)
+  f.tables.projects[0].total_cents = 4000
+  f.tables.projects[0].total_is_per_person = true
+  f.tables.late_join_transfers = []
+
+  f.setCurrentUserId('collector-user')
+  await f.actions.markReceived('newcomer')
+  assert.equal(f.tables.payments[0].amount_cents, 4000)
+})
+
+test('concurrent sender retries create one late-transfer transition and one activity event', async () => {
+  const f = lateJoinSettlementFixture(2)
+  const transfer = f.tables.late_join_transfers[1]
+  f.setCurrentUserId('newcomer-user')
+
+  await Promise.all([
+    f.actions.markLateJoinPaid(String(transfer.id)),
+    f.actions.markLateJoinPaid(String(transfer.id)),
+  ])
+
+  assert.ok(transfer.sender_marked_at)
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'late_transfer_sender_marked').length, 1)
+})
+
+test('concurrent recipient retries create one receipt transition and one activity event', async () => {
+  const f = lateJoinSettlementFixture(2)
+  const transfer = f.tables.late_join_transfers[1]
+  f.setCurrentUserId('recipient-user-2')
+
+  await Promise.all([
+    f.actions.confirmLateJoinReceipt(String(transfer.id)),
+    f.actions.confirmLateJoinReceipt(String(transfer.id)),
+  ])
+
+  assert.ok(transfer.received_at)
+  assert.equal(f.activityEvents.filter(event => event.entryType === 'late_transfer_collector_confirmed').length, 1)
+})
+
+test('malformed legacy destinations cannot produce base or late payment signals', async () => {
+  const f = lateJoinSettlementFixture(2)
+  f.tables.payment_options = f.tables.payment_options.map(option => ({
+    ...option,
+    type: 'iban',
+    label: 'Broken destination',
+    value: 'IBAN1234',
+  }))
+  f.setCurrentUserId('newcomer-user')
+
+  await assert.rejects(
+    f.actions.markLateJoinPaid('late-2'),
+    /no valid payment destination/
+  )
+  f.tables.late_join_transfers = []
+  await assert.rejects(
+    f.actions.selfReportPaid('newcomer'),
+    /no valid payment destination/
+  )
+  assert.equal(f.tables.payment_signals.length, 0)
+  assert.equal(f.activityEvents.length, 0)
+})
+
+test('a valid user-level destination safely replaces an invalid project copy', async () => {
+  const f = lateJoinSettlementFixture(2)
+  f.tables.payment_options = f.tables.payment_options.map(option => ({ ...option, value: 'IBAN1234' }))
+  f.tables.user_payment_options = [{
+    id: 'user-option',
+    user_id: 'recipient-user-2',
+    type: 'revolut',
+    label: 'Payment Link',
+    value: 'https://revolut.me/recipient-two',
+    priority: 0,
+    is_active: true,
+  }]
+  f.setCurrentUserId('newcomer-user')
+
+  await f.actions.markLateJoinPaid('late-2')
+  assert.ok(f.tables.late_join_transfers[1].sender_marked_at)
 })
 
 test('a signed-out caller cannot add a sample add-on through the service-role action', async () => {

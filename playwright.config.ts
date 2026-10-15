@@ -39,6 +39,7 @@ export default defineConfig({
             NEXT_PUBLIC_SUPABASE_URL: supabaseStubUrl,
             NEXT_PUBLIC_SUPABASE_ANON_KEY: 'e2e-anon-key',
             SUPABASE_SERVICE_ROLE: 'e2e-service-role-key',
+            PROJECT_INVITE_SIGNING_SECRET: 'e2e-private-invite-signing-secret',
           },
         },
       ],

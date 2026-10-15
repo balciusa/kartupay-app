@@ -31,8 +31,10 @@ export function shouldShowProjectShare({
   return isActiveParticipant && !isCanceled && !isFinalized
 }
 
-export function buildProjectShareUrl(origin: string, projectId: string) {
-  return new URL(`/project/${encodeURIComponent(projectId)}`, origin).toString()
+export function buildProjectShareUrl(origin: string, projectId: string, inviteToken?: string | null) {
+  const url = new URL(`/project/${encodeURIComponent(projectId)}`, origin)
+  if (inviteToken) url.searchParams.set('invite', inviteToken)
+  return url.toString()
 }
 
 export async function performProjectShare({
@@ -41,14 +43,16 @@ export async function performProjectShare({
   origin,
   nativeShare,
   writeClipboard,
+  inviteToken,
 }: {
   projectId: string
   projectTitle: string
   origin: string
   nativeShare?: (data: ShareData) => Promise<void>
   writeClipboard?: (text: string) => Promise<void>
+  inviteToken?: string | null
 }): Promise<ProjectShareResult> {
-  const url = buildProjectShareUrl(origin, projectId)
+  const url = buildProjectShareUrl(origin, projectId, inviteToken)
 
   if (nativeShare) {
     try {

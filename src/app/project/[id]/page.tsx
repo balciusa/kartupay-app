@@ -33,8 +33,10 @@ import { loadProjectNotifications, type ProjectNotificationSnapshot } from '@/li
 import { resolveProjectDateLocale } from '@/lib/projectDateStrings'
 import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { shouldShowProjectShare } from '@/lib/projectShare'
+import { validatedPaymentOptionsForUse } from '@/lib/paymentRecipient'
 import {
   formatEuroCents as formatEuro,
+  getRemainingBaseObligationCents,
   getProjectJoinStrategy,
   getProjectReadiness,
   getUniqueCountedPaymentParticipantIds,
@@ -43,6 +45,10 @@ import {
   type ProjectFinanceMode,
 } from '@/lib/projectFinance'
 import { isProjectCanceled } from '@/lib/projectInvite'
+import {
+  createServerProjectInviteCapability,
+  verifyServerProjectInviteCapability,
+} from '@/lib/projectInviteCapabilityServer'
 import { canViewProjectTransport } from '@/lib/projectTransport'
 import { loadProjectTransport } from '@/lib/projectTransportServer'
 import {
@@ -274,7 +280,7 @@ export default async function ProjectPage({
 }: {
   params: Promise<{ id?: string }>
   searchParams?:
-    Promise<{ id?: string | string[]; tab?: string | string[]; adminModal?: string | string[] }>
+    Promise<{ id?: string | string[]; tab?: string | string[]; adminModal?: string | string[]; invite?: string | string[] }>
 }) {
   const resolvedParams = await params
   const resolvedSearchParams = searchParams ? await searchParams : undefined
@@ -283,6 +289,7 @@ export default async function ProjectPage({
   const queryId = resolvedSearchParams ? getSingleQueryParam(resolvedSearchParams.id) : undefined
   const queryTab = resolvedSearchParams ? getSingleQueryParam(resolvedSearchParams.tab) : undefined
   const queryAdminModal = resolvedSearchParams ? getSingleQueryParam(resolvedSearchParams.adminModal) : undefined
+  const inviteToken = resolvedSearchParams ? getSingleQueryParam(resolvedSearchParams.invite) : undefined
   const adminModalKey = String(queryAdminModal ?? '').trim().toLowerCase()
   const defaultProjectTab = resolveProjectTab(queryTab)
   const openRequestsOnLoad = defaultProjectTab === 'admin' && adminModalKey === 'requests'
@@ -302,14 +309,13 @@ export default async function ProjectPage({
 
   const supabase = await getSupabaseServer()
 
-  // Load only deliberately public invite fields until private-project membership is established.
-  const baseProjectFields = 'id, title, description, status, canceled_at, event_start_at, event_end_at'
+  // Load only access-control fields until private-project membership or a scoped invite is established.
+  const baseProjectFields = 'id, status, canceled_at'
   const optionalProjectFields = [
     'is_public',
     'closed_at',
     'aborted_at',
     'finalized_at',
-    'event_location_label',
     'finance_mode',
   ] as const
   let optionalFields = [...optionalProjectFields]
@@ -380,34 +386,16 @@ export default async function ProjectPage({
 
   if (project.is_public !== true) {
     const inviteCanceled = isProjectCanceled(project)
-    const inviteDate = project.event_start_at
-      ? new Intl.DateTimeFormat(projectDateLocale === 'lt' ? 'lt-LT' : 'en-GB', {
-          dateStyle: 'medium',
-          timeStyle: 'short',
-          hour12: false,
-        }).format(new Date(project.event_start_at))
-      : null
-    const inviteProps = {
-      projectId,
-      title: project.title,
-      description: project.description,
-      eventDate: inviteDate,
-      location: project.event_location_label,
-      isCanceled: inviteCanceled,
-      locale: projectDateLocale,
-    }
-
-    if (!uid) {
-      return <PrivateProjectInvite {...inviteProps} isAuthenticated={false} />
-    }
-
-    const { data: privateMembership, error: privateMembershipError } = await supabaseAdmin
-      .from('participants')
-      .select('id')
-      .eq('project_id', projectId)
-      .eq('user_id', uid)
-      .is('left_at', null)
-      .limit(1)
+    const hasInviteCapability = verifyServerProjectInviteCapability(projectId, inviteToken)
+    const { data: privateMembership, error: privateMembershipError } = uid
+      ? await supabaseAdmin
+          .from('participants')
+          .select('id')
+          .eq('project_id', projectId)
+          .eq('user_id', uid)
+          .is('left_at', null)
+          .limit(1)
+      : { data: [], error: null }
 
     if (privateMembershipError) {
       console.error('[ProjectPage] private membership check error', privateMembershipError)
@@ -422,21 +410,47 @@ export default async function ProjectPage({
     }
 
     if (!privateMembership?.length) {
-      const { data: myInviteRequest, error: inviteRequestError } = await supabaseAdmin
-        .from('join_requests')
-        .select('status')
-        .eq('project_id', projectId)
-        .eq('requester_user_id', uid)
-        .maybeSingle()
+      const { data: invitePreview, error: invitePreviewError } = hasInviteCapability
+        ? await supabaseAdmin
+            .from('projects')
+            .select('title, description, event_start_at, event_end_at, event_location_label')
+            .eq('id', projectId)
+            .single()
+        : { data: null, error: null }
+      if (invitePreviewError) console.error('[ProjectPage] private invite preview error', invitePreviewError)
+      const canShowInvitePreview = hasInviteCapability && !!invitePreview
+      const inviteDate = canShowInvitePreview && invitePreview.event_start_at
+        ? new Intl.DateTimeFormat(projectDateLocale === 'lt' ? 'lt-LT' : 'en-GB', {
+            dateStyle: 'medium',
+            timeStyle: 'short',
+            hour12: false,
+          }).format(new Date(invitePreview.event_start_at))
+        : null
+      const { data: myInviteRequest, error: inviteRequestError } = uid
+        ? await supabaseAdmin
+            .from('join_requests')
+            .select('status')
+            .eq('project_id', projectId)
+            .eq('requester_user_id', uid)
+            .maybeSingle()
+        : { data: null, error: null }
       if (inviteRequestError) {
         console.error('[ProjectPage] private invite request check error', inviteRequestError)
       }
 
       return (
         <PrivateProjectInvite
-          {...inviteProps}
-          isAuthenticated
+          projectId={projectId}
+          title={canShowInvitePreview ? invitePreview.title : null}
+          description={canShowInvitePreview ? invitePreview.description : null}
+          eventDate={inviteDate}
+          location={canShowInvitePreview ? invitePreview.event_location_label : null}
+          isCanceled={inviteCanceled}
+          locale={projectDateLocale}
+          isAuthenticated={!!uid}
           requestStatus={myInviteRequest?.status ?? null}
+          hasInviteCapability={canShowInvitePreview}
+          inviteToken={canShowInvitePreview ? inviteToken : null}
         />
       )
     }
@@ -444,7 +458,7 @@ export default async function ProjectPage({
 
   // Public viewers and active private-project participants may load the full page record.
   const fullBaseProjectFields =
-    'id, total_cents, total_is_per_person, min_participants, max_participants, collector_participant_id'
+    'id, title, description, event_start_at, event_end_at, event_location_label, total_cents, total_is_per_person, min_participants, max_participants, collector_participant_id'
   const fullOptionalProjectFields = [
     'bundle_size',
     'bundle_pay_for',
@@ -952,7 +966,7 @@ export default async function ProjectPage({
   const myJoinRequestStatus =
     (myJoinRequest as { status?: string } | null)?.status ?? null
   const participantIds = new Set(participantsClean.map(p => p.id))
-  const paymentMethodsList = (paymentOptions ?? []).filter(pm => pm.is_active !== false)
+  const paymentMethodsList = validatedPaymentOptionsForUse(paymentOptions ?? [])
   
   // Filter payments to only those for participants in this project
   const payments = (allPayments ?? []).filter(p => participantIds.has(p.participant_id))
@@ -1026,6 +1040,18 @@ export default async function ProjectPage({
   const perPersonCents = pricingNow.perPersonCents
   const perPersonCentsAtFinalize = pricingAtFinalize.perPersonCents
   const totalCents = pricingNow.totalCents
+  const baseObligationByParticipant = new Map(
+    financialParticipants.map(participant => [
+      participant.id,
+      getRemainingBaseObligationCents(
+        perPersonCents,
+        lateTransfers.filter(transfer => transfer.from_participant_id === participant.id)
+      ),
+    ])
+  )
+  const viewerBaseObligationCents = myParticipantId
+    ? baseObligationByParticipant.get(myParticipantId) ?? perPersonCents
+    : perPersonCents
   const participantsNow = participantsCount
   const dateSelectionBlocksPayments = projectDateData?.dateMode === 'selecting'
   const paymentsOpen = !isPendingStatus
@@ -1114,7 +1140,15 @@ export default async function ProjectPage({
   console.log('[ProjectPage] Pending join requests for manager:', { count: pendingJoinRequestsCount, requests: pendingForOrganizer })
   const basePaidIds = paidIds.filter(participantId => baseParticipantIds.has(participantId))
   const basePaidSet = new Set(basePaidIds)
-  const collectedCentsDisplay = Math.min(perPersonCentsAtFinalize * basePaidSet.size, pricingAtFinalize.totalCents)
+  const collectedCentsDisplay = Math.min(
+    payments
+      .filter(payment => payment.is_counted === true && baseParticipantIds.has(payment.participant_id))
+      .reduce(
+        (sum, payment) => sum + Math.max(0, Number(payment.amount_cents ?? perPersonCentsAtFinalize)),
+        0
+      ),
+    pricingAtFinalize.totalCents
+  )
   const lateJoinerIds = new Set(
     finalizedAtDate
       ? financialParticipants
@@ -1122,6 +1156,7 @@ export default async function ProjectPage({
           .map(p => p.id)
       : []
   )
+  const lateTransferParticipantIds = new Set(lateTransfers.map(transfer => transfer.from_participant_id))
   const lateOutgoingPendingIds = new Set(
     lateTransfers.filter(t => !t.received_at).map(t => t.from_participant_id)
   )
@@ -1134,8 +1169,10 @@ export default async function ProjectPage({
   for (const id of lateOutgoingPendingIds) {
     settledIds.delete(id)
   }
-  for (const id of lateJoinerIds) {
-    if (!lateOutgoingPendingIds.has(id)) settledIds.add(id)
+  for (const id of lateTransferParticipantIds) {
+    if (!lateOutgoingPendingIds.has(id) && (baseObligationByParticipant.get(id) ?? perPersonCents) === 0) {
+      settledIds.add(id)
+    }
   }
   const effectivePaidCount = Math.min(settledIds.size, participantsCount)
   const lateIncomingPendingCents = myParticipantId
@@ -1165,6 +1202,7 @@ export default async function ProjectPage({
     !!myParticipantId &&
     financialParticipantIds.has(myParticipantId) &&
     !!collectorId &&
+    viewerBaseObligationCents > 0 &&
     !viewerPaid &&
     !viewerHasPendingSignal
   const lateOutgoingDueCount = lateOutgoingTransfers.filter(t => !t.received_at).length
@@ -1465,7 +1503,9 @@ export default async function ProjectPage({
   // Get collector options from payment_options (project-specific)
   let collectorPaymentOptions =
     collectorId
-      ? (paymentOptions ?? []).filter(po => po.participant_id === collectorId && po.is_active !== false)
+      ? validatedPaymentOptionsForUse(
+          (paymentOptions ?? []).filter(po => po.participant_id === collectorId)
+        )
       : []
   
   // Fallback to user_payment_options if no project-specific options found
@@ -1482,13 +1522,13 @@ export default async function ProjectPage({
       console.error('[ProjectPage] Error fetching collector user_payment_options:', userOptsError)
     }
     
-    collectorPaymentOptions = (userPaymentOptions ?? []).map(opt => ({
+    collectorPaymentOptions = validatedPaymentOptionsForUse((userPaymentOptions ?? []).map(opt => ({
       label: opt.label,
       value: opt.value,
       type: opt.type,
       priority: opt.priority ?? 999,
       is_active: opt.is_active !== false,
-    }))
+    })))
   }
 
   console.log('[ProjectPage] Manager check:', {
@@ -1530,7 +1570,7 @@ export default async function ProjectPage({
     canManageJoinRequests: viewerCanManageJoinRequests,
     canPay: isMeParticipant && financialParticipantIds.has(myParticipantId ?? '')
       && paymentsOpen && minParticipantsReached && !dateSelectionBlocksPayments
-      && !viewerPaid && !viewerHasPendingSignal && perPersonCents > 0,
+      && !viewerPaid && !viewerHasPendingSignal && viewerBaseObligationCents > 0,
   })
 
   const isMemberActive = isMeParticipant
@@ -1539,6 +1579,9 @@ export default async function ProjectPage({
     isCanceled: isAborted,
     isFinalized,
   })
+  const shareInviteToken = showProjectShare && project.is_public !== true
+    ? createServerProjectInviteCapability(projectId)
+    : null
   const userVotes: Record<string, string | null> = {}
   if (uid) {
     for (const vote of pollVotes ?? []) {
@@ -1855,6 +1898,7 @@ export default async function ProjectPage({
                 projectId={projectId}
                 projectTitle={project.title}
                 locale={projectDateLocale}
+                inviteToken={shareInviteToken}
               />
             )}
             {isClosedStatus ? (
@@ -2288,7 +2332,8 @@ export default async function ProjectPage({
                         p =>
                           p.id !== collectorId &&
                           !paidSet.has(p.id) &&
-                          baseParticipantIds.has(p.id)
+                          baseParticipantIds.has(p.id) &&
+                          (baseObligationByParticipant.get(p.id) ?? perPersonCentsAtFinalize) > 0
                       )
                     : []
                   const incomingExtra = myParticipantId ? extraIncomingForViewer : []
@@ -2307,7 +2352,7 @@ export default async function ProjectPage({
                           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="text-sm font-medium text-slate-900">
-                                {participantName(p)} {formatEuro(perPersonCentsAtFinalize)}
+                                {participantName(p)} {formatEuro(baseObligationByParticipant.get(p.id) ?? perPersonCentsAtFinalize)}
                               </span>
                               <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-700">
                                 Base contribution
@@ -2428,7 +2473,7 @@ export default async function ProjectPage({
                 {myParticipantId ? (
                   (() => {
                     const showLateOutgoing = lateOutgoingTransfers.length > 0
-                    const showBaseOutgoing = paymentsOpen && !viewerIsCollector && !!collectorId && !isFinalized && !viewerPaid
+                    const showBaseOutgoing = paymentsOpen && !viewerIsCollector && !!collectorId && !isFinalized && !viewerPaid && viewerBaseObligationCents > 0
                     const showBaseSelfMark =
                       paymentsOpen && viewerIsCollector && !!collectorId && myParticipantId === collectorId && !collectorIsCountedPaid
                     const showExtraOutgoing = paymentsOpen && extraOutgoingForViewer.length > 0
@@ -2457,7 +2502,7 @@ export default async function ProjectPage({
                           <div className="space-y-2">
                             <OutgoingTransfer
                               collectorName={collectorName}
-                              amountLabel={formatEuro(perPersonCents)}
+                              amountLabel={formatEuro(viewerBaseObligationCents)}
                               collectorOptions={collectorPaymentOptions}
                               participantId={myParticipantId}
                               viewerPaid={viewerPaid}

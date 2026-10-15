@@ -5,7 +5,7 @@ import SetPasswordForm from '@/app/settings/SetPasswordForm'
 import { PaymentRecipientFields } from '@/components/Project/PaymentRecipientFields'
 import { Button } from '@/components/ui/button'
 import type { ProjectFinanceMode } from '@/lib/projectFinance'
-import { validatePaymentRecipientInput } from '@/lib/paymentRecipient'
+import { validatePaymentRecipientInput, validateStoredPaymentOption } from '@/lib/paymentRecipient'
 
 async function updateDisplayName(projectId: string, formData: FormData) {
   'use server'
@@ -79,11 +79,17 @@ async function setDefaultLink(projectId: string, id: string) {
 
   const { data: links, error } = await supabaseAdmin
     .from('user_payment_options')
-    .select('id, priority')
+    .select('id, type, label, value, priority, is_active')
     .eq('user_id', uid)
     .order('priority', { ascending: true })
   if (error) throw error
-  if (!links?.some(l => l.id === id)) return
+  const selected = links?.find(link => link.id === id)
+  if (!selected) return
+  try {
+    validateStoredPaymentOption(selected)
+  } catch {
+    throw new Error('Correct or delete this invalid payment destination before making it the default')
+  }
 
   const reorderedIds = [id, ...(links ?? []).filter(l => l.id !== id).map(l => l.id)]
   const updates = reorderedIds.map((linkId, idx) =>
@@ -158,20 +164,31 @@ export async function ProfileTab({ projectId, financeMode = 'managed' }: { proje
             const bank = link.type === 'revolut' ? 'Revolut' : link.type === 'swedbank' ? 'Swedbank' : 'IBAN'
             const paymentType = link.label ?? (link.type === 'iban' ? 'IBAN' : 'Payment Link')
             const isDefault = links?.[0]?.id === link.id
+            let isValid = true
+            try {
+              validateStoredPaymentOption(link)
+            } catch {
+              isValid = false
+            }
 
             return (
               <div key={link.id} className="rounded-lg border bg-background px-3 py-2.5">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="text-sm text-slate-800">
                     <span className="font-semibold">{bank}</span> - {paymentType} - {link.value}
-                    {isDefault && (
+                    {isDefault && isValid && (
                       <span className="ml-2 inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
                         Default
                       </span>
                     )}
+                    {!isValid && (
+                      <span className="ml-2 inline-flex rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700">
+                        Invalid — delete and add again
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
-                    {!isDefault && (
+                    {!isDefault && isValid && (
                       <form action={setDefaultLink.bind(null, projectId, link.id)}>
                         <Button size="sm" variant="outline">Set default</Button>
                       </form>
