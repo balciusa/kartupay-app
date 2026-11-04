@@ -3,22 +3,15 @@ import { createServer } from 'node:http'
 const host = '127.0.0.1'
 const port = 54321
 const userId = '00000000-0000-4000-8000-000000000001'
+const collectorUserId = '00000000-0000-4000-8000-000000000005'
 const projectId = '00000000-0000-4000-8000-000000000002'
 const participantId = '00000000-0000-4000-8000-000000000003'
 const collectorParticipantId = '00000000-0000-4000-8000-000000000004'
-const tokenPayload = Buffer.from(JSON.stringify({
-  sub: userId,
-  email: 'member@example.test',
-  role: 'authenticated',
-  aud: 'authenticated',
-  exp: 4_102_444_800,
-})).toString('base64url')
-const accessToken = `e2e.${tokenPayload}.signature`
-const testUser = {
-  id: userId,
+const makeTestUser = (id, email) => ({
+  id,
   aud: 'authenticated',
   role: 'authenticated',
-  email: 'member@example.test',
+  email,
   email_confirmed_at: '2026-01-01T00:00:00.000Z',
   phone: '',
   confirmed_at: '2026-01-01T00:00:00.000Z',
@@ -28,7 +21,24 @@ const testUser = {
   identities: [],
   created_at: '2026-01-01T00:00:00.000Z',
   updated_at: '2026-01-01T00:00:00.000Z',
-}
+})
+const testUsers = [
+  makeTestUser(userId, 'member@example.test'),
+  makeTestUser(collectorUserId, 'collector@example.test'),
+]
+const accessTokens = new Map(testUsers.map(user => {
+  const tokenPayload = Buffer.from(JSON.stringify({
+    sub: user.id,
+    email: user.email,
+    role: 'authenticated',
+    aud: 'authenticated',
+    exp: 4_102_444_800,
+  })).toString('base64url')
+  return [user.id, `e2e.${tokenPayload}.signature`]
+}))
+const userForRequest = request => testUsers.find(user =>
+  request.headers.authorization?.includes(accessTokens.get(user.id)))
+const testUser = testUsers[0]
 const project = {
   id: projectId,
   title: 'Private browser regression project',
@@ -77,7 +87,7 @@ const participant = {
 const collectorParticipant = {
   id: collectorParticipantId,
   project_id: projectId,
-  user_id: '00000000-0000-4000-8000-000000000005',
+  user_id: collectorUserId,
   role: 'organizer',
   short_code: 'COL001',
   joined_at: '2026-01-01T00:00:00.000Z',
@@ -121,8 +131,6 @@ const json = (response, status, body, headers = {}) => {
   response.writeHead(status, { 'Content-Type': 'application/json', ...headers })
   response.end(body === undefined ? undefined : JSON.stringify(body))
 }
-
-const hasSession = request => request.headers.authorization?.includes(accessToken)
 
 const rowsForTable = table => {
   if (table === 'projects') return [project]
@@ -210,8 +218,9 @@ const server = createServer((request, response) => {
   }
 
   if (url.pathname === '/auth/v1/user') {
-    if (hasSession(request)) {
-      json(response, 200, testUser)
+    const authenticatedUser = userForRequest(request)
+    if (authenticatedUser) {
+      json(response, 200, authenticatedUser)
     } else {
       json(response, 401, { message: 'No test session' })
     }
@@ -219,20 +228,23 @@ const server = createServer((request, response) => {
   }
 
   if (url.pathname === '/auth/v1/token' && request.method === 'POST') {
-    participantActive = true
-    Object.assign(refundRequest, {
-      status: 'sent',
-      participant_confirmed_at: null,
-      completed_at: null,
-      updated_at: '2026-01-03T02:00:00.000Z',
-    })
-    json(response, 200, {
-      access_token: accessToken,
-      token_type: 'bearer',
-      expires_in: 2_147_483_647,
-      expires_at: 4_102_444_800,
-      refresh_token: 'e2e-refresh-token',
-      user: testUser,
+    void parseBody(request).then(body => {
+      const authenticatedUser = testUsers.find(user => user.email === body.email) ?? testUser
+      participantActive = true
+      Object.assign(refundRequest, {
+        status: 'sent',
+        participant_confirmed_at: null,
+        completed_at: null,
+        updated_at: '2026-01-03T02:00:00.000Z',
+      })
+      json(response, 200, {
+        access_token: accessTokens.get(authenticatedUser.id),
+        token_type: 'bearer',
+        expires_in: 2_147_483_647,
+        expires_at: 4_102_444_800,
+        refresh_token: `e2e-refresh-token-${authenticatedUser.id}`,
+        user: authenticatedUser,
+      })
     })
     return
   }

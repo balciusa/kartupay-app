@@ -233,31 +233,97 @@ const moduleObject = { exports: {} as { ProjectSuccessOverview: React.ComponentT
 new Function('require', 'module', 'exports', code)((name: string) => name === '@/lib/projectSuccessOverviewStrings' ? successStrings : nodeRequire(name), moduleObject, moduleObject.exports)
 const render = (input = context(), actor = viewer, locale: ProjectDateLocale = 'en') => renderToStaticMarkup(createElement(moduleObject.exports.ProjectSuccessOverview, { model: derive(input, actor), projectId: 'fixture', locale }))
 
-test('UI: relevant stages, skipped stages, ready positive state and no fake CTA', () => {
-  const html = render()
-  for (const label of ['Date', 'Participants', 'Ready', 'Project ready', 'Complete']) assert.ok(html.includes(label))
-  for (const label of ['Finance', 'Decisions', 'Preparation', 'Setup', '<a ']) assert.ok(!html.includes(label))
+const tabsSource = readFileSync(new URL('../components/Project/ProjectTabs.tsx', import.meta.url), 'utf8')
+const tabsCode = ts.transpileModule(tabsSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  fileName: 'ProjectTabs.tsx',
+}).outputText
+const tabsModule = { exports: {} as { ProjectTabs: React.ComponentType<Record<string, unknown>> } }
+new Function('require', 'module', 'exports', tabsCode)(nodeRequire, tabsModule, tabsModule.exports)
+const navigationSections = {
+  overview: createElement('p', null, 'overview-content'),
+  people: createElement('p', null, 'group-content'),
+  profile: createElement('p', null, 'profile-content'),
+  settings: createElement('p', null, 'settings-content'),
+  admin: createElement('p', null, 'admin-content'),
+  dates: createElement('p', null, 'dates-content'),
+  voting: createElement('p', null, 'polls-content'),
+  transport: createElement('p', null, 'transport-content'),
+  extras: createElement('p', null, 'extras-content'),
+  payments: createElement('p', null, 'finances-content'),
+}
+const renderTabs = (locale: ProjectDateLocale, defaultTab = 'overview') => renderToStaticMarkup(createElement(tabsModule.exports.ProjectTabs, {
+  locale, defaultTab, sections: navigationSections,
+  counts: { participants: 6, activity: 2, adminPending: 1, paymentsPending: 3 },
+}))
+
+test('Navigation: MASTER v5.3 exposes exactly four localized primary tabs in order', () => {
+  const lt = renderTabs('lt')
+  const en = renderTabs('en')
+  assert.equal((lt.match(/data-primary-tab=/g) ?? []).length, 4)
+  assert.equal((en.match(/data-primary-tab=/g) ?? []).length, 4)
+  for (const labels of [['Apžvalga', 'Grupė', 'Planas', 'Finansai'], ['Overview', 'Group', 'Plan', 'Finances']]) {
+    const html = labels[0] === 'Apžvalga' ? lt : en
+    let last = -1
+    for (const label of labels) {
+      const index = html.indexOf(`>${label}</span>`)
+      assert.ok(index > last, label)
+      last = index
+    }
+  }
 })
-test('UI: exactly one next action and Date Finder anchor', () => {
+
+test('Navigation: Plan groups Dates, Polls, Transport and Extras while legacy deep links remain usable', () => {
+  const dates = renderTabs('en', 'dates')
+  for (const section of ['Dates', 'Polls', 'Transport', 'Extras']) assert.ok(dates.includes(`>${section}</span>`), section)
+  assert.match(dates, /data-primary-tab="plan"[^>]*aria-selected="true"/)
+  assert.match(dates, /data-section-tab="dates"[^>]*aria-selected="true"/)
+  assert.match(dates, /dates-content/)
+
+  const legacyTransport = renderTabs('en', 'transport')
+  assert.match(legacyTransport, /data-primary-tab="plan"[^>]*aria-selected="true"/)
+  assert.match(legacyTransport, /data-section-tab="transport"[^>]*aria-selected="true"/)
+  assert.match(legacyTransport, /transport-content/)
+})
+
+test('Navigation: semantic tabs expose a roving keyboard model and one tabpanel', () => {
+  const html = renderTabs('lt', 'admin')
+  assert.match(html, /role="tablist" aria-label="Projekto skiltys"/)
+  assert.match(html, /role="tabpanel"/)
+  assert.match(html, /data-primary-tab="group"[^>]*aria-selected="true"/)
+  assert.match(html, /data-section-tab="admin"[^>]*aria-selected="true"/)
+  for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End']) assert.ok(tabsSource.includes(`event.key === '${key}'`))
+})
+
+test('UI: ready Overview has the approved hierarchy and no fake primary action', () => {
+  const html = render()
+  for (const label of ['Overview', 'Your most important next step', 'MOST IMPORTANT TO DO NOW',
+    'Everything is up to date', 'Other items', 'There are no actions waiting in other sections.']) {
+    assert.ok(html.includes(label), label)
+  }
+  assert.doesNotMatch(html, /data-primary-action=/)
+  assert.equal((html.match(/<a /g) ?? []).length, 2)
+})
+test('UI: exactly one primary next action routes into Plan dates', () => {
   const html = render({ ...selecting(), confirmedParticipants: 2 }, manager)
-  assert.equal((html.match(/<a /g) ?? []).length, 1)
-  assert.equal((html.match(/>Project status</g) ?? []).length, 1)
-  assert.ok(html.includes('href="#date-availability"'))
-  assert.ok(html.includes('aria-current="step"'))
+  assert.equal((html.match(/data-primary-action=/g) ?? []).length, 1)
+  assert.equal((html.match(/<a /g) ?? []).length, 3)
+  assert.ok(html.includes('href="/project/fixture?tab=dates#date-availability"'))
+  assert.doesNotMatch(html, /Relevant project stages|aria-current="step"/)
 })
 test('UI: participant action uses existing Collab tab route', () => assert.ok(render(context({ confirmedParticipants: 2 }), manager).includes('href="/project/fixture?tab=people"')))
 test('UI: managed Finance and existing Payments tab destination', () => {
   const html = render(context({ financeMode: 'managed' }), manager)
-  assert.ok(html.includes('Finance'))
+  assert.ok(html.includes('Review finances'))
   assert.ok(html.includes('href="/project/fixture?tab=payments"'))
-  assert.equal((html.match(/<a /g) ?? []).length, 1)
+  assert.equal((html.match(/data-primary-action=/g) ?? []).length, 1)
 })
 test('UI: canceled and finalized hide actionable links and stale blockers', () => {
   for (const state of [{ isCanceled: true }, { isFinalized: true }]) {
     const html = render({ ...selecting(), ...state }, manager)
-    assert.ok(!html.includes('<a '))
-    assert.ok(!html.includes('Still needed'))
-    assert.ok(!html.includes('Project ready'))
+    assert.doesNotMatch(html, /data-primary-action=/)
+    assert.doesNotMatch(html, /Still needed|Project ready/)
+    assert.equal((html.match(/<a /g) ?? []).length, 2)
   }
 })
 test('UI: rendering is stable with no clock/browser-dependent inference', () => {
@@ -269,8 +335,8 @@ test('UI: all-responded manager gets one early-finalization link into Date Finde
   const html = render(selecting({ viewerResponded: true, allResponded: true, missingResponses: 0 }), manager)
   assert.match(html, /Choose the final date/)
   assert.match(html, /Everyone has responded/)
-  assert.match(html, /href="#early-date-finalization"/)
-  assert.equal((html.match(/<a /g) ?? []).length, 1)
+  assert.match(html, /href="\/project\/fixture\?tab=dates#early-date-finalization"/)
+  assert.equal((html.match(/data-primary-action=/g) ?? []).length, 1)
 })
 
 test('UI: all-responded participant gets passive status in EN and LT', () => {
@@ -278,8 +344,8 @@ test('UI: all-responded participant gets passive status in EN and LT', () => {
   const en = render(input, viewer, 'en')
   const lt = render(input, viewer, 'lt')
   assert.match(en, /The organizer can choose the final date now/)
-  assert.match(lt, /Organizatorius gali pasirinkti galutinę datą dabar/)
-  assert.doesNotMatch(en, /href="#early-date-finalization"/)
+  assert.match(lt, /Organizatorius jau gali pasirinkti galutinę datą/)
+  assert.doesNotMatch(en, /data-primary-action=/)
 })
 
 test('UI: join-request action has localized count copy, one CTA, and the existing Admin modal destination', () => {
@@ -288,11 +354,11 @@ test('UI: join-request action has localized count copy, one CTA, and the existin
   assert.match(singular, /1 person is waiting to join this project\./)
   assert.match(singular, />Review requests<\/a>/)
   assert.match(singular, /href="\/project\/fixture\?tab=admin&amp;adminModal=requests"/)
-  assert.equal((singular.match(/<a /g) ?? []).length, 1)
+  assert.equal((singular.match(/data-primary-action=/g) ?? []).length, 1)
 
   const plural = render(context({ pendingJoinRequests: 2 }), manager)
   assert.match(plural, /2 people are waiting to join this project\./)
-  assert.equal((plural.match(/<a /g) ?? []).length, 1)
+  assert.equal((plural.match(/data-primary-action=/g) ?? []).length, 1)
 
   const lt = render(context({ pendingJoinRequests: 2 }), manager, 'lt')
   assert.match(lt, /Peržiūrėkite prisijungimo prašymus/)
@@ -309,9 +375,9 @@ const pageSource = readFileSync(new URL('../app/project/[id]/page.tsx', import.m
 const pageAst = ts.createSourceFile('page.tsx', pageSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
 let dateFinderExpression = ''
 function findDateFinder(node: ts.Node) {
-  if (ts.isJsxExpression(node) && node.expression?.getText(pageAst).startsWith('projectDateData &&')
-    && node.expression.getText(pageAst).includes('<ProjectDateFinder')) {
-    dateFinderExpression = node.expression.getText(pageAst)
+  if (ts.isConditionalExpression(node) && node.getText(pageAst).startsWith('projectDateData &&')
+    && node.getText(pageAst).includes('<ProjectDateFinder')) {
+    dateFinderExpression = node.getText(pageAst)
   }
   ts.forEachChild(node, findDateFinder)
 }
@@ -329,6 +395,20 @@ test('Page integration: one authorized pending snapshot feeds Success Path, Admi
   assert.match(pageSource, /pendingCount=\{pendingJoinRequestsCount\}/)
   assert.match(pageSource, /const openRequestsOnLoad = defaultProjectTab === 'admin' && adminModalKey === 'requests'/)
   assert.match(pageSource, /openRequestsOnMount=\{openRequestsOnLoad\}/)
+})
+
+test('Page integration: MASTER categories preserve legacy deep links and move existing content without changing actions', () => {
+  assert.match(pageSource, /case 'group':[\s\S]*return 'people'/)
+  assert.match(pageSource, /case 'plan':[\s\S]*return 'dates'/)
+  assert.match(pageSource, /case 'finances':[\s\S]*return 'payments'/)
+  assert.match(pageSource, /case 'dates':/)
+  assert.match(pageSource, /<ProjectTabs[\s\S]*locale=\{projectDateLocale\}/)
+  assert.match(pageSource, /dates: projectDateData && !isAborted \?[\s\S]*<ProjectDateFinder/)
+  assert.match(pageSource, /payments: financeManaged \?[\s\S]*<SummaryCards[\s\S]*<ProjectFlowBar/)
+  const overviewSection = pageSource.slice(pageSource.indexOf('overview: ('), pageSource.indexOf('dates: projectDateData'))
+  assert.match(overviewSection, /<ProjectSuccessOverview/)
+  assert.doesNotMatch(overviewSection, /<ProjectDateFinder|<SummaryCards/)
+  assert.doesNotMatch(pageSource, /transportLabel=/)
 })
 const compileFixture = (source: string) => ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
@@ -429,11 +509,11 @@ test('P1: finalized late confirmation still respects existing capacity disableme
 test('P1: finalized Date Finder coexists with non-actionable Success Path', () => {
   const successHtml = render(context({ isFinalized: true }), manager)
   assert.match(successHtml, /Project finalized/)
-  assert.doesNotMatch(successHtml, /<a |Next action/)
+  assert.doesNotMatch(successHtml, /data-primary-action=|Next action/)
   assert.match(renderPageDate('awaiting_confirmation'), /Yes, I will attend/)
 })
 test('P1: normal fixed-date ready Success Path and date information remain unchanged', () => {
-  assert.match(render(), /Project ready/)
+  assert.match(render(), /Everything is up to date/)
   assert.match(renderPageDate('confirmed', false), /Project date/)
   assert.equal(derive().nextAction, null)
 })
@@ -481,10 +561,10 @@ test('Overview: actual page suppresses duplicate priority task when Success Path
   const html = renderToStaticMarkup(createElement(moduleObject.exports.ProjectSuccessOverview, { model, projectId: 'fixture' }))
     + renderToStaticMarkup(pageFixture.render!(selectingData(), false, false, true, model))
   assert.equal((html.match(/>Choose dates<\/a>/g) ?? []).length, 1)
-  assert.match(html, /Choose your available dates/)
+  assert.match(html, /Choose dates that work for you/)
   assert.doesNotMatch(html, /Priority task|Still needed|Final date not selected/)
-  assert.equal((html.match(/0 of 2 required participants confirmed/g) ?? []).length, 1)
-  assert.match(html, /href="#date-availability"/)
+  assert.doesNotMatch(html, /0 of 2 required participants confirmed/)
+  assert.match(html, /href="\/project\/fixture\?tab=dates#date-availability"/)
   assert.match(html, /id="date-availability" role="region" aria-label="Could you attend if the event starts on this date\?" tabindex="-1"/)
   assert.match(html, /id="date-availability"[\s\S]*<article[\s\S]*>Available<\/button>/)
 })
@@ -789,7 +869,7 @@ test('Overview: unique finance and organizer-decision blockers stay visible', ()
   const html = render({ ...selecting(), financeMode: 'managed', confirmedParticipants: 0 }, manager)
   assert.match(html, /Base contributions are not yet settled/)
   const tied = render(selecting({ votingOpen: false, awaitingOrganizer: true, viewerResponded: true }))
-  assert.match(tied, /Waiting for the organizer to choose the final date/)
+  assert.match(tied, /organizer still needs to resolve the tied date result/i)
   assert.doesNotMatch(tied, /Still needed/)
 })
 
@@ -816,13 +896,13 @@ for (const locale of ['en', 'lt'] as const) {
     const html = renderToStaticMarkup(overviewFixture.render!(model, selectingData(), locale))
     const strings = dateStrings.getProjectDateStrings(locale)
     assert.equal((html.match(new RegExp(`>${strings.chooseDates}</a>`, 'g')) ?? []).length, 1)
-    assert.match(html, /href="#date-availability"/)
+    assert.match(html, /href="\/project\/fixture\?tab=dates#date-availability"/)
     assert.doesNotMatch(html, new RegExp(strings.priorityTask))
     if (locale === 'lt') {
-      assert.match(html, /Projekto būsena/)
-      assert.doesNotMatch(html, /Choose your available dates|Your response helps|>Choose dates<|Project status|Needs your attention|Upcoming|Current/)
+      assert.match(html, /Apžvalga|KĄ SVARBIAUSIA PADARYTI DABAR/)
+      assert.doesNotMatch(html, /Choose dates that work for you|Your response helps|>Choose dates<|Project status|Needs your attention|Upcoming|Current/)
     } else {
-      assert.match(html, /Choose your available dates/)
+      assert.match(html, /Choose dates that work for you/)
     }
   })
 }
@@ -838,17 +918,16 @@ for (const locale of ['en', 'lt'] as const) {
     if (locale === 'lt') assert.doesNotMatch(html, /Choose dates|Priority task/)
   })
 
-  test(`Localization: ${locale} progress, health and readiness context stay consistent`, () => {
+  test(`Localization: ${locale} Overview hierarchy and readiness context stay consistent`, () => {
     const strings = successStrings.getProjectSuccessOverviewStrings(locale)
     const html = render({ ...selecting(), confirmedParticipants: 0, minParticipants: 2, financeMode: 'managed' }, manager, locale)
-    for (const text of [strings.projectStatus, strings.region, strings.relevantStages, strings.health.needs_attention,
-      strings.stageStates.current, strings.stageStates.upcoming, strings.stages.date, strings.stages.participants,
-      strings.stages.finance, strings.stages.ready, strings.participantMinimum(0, 2), strings.details.finance]) {
+    for (const text of [strings.title, strings.intro, strings.primaryEyebrow, strings.otherTasks,
+      strings.waitingParticipants(2), strings.details.finance]) {
       assert.ok(html.includes(text), text)
     }
     assert.match(html, new RegExp(`lang="${locale}"`))
     const ready = render(context(), viewer, locale)
-    for (const text of [strings.headings.ready, strings.details.ready, strings.stageStates.complete]) assert.ok(ready.includes(text))
+    for (const text of [strings.headings.ready, strings.details.ready, strings.noOtherTasks]) assert.ok(ready.includes(text))
     if (locale === 'lt') assert.doesNotMatch(html + ready, /Project status|Needs your attention|Base contributions|participants confirmed|Complete|Upcoming/)
   })
 
@@ -856,10 +935,9 @@ for (const locale of ['en', 'lt'] as const) {
     const strings = successStrings.getProjectSuccessOverviewStrings(locale)
     for (const terminal of ['canceled', 'finalized'] as const) {
       const html = render({ ...selecting(), isCanceled: terminal === 'canceled', isFinalized: terminal === 'finalized' }, manager, locale)
-      assert.ok(html.includes(strings.health[terminal]))
       assert.ok(html.includes(strings.headings[terminal]))
       assert.ok(html.includes(strings.details[terminal]))
-      assert.doesNotMatch(html, /<a /)
+      assert.doesNotMatch(html, /data-primary-action=/)
       if (locale === 'lt') assert.doesNotMatch(html, /Project canceled|Project finalized|This project was canceled|participant list/)
     }
   })
@@ -867,9 +945,9 @@ for (const locale of ['en', 'lt'] as const) {
   test(`Localization: ${locale} action variants retain their stable destinations`, () => {
     const strings = successStrings.getProjectSuccessOverviewStrings(locale)
     const scenarios = [
-      { input: context({ date: { ...context().date, viewerNeedsConfirmation: true } }), actor: viewer, action: 'confirm_attendance', target: '#project-date-finder' },
+      { input: context({ date: { ...context().date, viewerNeedsConfirmation: true } }), actor: viewer, action: 'confirm_attendance', target: '/project/fixture?tab=dates#project-date-finder' },
       { input: context({ pendingJoinRequests: 2 }), actor: manager, action: 'review_join_requests', target: '/project/fixture?tab=admin&amp;adminModal=requests' },
-      { input: selecting({ votingOpen: false, awaitingOrganizer: true }), actor: manager, action: 'resolve_date', target: '#project-date-finder' },
+      { input: selecting({ votingOpen: false, awaitingOrganizer: true }), actor: manager, action: 'resolve_date', target: '/project/fixture?tab=dates#project-date-finder' },
       { input: context({ confirmedParticipants: 0 }), actor: manager, action: 'invite_people', target: '/project/fixture?tab=people' },
       { input: context({ financeMode: 'managed' }), actor: manager, action: 'review_finance', target: '/project/fixture?tab=payments' },
       { input: context({ financeMode: 'managed' }), actor: { ...viewer, canPay: true }, action: 'review_payment', target: '/project/fixture?tab=payments' },
@@ -888,18 +966,16 @@ for (const locale of ['en', 'lt'] as const) {
     }
   })
 
-  test(`Localization: ${locale} waiting and no-minimum states include localized numeric context`, () => {
+  test(`Localization: ${locale} secondary tasks include localized numeric context`, () => {
     const strings = successStrings.getProjectSuccessOverviewStrings(locale)
     const dateWaiting = render(selecting({ viewerResponded: true }), viewer, locale)
-    for (const text of [strings.headings.waiting, strings.details.date, strings.waitingPeople(3), strings.waitingDates(3)]) assert.ok(dateWaiting.includes(text))
+    for (const text of [strings.noActionTitle, strings.waitingDates(3)]) assert.ok(dateWaiting.includes(text))
     const attendanceWaiting = render(context({ confirmedParticipants: 0, date: { ...context().date, awaitingAttendance: 2 } }), viewer, locale)
     assert.ok(attendanceWaiting.includes(strings.waitingParticipants(6)))
     assert.ok(attendanceWaiting.includes(strings.waitingAttendance(2)))
     const tieWaiting = render(selecting({ votingOpen: false, awaitingOrganizer: true }), viewer, locale)
     assert.ok(tieWaiting.includes(strings.details.date_tie))
-    for (const count of [0, 1, 2, 10, 11, 21]) {
-      assert.ok(render(context({ minParticipants: null, confirmedParticipants: count }), viewer, locale).includes(strings.participantNoMinimum(count)))
-    }
+    assert.doesNotMatch(render(context({ minParticipants: null, confirmedParticipants: 21 }), viewer, locale), /21 participants confirmed|Dalyvavimą patvirtino: 21/)
   })
 }
 

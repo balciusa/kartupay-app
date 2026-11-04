@@ -207,6 +207,7 @@ type ProjectTabKey =
   | 'overview'
   | 'people'
   | 'participants'
+  | 'dates'
   | 'transport'
   | 'payments'
   | 'activity'
@@ -222,8 +223,15 @@ const getSingleQueryParam = (value: string | string[] | undefined) =>
 const resolveProjectTab = (value: string | undefined): ProjectTabKey => {
   const normalized = String(value ?? '').trim().toLowerCase()
   switch (normalized) {
+    case 'group':
+      return 'people'
+    case 'plan':
+      return 'dates'
+    case 'finances':
+      return 'payments'
     case 'people':
     case 'participants':
+    case 'dates':
     case 'transport':
     case 'payments':
     case 'activity':
@@ -1938,7 +1946,7 @@ export default async function ProjectPage({
 
       <ProjectTabs
         defaultTab={defaultProjectTab}
-        transportLabel={projectDateLocale === 'lt' ? 'Transportas' : 'Transport'}
+        locale={projectDateLocale}
         counts={{
           participants: membersCount,
           activity: unreadCount,
@@ -1947,52 +1955,21 @@ export default async function ProjectPage({
         }}
         sections={{
           overview: (
-            <div className="space-y-6">
-              <ProjectSuccessOverview model={successPath} projectId={projectId} locale={projectDateLocale} />
-              {projectDateData && !isAborted && (
-                <div id="project-date-finder" className="scroll-mt-4">
-                  <ProjectDateFinder
-                    projectId={projectId}
-                    data={projectDateData}
-                    viewerUserId={uid}
-                    viewerIsParticipant={isMeParticipant}
-                    canManage={viewerIsCollector}
-                    locale={projectDateLocale}
-                    dateActionShown={successPath.nextAction === 'choose_dates'}
-                  />
-                </div>
-              )}
-              {financeManaged && (
-                <SummaryCards
-                  totalCents={totalCents}
-                  collectedCents={collectedCentsDisplay}
-                  totalIsPerPerson={totalIsPerPerson}
-                  bundleLabel={bundleLabel}
-                  minParticipants={project.min_participants as number | null}
-                  maxParticipants={project.max_participants as number | null}
-                  participantsNow={participantsNow}
-                  scenarios={scenarios}
-                  extrasSummary={
-                    extraTargetCents > 0
-                      ? {
-                          targetCents: extraTargetCents,
-                          collectedCents: extraCollectedCents,
-                          grandTotalTargetCents: extraGrandTotalTargetCents,
-                          grandTotalCollectedCents: extraGrandTotalCollectedCents,
-                          perPersonTargetCents: extraPerPersonTargetCents,
-                          perPersonCollectedCents: extraPerPersonCollectedCents,
-                        }
-                      : null
-                  }
-                  lateSummary={{
-                    joinersCount: lateJoinersCount,
-                    pendingCount: lateTransfersPendingCount,
-                    pendingCents: lateTransfersPendingCents,
-                  }}
-                />
-              )}
-            </div>
+            <ProjectSuccessOverview model={successPath} projectId={projectId} locale={projectDateLocale} />
           ),
+          dates: projectDateData && !isAborted ? (
+            <div id="project-date-finder" className="scroll-mt-4">
+              <ProjectDateFinder
+                projectId={projectId}
+                data={projectDateData}
+                viewerUserId={uid}
+                viewerIsParticipant={isMeParticipant}
+                canManage={viewerIsCollector}
+                locale={projectDateLocale}
+                dateActionShown={successPath.nextAction === 'choose_dates'}
+              />
+            </div>
+          ) : null,
           profile: <ProfileTab projectId={projectId} financeMode={financeMode} />,
           people: (
             <div className="grid gap-4 lg:grid-cols-[minmax(320px,1fr)_minmax(0,1.35fr)]">
@@ -2047,6 +2024,33 @@ export default async function ProjectPage({
           ) : null,
           payments: financeManaged ? (
             <div className="space-y-6">
+              <SummaryCards
+                totalCents={totalCents}
+                collectedCents={collectedCentsDisplay}
+                totalIsPerPerson={totalIsPerPerson}
+                bundleLabel={bundleLabel}
+                minParticipants={project.min_participants as number | null}
+                maxParticipants={project.max_participants as number | null}
+                participantsNow={participantsNow}
+                scenarios={scenarios}
+                extrasSummary={
+                  extraTargetCents > 0
+                    ? {
+                        targetCents: extraTargetCents,
+                        collectedCents: extraCollectedCents,
+                        grandTotalTargetCents: extraGrandTotalTargetCents,
+                        grandTotalCollectedCents: extraGrandTotalCollectedCents,
+                        perPersonTargetCents: extraPerPersonTargetCents,
+                        perPersonCollectedCents: extraPerPersonCollectedCents,
+                      }
+                    : null
+                }
+                lateSummary={{
+                  joinersCount: lateJoinersCount,
+                  pendingCount: lateTransfersPendingCount,
+                  pendingCents: lateTransfersPendingCents,
+                }}
+              />
               <ProjectFlowBar
                 projectId={projectId}
                 status={project.status as string | null | undefined}
