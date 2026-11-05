@@ -137,7 +137,7 @@ export function ProjectSuccessOverview({ model, projectId, locale = 'en' }: {
           {strings.openGroup}
         </a>
         <a
-          href={`/project/${projectId}?tab=dates`}
+          href={`/project/${projectId}?tab=plan`}
           className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-emerald-800 hover:border-emerald-200 hover:bg-emerald-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
         >
           {strings.reviewPlan}

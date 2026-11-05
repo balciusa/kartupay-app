@@ -46,6 +46,7 @@ export default defineConfig({
   projects: [
     {
       name: 'desktop-chromium',
+      grepInvert: /@responsive/,
       use: {
         browserName: 'chromium',
         viewport: { width: 1440, height: 900 },
@@ -53,9 +54,26 @@ export default defineConfig({
     },
     {
       name: 'mobile-chromium',
+      grepInvert: /@responsive/,
       use: {
         browserName: 'chromium',
         viewport: { width: 390, height: 844 },
+      },
+    },
+    {
+      name: 'compact-320-chromium',
+      grep: /@responsive/,
+      use: {
+        browserName: 'chromium',
+        viewport: { width: 320, height: 844 },
+      },
+    },
+    {
+      name: 'tablet-768-chromium',
+      grep: /@responsive/,
+      use: {
+        browserName: 'chromium',
+        viewport: { width: 768, height: 1024 },
       },
     },
   ],

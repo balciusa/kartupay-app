@@ -43,15 +43,15 @@ export function UserWidget() {
   const initials = user.email?.slice(0, 2).toUpperCase() ?? 'U'
 
   return (
-    <div className="flex items-center gap-2">
-      <Avatar className="h-8 w-8 border">
+    <div className="flex min-w-0 items-center gap-2">
+      <Avatar className="h-8 w-8 shrink-0 border">
         <AvatarFallback>{initials}</AvatarFallback>
       </Avatar>
-      <div className="max-w-40 text-sm">
+      <div className="min-w-0 max-w-40 text-sm">
         <div className="truncate font-medium leading-none">{user.email}</div>
         <div className="text-xs text-muted-foreground">Signed in</div>
       </div>
-      <Button size="sm" variant="outline" onClick={handleLogout}>
+      <Button className="shrink-0" size="sm" variant="outline" onClick={handleLogout}>
         Logout
       </Button>
       {authExitError && <span className="sr-only" role="alert">{authExitError}</span>}

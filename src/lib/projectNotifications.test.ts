@@ -174,11 +174,11 @@ test('legacy availability notifications keep distinct localized copy and Date Fi
 
   assert.equal(required.body, 'Project date has not been decided yet. Choose the dates when you can participate.')
   assert.equal(required.actionLabel, 'Choose dates')
-  assert.equal(required.href, '/project/project#date-availability')
+  assert.equal(required.href, '/project/project?tab=dates#date-availability')
   assert.equal(reminder.title, 'Pasirinkite tinkamas datas')
   assert.equal(reminder.body, 'Atsakykite dėl kiekvienos siūlomos projekto datos.')
   assert.equal(reminder.actionLabel, 'Pasirinkti datas')
-  assert.equal(reminder.href, '/project/project#date-availability')
+  assert.equal(reminder.href, '/project/project?tab=dates#date-availability')
 })
 
 test('legacy confirmation notifications keep distinct localized copy and attendance actions', () => {
@@ -192,11 +192,11 @@ test('legacy confirmation notifications keep distinct localized copy and attenda
 
   assert.equal(required.body, 'A final project date was selected. Confirm whether you can attend.')
   assert.equal(required.actionLabel, 'Confirm attendance')
-  assert.equal(required.href, '/project/project#project-date-finder')
+  assert.equal(required.href, '/project/project?tab=dates#project-date-finder')
   assert.equal(reminder.title, 'Patvirtinkite dalyvavimą')
   assert.equal(reminder.body, 'Patvirtinkite, ar galėsite dalyvauti pasirinktą projekto datą.')
   assert.equal(reminder.actionLabel, 'Patvirtinti dalyvavimą')
-  assert.equal(reminder.href, '/project/project#project-date-finder')
+  assert.equal(reminder.href, '/project/project?tab=dates#project-date-finder')
 })
 
 test('resolved known notifications become read-styled, non-actionable history', () => {

@@ -191,7 +191,7 @@ export function presentProjectNotification(
       unread: !row.read_at && actionable,
       title: strings.availabilityTitle,
       body: actionable ? body : strings.availabilityResolvedBody,
-      href: actionable ? `/project/${row.project_id}#date-availability` : null,
+      href: actionable ? `/project/${row.project_id}?tab=dates#date-availability` : null,
       actionLabel: actionable ? strings.availabilityAction : null,
       resolvedLabel: actionable ? null : strings.resolved,
     }
@@ -211,7 +211,7 @@ export function presentProjectNotification(
       unread: !row.read_at && actionable,
       title: strings.confirmationTitle,
       body: actionable ? body : strings.confirmationResolvedBody,
-      href: actionable ? `/project/${row.project_id}#project-date-finder` : null,
+      href: actionable ? `/project/${row.project_id}?tab=dates#project-date-finder` : null,
       actionLabel: actionable ? strings.confirmationAction : null,
       resolvedLabel: actionable ? null : strings.resolved,
     }

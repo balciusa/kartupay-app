@@ -252,8 +252,12 @@ const navigationSections = {
   extras: createElement('p', null, 'extras-content'),
   payments: createElement('p', null, 'finances-content'),
 }
-const renderTabs = (locale: ProjectDateLocale, defaultTab = 'overview') => renderToStaticMarkup(createElement(tabsModule.exports.ProjectTabs, {
-  locale, defaultTab, sections: navigationSections,
+const renderTabs = (
+  locale: ProjectDateLocale,
+  defaultTab = 'overview',
+  sections: Partial<typeof navigationSections> = navigationSections
+) => renderToStaticMarkup(createElement(tabsModule.exports.ProjectTabs, {
+  locale, defaultTab, sections,
   counts: { participants: 6, activity: 2, adminPending: 1, paymentsPending: 3 },
 }))
 
@@ -286,6 +290,16 @@ test('Navigation: Plan groups Dates, Polls, Transport and Extras while legacy de
   assert.match(legacyTransport, /transport-content/)
 })
 
+test('Navigation: Plan deep link falls back within Plan when Dates is unavailable', () => {
+  const sectionsWithoutDates: Partial<typeof navigationSections> = { ...navigationSections }
+  delete sectionsWithoutDates.dates
+  const html = renderTabs('en', 'dates', sectionsWithoutDates)
+  assert.match(html, /data-primary-tab="plan"[^>]*aria-selected="true"/)
+  assert.match(html, /data-section-tab="voting"[^>]*aria-selected="true"/)
+  assert.match(html, /polls-content/)
+  assert.doesNotMatch(html, /overview-content/)
+})
+
 test('Navigation: semantic tabs expose a roving keyboard model and one tabpanel', () => {
   const html = renderTabs('lt', 'admin')
   assert.match(html, /role="tablist" aria-label="Projekto skiltys"/)
@@ -303,6 +317,7 @@ test('UI: ready Overview has the approved hierarchy and no fake primary action',
   }
   assert.doesNotMatch(html, /data-primary-action=/)
   assert.equal((html.match(/<a /g) ?? []).length, 2)
+  assert.match(html, /href="\/project\/fixture\?tab=plan"/)
 })
 test('UI: exactly one primary next action routes into Plan dates', () => {
   const html = render({ ...selecting(), confirmedParticipants: 2 }, manager)

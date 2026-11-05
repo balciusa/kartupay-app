@@ -170,7 +170,12 @@ export function ProjectTabs({
     return definitions.filter(tab => tab.sectionKeys.some(key => sectionTabs.some(section => section.key === key)))
   }, [counts?.paymentsPending, peopleBadge, peopleBadgeStyle, sectionTabs, strings])
 
-  const resolvedActive = sectionTabs.some(tab => tab.key === active) ? active : (sectionTabs[0]?.key ?? defaultTab)
+  const requestedCategory = categoryForSection(active)
+  const requestedCategoryFallback = sectionGroups[requestedCategory]
+    .find(key => sectionTabs.some(section => section.key === key))
+  const resolvedActive = sectionTabs.some(tab => tab.key === active)
+    ? active
+    : (requestedCategoryFallback ?? sectionTabs[0]?.key ?? defaultTab)
   const activeCategory = categoryForSection(resolvedActive)
   const activePrimary = primaryTabs.some(tab => tab.key === activeCategory)
     ? activeCategory

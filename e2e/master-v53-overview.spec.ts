@@ -33,8 +33,18 @@ async function assertMasterOverview(page: Page) {
     await expect(page.getByRole('heading', { name: 'Šiuo metu veiksmų nereikia' })).toBeVisible()
   }
 
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
-  expect(overflow).toBeLessThanOrEqual(1)
+  const layout = await page.evaluate(() => ({
+    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    offenders: Array.from(document.querySelectorAll<HTMLElement>('body *'))
+      .map(element => ({
+        tag: element.tagName.toLowerCase(),
+        text: element.textContent?.trim().replace(/\s+/g, ' ').slice(0, 60) ?? '',
+        right: Math.round(element.getBoundingClientRect().right),
+      }))
+      .filter(element => element.right > window.innerWidth + 1)
+      .slice(0, 5),
+  }))
+  expect(layout.overflow, `Overflowing elements: ${JSON.stringify(layout.offenders)}`).toBeLessThanOrEqual(1)
 }
 
 for (const persona of [
@@ -65,3 +75,31 @@ for (const persona of [
     expect(runtimeErrors).toEqual([])
   })
 }
+
+test('@responsive navigation and Overview remain usable without document overflow', async ({ page }, testInfo) => {
+  const expectedWidth = testInfo.project.name.includes('320') ? 320 : 768
+  const runtimeErrors: string[] = []
+  page.on('pageerror', error => runtimeErrors.push(error.message))
+
+  await openOverview(page, 'member@example.test')
+  await assertMasterOverview(page)
+  expect(await page.evaluate(() => window.innerWidth)).toBe(expectedWidth)
+
+  const planTab = page.getByRole('tab', { name: 'Planas', exact: true })
+  await planTab.click()
+  await expect(planTab).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('tab', { name: 'Balsavimai', exact: true })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Papildomi pasirinkimai', exact: true })).toBeVisible()
+
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(overflow).toBeLessThanOrEqual(1)
+  expect(runtimeErrors).toEqual([])
+
+  if (shouldWriteScreenshots) {
+    mkdirSync(screenshotDirectory, { recursive: true })
+    await page.screenshot({
+      path: join(screenshotDirectory, `after-${testInfo.project.name}-responsive.png`),
+      fullPage: true,
+    })
+  }
+})
