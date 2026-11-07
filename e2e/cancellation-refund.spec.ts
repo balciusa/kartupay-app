@@ -13,13 +13,14 @@ test('cancellation and manual refund controls remain usable without layout overf
   await expect(page).toHaveURL(new RegExp(`/project/${projectId}$`), { timeout: 15_000 })
   await expect(page.locator('html[data-auth-privacy-ready="true"]')).toHaveCount(1)
 
-  await page.getByRole('tab', { name: 'Payments' }).click()
+  await page.getByRole('tab', { name: 'Finances', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Leave With Refund' })).toBeVisible()
   await expect(page.getByText('Test Collector: sent')).toBeVisible()
   await expect(page.getByText('Amount €50.00')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Confirm this refund received' })).toBeVisible()
 
-  await page.getByRole('tab', { name: 'Admin' }).click()
+  await page.getByRole('tab', { name: 'Group', exact: true }).click()
+  await page.getByRole('tab', { name: 'Admin', exact: true }).click()
   await expect(page.getByText('Cancellation stops new project activity and keeps payment history.')).toBeVisible()
   const cancelButton = page.getByRole('button', { name: 'Cancel project' })
   await expect(cancelButton).toBeEnabled()

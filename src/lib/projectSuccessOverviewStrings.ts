@@ -1,41 +1,49 @@
 import { getProjectDateStrings, type ProjectDateLocale } from './projectDateStrings.ts'
-import { getProjectFinanceStrings } from './projectFinanceStrings.ts'
-import type { ProjectSuccessPath, SuccessAction, SuccessStage } from './projectSuccessPath.ts'
+import type { ProjectSuccessPath, SuccessAction } from './projectSuccessPath.ts'
 
 type SuccessOverviewStrings = {
   region: string
-  projectStatus: string
-  relevantStages: string
-  stages: Record<SuccessStage, string>
-  stageStates: Record<'current' | 'upcoming' | 'complete', string>
-  health: Record<ProjectSuccessPath['health'], string>
+  title: string
+  intro: string
+  primaryEyebrow: string
+  otherTasks: string
+  noOtherTasks: string
+  noActionTitle: string
+  openGroup: string
+  reviewPlan: string
   actions: Record<SuccessAction, { title: string; detail: (model: ProjectSuccessPath) => string; label: string }>
   headings: Record<'canceled' | 'finalized' | 'ready' | 'waiting', string>
   details: Record<'canceled' | 'finalized' | 'ready' | 'waiting' | 'date' | 'date_all_responded' | 'date_tie' | 'finance', string>
-  participantMinimum: (confirmed: number, minimum: number) => string
-  participantNoMinimum: (confirmed: number) => string
   waitingParticipants: (count: number) => string
-  waitingPeople: (count: number) => string
   waitingDates: (count: number) => string
   waitingAttendance: (count: number) => string
 }
 
 const enDate = getProjectDateStrings('en')
 const ltDate = getProjectDateStrings('lt')
-const enFinance = getProjectFinanceStrings('en')
-const ltFinance = getProjectFinanceStrings('lt')
 
 const strings: Record<ProjectDateLocale, SuccessOverviewStrings> = {
   en: {
-    region: 'Project success path',
-    projectStatus: 'Project status',
-    relevantStages: 'Relevant project stages',
-    stages: { date: enFinance.date, participants: 'Participants', finance: 'Finance', ready: 'Ready' },
-    stageStates: { current: 'Current', upcoming: 'Upcoming', complete: 'Complete' },
-    health: { on_track: 'Waiting for progress', needs_attention: 'Needs your attention', blocked: 'Needs attention', ready: 'Ready', canceled: 'Canceled', finalized: 'Finalized' },
+    region: 'Project overview',
+    title: 'Overview',
+    intro: 'Your most important next step and what is still left.',
+    primaryEyebrow: 'MOST IMPORTANT TO DO NOW',
+    otherTasks: 'Other items',
+    noOtherTasks: 'There are no actions waiting in other sections.',
+    noActionTitle: 'No action needed right now',
+    openGroup: 'Open group',
+    reviewPlan: 'Review plan',
     actions: {
-      choose_dates: { title: 'Choose your available dates', detail: () => 'Your response helps the group choose a date.', label: enDate.chooseDates },
-      confirm_attendance: { title: 'Confirm your attendance', detail: () => 'The final date is selected. Let the group know if you can attend.', label: 'Confirm attendance' },
+      choose_dates: {
+        title: 'Choose dates that work for you',
+        detail: () => 'Your response helps the group choose the final date.',
+        label: enDate.chooseDates,
+      },
+      confirm_attendance: {
+        title: 'Respond about the date',
+        detail: () => 'The selected date needs your response before planning can continue.',
+        label: 'Respond about the date',
+      },
       review_join_requests: {
         title: 'Review join requests',
         detail: model => model.pendingJoinRequests === 1
@@ -43,69 +51,123 @@ const strings: Record<ProjectDateLocale, SuccessOverviewStrings> = {
           : `${model.pendingJoinRequests} people are waiting to join this project.`,
         label: 'Review requests',
       },
-      finalize_date_early: { title: 'Choose the final date', detail: () => 'Everyone has responded. You can choose the final date now or wait until the voting deadline.', label: 'Choose final date' },
-      resolve_date: { title: 'Choose the final date', detail: () => 'Date Finder has an exact tie that needs your decision.', label: 'Choose final date' },
-      invite_people: { title: 'Invite more people', detail: () => 'Share the project link with people you would like to join.', label: 'Review participants' },
-      review_finance: { title: 'Review Finance', detail: () => 'Review the existing payment controls and outstanding base contributions.', label: 'Review payments' },
-      review_payment: { title: 'Review your payment', detail: () => 'Your base contribution is still outstanding.', label: 'Go to payments' },
+      finalize_date_early: {
+        title: 'Choose the final date',
+        detail: () => 'Everyone has responded, so you can choose the final date now.',
+        label: 'Choose final date',
+      },
+      resolve_date: {
+        title: 'Choose the final date',
+        detail: () => 'Date Finder has an exact tie that needs your decision.',
+        label: 'Choose final date',
+      },
+      invite_people: {
+        title: 'Invite more people',
+        detail: () => 'Share the project with people you would like to join.',
+        label: 'Review participants',
+      },
+      review_finance: {
+        title: 'Review finances',
+        detail: () => 'Review the current payment controls and outstanding contributions.',
+        label: 'Review finances',
+      },
+      review_payment: {
+        title: 'Review your payment',
+        detail: () => 'Your personal base contribution is still outstanding.',
+        label: 'Go to finances',
+      },
     },
-    headings: { canceled: 'Project canceled', finalized: 'Project finalized', ready: 'Project ready', waiting: 'Waiting on the group' },
+    headings: {
+      canceled: 'Project canceled',
+      finalized: 'Project finalized',
+      ready: 'Everything is up to date',
+      waiting: 'No action needed right now',
+    },
     details: {
-      canceled: 'This project was canceled. There is no next action.',
+      canceled: 'This project was canceled. Any remaining refund information stays available in Finances.',
       finalized: 'The participant list is finalized and base contributions are frozen.',
-      ready: 'All relevant project requirements are met.',
-      waiting: 'You have no required action right now. The group is still working toward readiness.',
-      date: 'Waiting for Date Finder to select the final date.',
-      date_all_responded: 'Everyone has responded. The organizer can choose the final date now, or Date Finder will finalize the result when voting closes.',
-      date_tie: 'Waiting for the organizer to choose the final date.',
+      ready: 'All currently applicable project requirements are complete.',
+      waiting: 'The group is still preparing, but there is nothing you need to do now.',
+      date: 'The group is still choosing the final date.',
+      date_all_responded: 'Everyone has responded. The organizer can choose the final date now.',
+      date_tie: 'The organizer still needs to resolve the tied date result.',
       finance: 'Base contributions are not yet settled.',
     },
-    participantMinimum: (confirmed, minimum) => `${confirmed} of ${minimum} required participants confirmed.`,
-    participantNoMinimum: confirmed => `${confirmed} participants confirmed. No minimum configured.`,
-    waitingParticipants: count => `Waiting for ${count} more confirmed participants.`,
-    waitingPeople: count => `Waiting on ${count} people:`,
-    waitingDates: count => `${count} to choose dates.`,
-    waitingAttendance: count => `${count} to confirm attendance.`,
+    waitingParticipants: count => `The project still needs ${count} more participants.`,
+    waitingDates: count => `${count} people still need to choose dates.`,
+    waitingAttendance: count => `${count} people still need to respond about the selected date.`,
   },
   lt: {
-    region: ltFinance.projectProgress,
-    projectStatus: 'Projekto būsena',
-    relevantStages: 'Projekto etapai',
-    stages: { date: ltFinance.date, participants: 'Dalyviai', finance: 'Finansai', ready: 'Pasirengta' },
-    stageStates: { current: 'Dabartinis', upcoming: 'Būsimas', complete: 'Atlikta' },
-    health: { on_track: 'Laukiama pažangos', needs_attention: 'Reikia jūsų dėmesio', blocked: 'Reikia dėmesio', ready: 'Pasirengta', canceled: 'Atšauktas', finalized: 'Užfiksuotas' },
+    region: 'Projekto apžvalga',
+    title: 'Apžvalga',
+    intro: 'Svarbiausias kitas žingsnis ir tai, kas dar liko.',
+    primaryEyebrow: 'KĄ SVARBIAUSIA PADARYTI DABAR',
+    otherTasks: 'Kiti klausimai',
+    noOtherTasks: 'Kitų skilčių veiksmų nėra.',
+    noActionTitle: 'Šiuo metu veiksmų nereikia',
+    openGroup: 'Atidaryti grupę',
+    reviewPlan: 'Peržiūrėti planą',
     actions: {
-      choose_dates: { title: ltDate.chooseDatesHelp, detail: () => 'Jūsų atsakymas padės grupei pasirinkti datą.', label: ltDate.chooseDates },
-      confirm_attendance: { title: 'Patvirtinkite dalyvavimą', detail: () => 'Galutinė data pasirinkta. Praneškite grupei, ar galėsite dalyvauti.', label: 'Patvirtinti dalyvavimą' },
+      choose_dates: {
+        title: 'Pasirinkite tinkamas datas',
+        detail: () => 'Jūsų atsakymas padės grupei pasirinkti galutinę datą.',
+        label: ltDate.chooseDates,
+      },
+      confirm_attendance: {
+        title: 'Atsakykite dėl datos',
+        detail: () => 'Pasirinktai datai reikia jūsų atsakymo, kad planavimas galėtų tęstis.',
+        label: 'Atsakyti dėl datos',
+      },
       review_join_requests: {
         title: 'Peržiūrėkite prisijungimo prašymus',
         detail: model => `Laukiančių prisijungimo prašymų: ${model.pendingJoinRequests}.`,
         label: 'Peržiūrėti prašymus',
       },
-      finalize_date_early: { title: 'Pasirinkite galutinę datą', detail: () => 'Visi dalyviai atsakė. Galite pasirinkti galutinę datą dabar arba palaukti balsavimo pabaigos.', label: 'Pasirinkti galutinę datą' },
-      resolve_date: { title: 'Pasirinkite galutinę datą', detail: () => ltDate.organizerDecisionHelp, label: 'Pasirinkti galutinę datą' },
-      invite_people: { title: ltFinance.inviteMorePlural, detail: () => 'Pasidalykite projekto nuoroda su žmonėmis, kuriuos norite pakviesti.', label: 'Peržiūrėti dalyvius' },
-      review_finance: { title: 'Peržiūrėkite finansus', detail: () => 'Peržiūrėkite mokėjimų valdymo parinktis ir dar nesumokėtas pagrindines įmokas.', label: 'Peržiūrėti mokėjimus' },
-      review_payment: { title: 'Peržiūrėkite savo mokėjimą', detail: () => 'Jūsų pagrindinė įmoka dar nesumokėta.', label: 'Eiti į mokėjimus' },
+      finalize_date_early: {
+        title: 'Pasirinkite galutinę datą',
+        detail: () => 'Visi dalyviai atsakė, todėl galutinę datą galite pasirinkti dabar.',
+        label: 'Pasirinkti galutinę datą',
+      },
+      resolve_date: {
+        title: 'Pasirinkite galutinę datą',
+        detail: () => ltDate.organizerDecisionHelp,
+        label: 'Pasirinkti galutinę datą',
+      },
+      invite_people: {
+        title: 'Pakvieskite daugiau žmonių',
+        detail: () => 'Pasidalykite projektu su žmonėmis, kuriuos norite pakviesti.',
+        label: 'Peržiūrėti dalyvius',
+      },
+      review_finance: {
+        title: 'Peržiūrėkite finansus',
+        detail: () => 'Peržiūrėkite dabartinį mokėjimų valdymą ir nesumokėtas įmokas.',
+        label: 'Peržiūrėti finansus',
+      },
+      review_payment: {
+        title: 'Peržiūrėkite savo mokėjimą',
+        detail: () => 'Jūsų asmeninė pagrindinė įmoka dar nesumokėta.',
+        label: 'Eiti į finansus',
+      },
     },
-    headings: { canceled: 'Projektas atšauktas', finalized: 'Projektas užfiksuotas', ready: 'Projektui pasirengta', waiting: 'Laukiama grupės' },
+    headings: {
+      canceled: 'Projektas atšauktas',
+      finalized: 'Projektas užfiksuotas',
+      ready: 'Viskas atnaujinta',
+      waiting: 'Šiuo metu veiksmų nereikia',
+    },
     details: {
-      canceled: 'Šis projektas atšauktas. Daugiau veiksmų nereikia.',
+      canceled: 'Projektas atšauktas. Likusi grąžinimų informacija tebėra pasiekiama Finansų skiltyje.',
       finalized: 'Dalyvių sąrašas užfiksuotas, o pagrindinės įmokos nebekeičiamos.',
-      ready: 'Visi projektui taikomi reikalavimai įvykdyti.',
-      waiting: 'Šiuo metu jums nereikia atlikti jokių veiksmų. Grupė dar ruošiasi projektui.',
-      date: 'Laukiama, kol datų parinkimo sistema parinks galutinę datą.',
-      date_all_responded: 'Visi dalyviai atsakė. Organizatorius gali pasirinkti galutinę datą dabar arba Date Finder užfiksuos rezultatą pasibaigus balsavimui.',
-      date_tie: 'Laukiama, kol organizatorius pasirinks galutinę datą.',
+      ready: 'Visi šiuo metu taikomi projekto reikalavimai įvykdyti.',
+      waiting: 'Grupė dar ruošiasi, tačiau šiuo metu jums nieko daryti nereikia.',
+      date: 'Grupė dar renkasi galutinę datą.',
+      date_all_responded: 'Visi dalyviai atsakė. Organizatorius jau gali pasirinkti galutinę datą.',
+      date_tie: 'Organizatorius dar turi išspręsti vienodai įvertintų datų rezultatą.',
       finance: 'Pagrindinės įmokos dar nesumokėtos.',
     },
-    // Label-style counts stay grammatical for 0, 1, 2, 10, 11, 21, etc.
-    participantMinimum: (confirmed, minimum) => `Dalyvavimą patvirtino: ${confirmed}. Būtinas minimumas: ${minimum}.`,
-    participantNoMinimum: confirmed => `Dalyvavimą patvirtino: ${confirmed}. Minimalus skaičius nenustatytas.`,
-    waitingParticipants: count => `Dar reikia dalyvavimą patvirtinusių dalyvių: ${count}.`,
-    waitingPeople: count => `Laukiama atsakymų iš žmonių: ${count}.`,
+    waitingParticipants: count => `Projektui dar trūksta dalyvių: ${count}.`,
     waitingDates: count => `Dar turi pasirinkti datas: ${count}.`,
-    waitingAttendance: count => `Dar turi patvirtinti dalyvavimą: ${count}.`,
+    waitingAttendance: count => `Dar turi atsakyti dėl pasirinktos datos: ${count}.`,
   },
 }
 

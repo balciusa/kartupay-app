@@ -11,7 +11,8 @@ test('IBAN recipient feedback matches server validation without submitting payme
   await expect(page.locator('html[data-auth-privacy-ready="true"]')).toHaveCount(1)
   await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
 
-  const profileTab = page.getByRole('tab', { name: 'Profile' })
+  await page.getByRole('tab', { name: 'Group', exact: true }).click()
+  const profileTab = page.getByRole('tab', { name: 'Profile', exact: true })
   await profileTab.click()
   await expect(profileTab).toHaveAttribute('aria-selected', 'true')
   const recipientForm = page.getByRole('heading', { name: 'Payment recipients' }).locator('..')
