@@ -101,7 +101,35 @@ Prefer a separate `public.participant_selected_date_decisions` table over anothe
 - RLS enabled immediately; expand grants only `service_role`; later self/organizer policies require dedicated cross-project tests;
 - no backfill. Rows are created only by the new finalization path for affected active members.
 
-An `available` vote creates no required decision. Membership remains active for every decision state until an explicit, separately authorized leave workflow succeeds.
+An `available` vote creates no required decision only when its `date_option_id` exactly matches the project's selected option. Membership remains active for every decision state until an explicit, separately authorized leave workflow succeeds.
+
+## Legacy finalized-project read compatibility
+
+Already-finalized projects can have no decision rows and must remain readable without a Production backfill. The review's 2026-11-12 read-only aggregate found 11 projects with a selected date, 15 active members in them, and 4 active members with no response for the selected option. A future new-model reader must use this ordered, read-only resolution for each active participant:
+
+1. Read the project's non-null `selected_date_option_id`; never accept a response for another option.
+2. If a decision row exists for the exact `(project_id, participant_id, selected_date_option_id)`, use it as the new-model result.
+3. Otherwise load the participant's response for that exact selected option and expose the result as a compatibility-derived value:
+   - exact-option `available` -> `satisfied_by_available_vote`;
+   - exact-option `maybe` -> `decision_required` with reason `maybe`;
+   - exact-option `unavailable` -> `decision_required` with reason `unavailable`;
+   - no exact-option response -> `decision_required` with reason `missing`.
+4. Treat legacy `attendance_status` only as compatibility metadata. `awaiting_confirmation`, `unconfirmed`, `cannot_attend`, `pending_date_selection` and `observer` never satisfy a decision. `confirmed` alone also does not prove an exact-option vote or explicit MASTER v5.3 decision, so it must not silently mark a missing/maybe/unavailable case as attending. A later implementation may recognize a completed legacy confirmation only if it can prove an unambiguous, participant-scoped confirmation record; otherwise the conservative result remains `decision_required`.
+5. Keep `participants.left_at is null` as the sole membership/seat predicate. Compatibility reads must not set `left_at`, insert decision rows, update attendance, create notifications, or touch payment, refund, Extra or transport records.
+
+The reader should return an explicit source (`decision_row` or `legacy_read_fallback`) and reason so callers cannot confuse conservative compatibility state with a persisted decision. Existing finance, refund and transport consumers stay on their reviewed legacy paths until separate migrations; this fallback is not permission to reinterpret historical obligations.
+
+Future acceptance tests must cover:
+
+- available for option A while option B is selected -> `decision_required`/`missing` for B;
+- exact-option available -> satisfied without a decision row;
+- exact-option maybe/unavailable and no response -> the matching required reason;
+- every legacy attendance status, including `confirmed` with no exact response, leaves membership active and never silently resolves attendance;
+- a persisted exact-option decision row takes precedence over the fallback;
+- inactive/former and cross-project users gain no data access through the fallback;
+- compatibility reads perform no writes and leave payment/refund/Extra/transport snapshots unchanged.
+
+The legacy fallback may be removed only after the new finalization writer is deployed and observed, and a read-only coverage check proves that every active participant in every finalized project has either an exact selected-option `available` response or a persisted decision row. It must also record zero `legacy_read_fallback` results for an agreed observation window, pass the role-boundary and snapshot regressions above, and receive explicit product/security approval. Any future materialization of legacy decisions requires its own reviewed migration and is not authorized by this PR. Removing this fallback does not authorize dropping `attendance_status`; that remains a separate contract migration gated on all finance, transport, reminder and historical consumers.
 
 ## Atomic capacity strategy
 
@@ -155,11 +183,13 @@ This order matches Date Finder's project-first lock and avoids participant/proje
 3. Direct join races approval; reactivation races a new join; duplicate retries return one active membership and one activity event.
 4. Join and date finalization race using the same project lock: no member is omitted from the finalization scope and no deadlock occurs.
 5. Pending private join request never changes active-seat count.
-6. Available selected-option vote creates no decision; maybe/unavailable/missing creates one deduplicated decision without changing membership.
+6. Only an available response whose `date_option_id` exactly matches the selected option creates no decision; available for another option and exact-option maybe/unavailable/missing require one deduplicated decision without changing membership.
 7. No deadline silently sets `left_at`; no decision transition mutates payment/refund/transport rows.
 8. RLS: self versus organizer permissions, former member denial, unrelated project denial, and no private chat/plan leakage.
 9. Financial invariant: the 28 legacy counted rows and all non-null counted snapshots are byte-for-byte unchanged; late-join and Extras obligations do not duplicate.
 10. Date reminder/task dedupe and Date Finder project-lock ordering remain intact.
+11. Legacy finalized-project reads follow the conservative fallback above, report their source/reason, perform no writes and do not infer attendance from `confirmed` alone.
+12. Fallback removal is blocked until the exact-option-or-decision coverage query, zero-fallback observation window, authorization tests and financial snapshot regressions all pass.
 
 The pure tests in `src/lib/membershipDateFoundation.test.ts` cover the approved deterministic rules now. Database concurrency and authorization tests are intentionally gated on the future schema/RPC migration; pretending to run them before that API exists would provide false evidence.
 

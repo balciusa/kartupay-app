@@ -43,10 +43,32 @@ test('seat reservation uses the active seat count and project limit', () => {
   }), 'reserve')
 })
 
-test('only an available vote satisfies the selected-date exception', () => {
-  assert.equal(selectedDateDecisionRequirement('available'), 'satisfied_by_available_vote')
-  assert.equal(selectedDateDecisionRequirement('maybe'), 'decision_required')
-  assert.equal(selectedDateDecisionRequirement('unavailable'), 'decision_required')
-  assert.equal(selectedDateDecisionRequirement(null), 'decision_required')
-  assert.equal(selectedDateDecisionRequirement(undefined), 'decision_required')
+test('an available vote for another option does not satisfy the selected-date exception', () => {
+  assert.equal(selectedDateDecisionRequirement('date-b', {
+    date_option_id: 'date-a',
+    availability: 'available',
+  }), 'decision_required')
+})
+
+test('an available vote satisfies the exception only for the selected option', () => {
+  assert.equal(selectedDateDecisionRequirement('date-b', {
+    date_option_id: 'date-b',
+    availability: 'available',
+  }), 'satisfied_by_available_vote')
+})
+
+test('maybe and unavailable votes for the selected option require a decision', () => {
+  assert.equal(selectedDateDecisionRequirement('date-b', {
+    date_option_id: 'date-b',
+    availability: 'maybe',
+  }), 'decision_required')
+  assert.equal(selectedDateDecisionRequirement('date-b', {
+    date_option_id: 'date-b',
+    availability: 'unavailable',
+  }), 'decision_required')
+})
+
+test('a missing selected-option response requires a decision', () => {
+  assert.equal(selectedDateDecisionRequirement('date-b', null), 'decision_required')
+  assert.equal(selectedDateDecisionRequirement('date-b', undefined), 'decision_required')
 })

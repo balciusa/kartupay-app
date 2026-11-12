@@ -10,6 +10,11 @@ export type SelectedDateDecisionRequirement =
   | 'satisfied_by_available_vote'
   | 'decision_required'
 
+export type SelectedDateResponse = {
+  date_option_id: string
+  availability: DateAvailability
+}
+
 /**
  * MASTER v5.3 foundation: an active membership occupies one project seat.
  * Date availability and legacy attendance labels are intentionally not inputs.
@@ -43,7 +48,10 @@ export function decideSeatReservation(input: {
  * exception states; none of them changes membership or financial history here.
  */
 export function selectedDateDecisionRequirement(
-  availability: DateAvailability | null | undefined
+  selectedOptionId: string,
+  response: SelectedDateResponse | null | undefined
 ): SelectedDateDecisionRequirement {
-  return availability === 'available' ? 'satisfied_by_available_vote' : 'decision_required'
+  return response?.date_option_id === selectedOptionId && response.availability === 'available'
+    ? 'satisfied_by_available_vote'
+    : 'decision_required'
 }
