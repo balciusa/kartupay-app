@@ -92,9 +92,10 @@ BEGIN
           approved_at = clock_timestamp(), participant_id = v_member.id
       WHERE id = v_req.id AND status = 'pending';
   ELSE
+    -- Only pending requests: never revive/rewrite rejected history.
     UPDATE public.join_requests SET status = 'approved'
       WHERE project_id = p_project_id AND requester_user_id = p_user_id
-        AND status <> 'approved';
+        AND status = 'pending';
   END IF;
   RETURN jsonb_build_object('outcome', v_outcome, 'participant_id', v_member.id);
 END;
