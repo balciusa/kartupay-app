@@ -2,7 +2,6 @@
 
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
-import { randomUUID } from 'crypto'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 import { recordProjectActivity } from '@/lib/activityLog'
 import { calculateProjectPricing, validateBundlePricingConfig } from '@/lib/projectPricing'
@@ -2202,16 +2201,13 @@ export async function requestJoin(projectId: string) {
 
   if (getProjectJoinStrategy({ isPublic: project.is_public, financeMode: project.finance_mode }) === 'direct_membership') {
     if (project.max_participants) {
-      let capacityQuery = supabaseAdmin
+      const capacityQuery = supabaseAdmin
         .from('participants')
         .select('id', { count: 'exact', head: true })
         .eq('project_id', projectId)
         .is('left_at', null)
-      if (project.date_mode === 'fixed' && project.selected_date_option_id) {
-        capacityQuery = capacityQuery.eq('attendance_status', 'confirmed')
-      }
       const { count, error: capacityError } = await capacityQuery
-      if (capacityError && !missingColumn(capacityError, 'attendance_status')) throw capacityError
+      if (capacityError) throw capacityError
       if ((count ?? 0) >= project.max_participants) {
         return { ok: false as const, blocked: true as const, error: 'Project capacity has been reached' }
       }
@@ -2477,14 +2473,11 @@ export async function approveJoinRequest(requestId: string) {
       .maybeSingle()
     if (capacityProjectError || !capacityProject) throw capacityProjectError || new Error('Project not found')
     if (capacityProject.max_participants) {
-      let capacityQuery = supabaseAdmin
+      const capacityQuery = supabaseAdmin
         .from('participants')
         .select('id', { count: 'exact', head: true })
         .eq('project_id', req.project_id)
         .is('left_at', null)
-      if (capacityProject.date_mode === 'fixed' && capacityProject.selected_date_option_id) {
-        capacityQuery = capacityQuery.eq('attendance_status', 'confirmed')
-      }
       const { count, error: capacityError } = await capacityQuery
       if (capacityError) throw capacityError
       if ((count ?? 0) >= capacityProject.max_participants) {
@@ -5598,78 +5591,6 @@ export async function updateProjectSettingsWithState(projectId: string, formData
       error: error instanceof Error ? error.message : 'Failed to update project settings',
     }
   }
-}
-
-/**
- * (Optional, dev/admin) Add me as organizer and attach one payment link.
- * Kept for parity with earlier flows; not used if you've moved links to Settings.
- */
-export async function addMeAsOrganizerWithPayment(opts: {
-  projectId: string
-  paymentType: 'revolut' | 'swedbank' | 'iban'
-  paymentLabel: string
-  paymentValue: string
-  priority?: number
-}) {
-  const { projectId, paymentType, paymentLabel, paymentValue } = opts
-  await requireManagedFinanceProject(projectId)
-  const recipient = validatePaymentRecipientInput({
-    type: paymentType,
-    recipientName: paymentLabel,
-    value: paymentValue,
-  })
-  const priority = opts.priority ?? 1
-
-  let uid = await getCurrentUserId()
-  if (!uid) {
-    // Fallback: create a minimal anonymous auth user (MVP/dev only)
-    const anonymousEmail = `anon-${randomUUID()}@temp.local`
-    const { data: authUser, error: authErr } = await supabaseAdmin.auth.admin.createUser({
-      email: anonymousEmail,
-      email_confirm: true,
-      user_metadata: { is_anonymous: true },
-    })
-    if (authErr || !authUser?.user?.id) throw new Error(`Failed to create anonymous user: ${authErr?.message ?? 'unknown'}`)
-    uid = authUser.user.id
-    // Best-effort public.users sync (ignore if table missing)
-    try {
-      await supabaseAdmin.from('users').upsert({ id: uid, email: anonymousEmail }, { onConflict: 'id' })
-    } catch { /* ignore */ }
-  }
-
-  // Ensure participant row exists (organizer)
-  const { data: existing, error: qErr } = await supabaseAdmin
-    .from('participants')
-    .select('id')
-    .eq('project_id', projectId)
-    .eq('user_id', uid)
-    .limit(1)
-  if (qErr) throw qErr
-
-  let participantId = existing?.[0]?.id as string | undefined
-  if (!participantId) {
-    const { data: part, error: iErr } = await supabaseAdmin
-      .from('participants')
-      .insert({ project_id: projectId, user_id: uid, role: 'organizer', short_code: null })
-      .select('id')
-      .single()
-    if (iErr || !part?.id) throw new Error(`Failed to create participant: ${iErr?.message ?? 'unknown'}`)
-    participantId = part.id
-  }
-
-  const { error: pErr } = await supabaseAdmin
-    .from('payment_options')
-    .insert({
-      participant_id: participantId,
-      type: recipient.type,
-      label: recipient.label,
-      value: recipient.value,
-      priority,
-      is_active: true,
-    })
-  if (pErr) throw new Error(`Failed to create payment option: ${pErr.message}`)
-
-  revalidatePath(`/project/${projectId}`)
 }
 
 /** Add a sample add-on (demo) */

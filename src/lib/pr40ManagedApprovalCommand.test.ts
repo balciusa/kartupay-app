@@ -15,11 +15,19 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     calls,
     deps: {
       authenticatedActorId: async () => { calls.push('auth'); return 'authenticated-actor' },
-      loadRequest: async (_id: string) => { calls.push('request'); return request },
-      assertCanApprove: async (_projectId: string, _actorId: string) => { calls.push('authorize') },
-      loadMember: async (_projectId: string, userId: string) => { calls.push('member:' + userId); return null },
+      loadRequest: async (id: string) => { void id; calls.push('request'); return request },
+      assertCanApprove: async (projectId: string, actorId: string) => {
+        void projectId
+        void actorId
+        calls.push('authorize')
+      },
+      loadMember: async (projectId: string, userId: string) => {
+        void projectId
+        calls.push('member:' + userId)
+        return null
+      },
       loadUserOptions: async (userId: string) => { calls.push('options:' + userId); return [option] },
-      loadMemberOptions: async (_participantId: string) => { calls.push('existing'); return [] },
+      loadMemberOptions: async (participantId: string) => { void participantId; calls.push('existing'); return [] },
       ...overrides,
     },
   }

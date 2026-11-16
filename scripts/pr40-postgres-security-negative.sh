@@ -173,6 +173,26 @@ END $test$;
 SQL
 echo 'PR40 forged destination rejection PASS'
 
+# Characterize the two known TypeScript/SQL parity gaps. These assertions are
+# intentionally evidence for a runtime-cutover blocker, not a claim of parity:
+# TypeScript decodes the safe Revolut path and rejects the bad IBAN checksum.
+psql -X -v ON_ERROR_STOP=1 <<'SQL'
+DO $test$
+BEGIN
+ IF public.pr40_expected_option_value(
+   'revolut','https://revolut.me/safe%2Duser'
+ ) IS NOT NULL THEN
+  RAISE EXCEPTION 'Expected conservative SQL to reject encoded Revolut path';
+ END IF;
+ IF public.pr40_expected_option_value(
+   'iban','GB81WEST12345698765432'
+ ) IS DISTINCT FROM 'GB81WEST12345698765432' THEN
+  RAISE EXCEPTION 'Expected SQL characterization to expose missing IBAN checksum';
+ END IF;
+END $test$;
+SQL
+echo 'PR40 known TypeScript/Postgres payment parity gaps CHARACTERIZED'
+
 # Positive control: an unchanged active option owned by the requester should
 # pass the same provenance check, otherwise all negative cases are meaningless.
 psql -X -v ON_ERROR_STOP=1 <<'SQL'

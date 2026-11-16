@@ -1135,10 +1135,45 @@ test('public finance-none direct join remains blocked at project capacity', asyn
   assert.equal(f.tables.participants.length, 1)
 })
 
+test('active non-attending member still occupies a direct-join capacity seat', async () => {
+  const f = fixture()
+  Object.assign(f.tables.projects[0], {
+    max_participants: 1,
+    date_mode: 'fixed',
+    selected_date_option_id: 'selected-date',
+  })
+  f.tables.participants = [{
+    id: 'other', project_id: 'project', user_id: 'other-user', role: 'member',
+    left_at: null, attendance_status: 'cannot_attend',
+  }]
+
+  assert.deepEqual(await f.actions.requestJoin('project'), {
+    ok: false,
+    blocked: true,
+    error: 'Project capacity has been reached',
+  })
+  assert.equal(f.tables.participants.length, 1)
+})
+
 test('private request approval is blocked when project capacity has been reached', async () => {
   const f = pendingJoinFixture('organizer')
   f.tables.projects[0].is_public = false
   f.tables.projects[0].max_participants = 1
+
+  await assert.rejects(f.actions.approveJoinRequest('request'), /Project capacity has been reached/)
+  assert.equal(f.tables.join_requests[0].status, 'pending')
+  assert.equal(f.tables.participants.some(row => row.user_id === 'requester'), false)
+})
+
+test('active non-attending member still occupies an approval capacity seat', async () => {
+  const f = pendingJoinFixture('organizer')
+  Object.assign(f.tables.projects[0], {
+    is_public: false,
+    max_participants: 1,
+    date_mode: 'fixed',
+    selected_date_option_id: 'selected-date',
+  })
+  f.tables.participants[0].attendance_status = 'cannot_attend'
 
   await assert.rejects(f.actions.approveJoinRequest('request'), /Project capacity has been reached/)
   assert.equal(f.tables.join_requests[0].status, 'pending')
