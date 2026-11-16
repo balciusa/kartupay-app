@@ -31,3 +31,5 @@ jobs:
         run: bash scripts/pr40-postgres-smoke.sh
       - name: Race managed approvals and canceled projects
         run: bash scripts/pr40-postgres-concurrency-extra.sh
+      - name: Verify raw-writer and reactivation capacity enforcement
+        run: bash scripts/pr40-postgres-capacity-guard.sh
