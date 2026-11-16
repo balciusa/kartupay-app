@@ -2,6 +2,7 @@ import 'server-only'
 
 import { getCurrentUserId } from './supabaseServer'
 import { supabaseAdmin } from './supabaseAdmin'
+import { canManageProjectJoinRequests } from './projectJoinRequests'
 import {
   preparePr40ManagedApproval,
   type Pr40ManagedApprovalCommand,
@@ -35,6 +36,32 @@ export async function preparePr40ManagedApprovalFromSession(
         .maybeSingle()
       if (error) throw error
       return (data as Pr40PendingRequest | null) ?? null
+    },
+    assertCanApprove: async (projectId, actorId) => {
+      const { data: project, error: projectError } = await supabaseAdmin
+        .from('projects')
+        .select('is_public, collector_participant_id, status, canceled_at')
+        .eq('id', projectId)
+        .maybeSingle()
+      if (projectError) throw projectError
+      if (!project) throw new Error('Project not found')
+      if (project.canceled_at || ['canceled', 'cancelled'].includes(String(project.status ?? '').trim().toLowerCase())) {
+        throw new Error('Project is no longer active')
+      }
+      const { data: actor, error: actorError } = await supabaseAdmin
+        .from('participants')
+        .select('id, role')
+        .eq('project_id', projectId)
+        .eq('user_id', actorId)
+        .is('left_at', null)
+        .maybeSingle()
+      if (actorError) throw actorError
+      if (!canManageProjectJoinRequests({
+        isPublic: project.is_public,
+        participantId: actor?.id,
+        participantRole: actor?.role,
+        collectorParticipantId: project.collector_participant_id,
+      })) throw new Error('Not authorized')
     },
     loadMember: async (projectId, userId) => {
       const { data, error } = await supabaseAdmin

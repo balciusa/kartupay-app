@@ -16,6 +16,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     deps: {
       authenticatedActorId: async () => { calls.push('auth'); return 'authenticated-actor' },
       loadRequest: async (_id: string) => { calls.push('request'); return request },
+      assertCanApprove: async (_projectId: string, _actorId: string) => { calls.push('authorize') },
       loadMember: async (_projectId: string, userId: string) => { calls.push('member:' + userId); return null },
       loadUserOptions: async (userId: string) => { calls.push('options:' + userId); return [option] },
       loadMemberOptions: async (_participantId: string) => { calls.push('existing'); return [] },
@@ -36,7 +37,7 @@ test('PR40 command derives requester and actor from server-resolved data', async
     value: 'https://revolut.me/alice_22',
     priority: 1,
   }])
-  assert.deepEqual(calls, ['auth', 'request', 'member:requester-from-db', 'options:requester-from-db'])
+  assert.deepEqual(calls, ['auth', 'request', 'authorize', 'member:requester-from-db', 'options:requester-from-db'])
 })
 
 test('PR40 command fails before loading data for unauthenticated actor', async () => {
@@ -75,4 +76,10 @@ test('PR40 command excludes already-linked normalized payment destinations', asy
   })
   const command = await preparePr40ManagedApproval('request-1', deps)
   assert.deepEqual(command.p_validated_options, [])
+})
+
+test('PR40 command blocks unauthorized manager before reading recipient information', async () => {
+  const { deps, calls } = makeDeps({ assertCanApprove: async () => { throw new Error('Not authorized') } })
+  await assert.rejects(preparePr40ManagedApproval('request-1', deps), /Not authorized/)
+  assert.deepEqual(calls, ['auth', 'request'])
 })

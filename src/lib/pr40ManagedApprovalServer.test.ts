@@ -18,6 +18,8 @@ test('PR40 adapter derives requester from stored request before querying options
   assert.match(adapter, /\.from\('join_requests'\)/)
   assert.match(adapter, /\.select\('id, project_id, requester_user_id, status'\)/)
   assert.match(adapter, /\.from\('user_payment_options'\)/)
+  assert.match(adapter, /assertCanApprove: async \(projectId, actorId\)/)
+  assert.match(adapter, /canManageProjectJoinRequests/)
   assert.match(adapter, /\.eq\('user_id', userId\)/)
   assert.match(adapter, /\.eq\('is_active', true\)/)
   assert.match(adapter, /\.from\('payment_options'\)/)

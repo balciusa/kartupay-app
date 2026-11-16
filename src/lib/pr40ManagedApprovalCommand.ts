@@ -34,6 +34,7 @@ export async function preparePr40ManagedApproval(
   deps: {
     authenticatedActorId: () => Promise<string | null>
     loadRequest: (id: string) => Promise<Pr40PendingRequest | null>
+    assertCanApprove: (projectId: string, actorId: string) => Promise<void>
     loadMember: (projectId: string, userId: string) => Promise<Pr40Membership | null>
     loadUserOptions: (userId: string) => Promise<Pr40UserOption[]>
     loadMemberOptions: (participantId: string) => Promise<Pr40ExistingOption[]>
@@ -46,6 +47,8 @@ export async function preparePr40ManagedApproval(
   if (!request || request.id !== requestId) throw new Error('Join request not found')
   if (request.status !== 'pending') throw new Error('Join request is not pending')
   if (!request.project_id || !request.requester_user_id) throw new Error('Incomplete join request')
+  // Do not load another user's payment destinations before manager authorization.
+  await deps.assertCanApprove(request.project_id, actorId)
   const member = await deps.loadMember(request.project_id, request.requester_user_id)
   const options = await deps.loadUserOptions(request.requester_user_id)
   const existing = member ? await deps.loadMemberOptions(member.id) : []
