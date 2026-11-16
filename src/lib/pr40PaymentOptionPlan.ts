@@ -4,6 +4,7 @@ import {
 } from './paymentRecipient.ts'
 
 export type Pr40UserOption = {
+  id?: string
   type: string
   label: string | null
   value: string
@@ -23,6 +24,7 @@ export type Pr40PaymentOptionInsert = {
   value: string
   priority: number
   is_active: true
+  provenance?: { source_option_id: string; source_value: string; source_label: string | null; source_priority: number | null }
 }
 
 /**
@@ -72,6 +74,7 @@ export function planPr40PaymentOptionClone(
         value: parsed.value,
         priority: option.priority ?? 1,
         is_active: true,
+        ...(option.id ? { provenance: { source_option_id: option.id, source_value: option.value, source_label: option.label, source_priority: option.priority } } : {}),
       })
     } catch {
       // Match the legacy validatedPaymentOptionsForStorage behavior:

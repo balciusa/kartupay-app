@@ -8,7 +8,7 @@ const request: Pr40PendingRequest = {
   requester_user_id: 'requester-from-db',
   status: 'pending',
 }
-const option = { type: 'revolut', label: 'My link', value: '@alice_22', priority: null, is_active: true }
+const option = { id: 'source-option-id', type: 'revolut', label: 'My link', value: '@alice_22', priority: null, is_active: true }
 function makeDeps(overrides: Record<string, unknown> = {}) {
   const calls: string[] = []
   return {
@@ -36,6 +36,10 @@ test('PR40 command derives requester and actor from server-resolved data', async
     label: 'My link',
     value: 'https://revolut.me/alice_22',
     priority: 1,
+    source_option_id: 'source-option-id',
+    source_value: '@alice_22',
+    source_label: 'My link',
+    source_priority: null,
   }])
   assert.deepEqual(calls, ['auth', 'request', 'authorize', 'member:requester-from-db', 'options:requester-from-db'])
 })
@@ -82,4 +86,9 @@ test('PR40 command blocks unauthorized manager before reading recipient informat
   const { deps, calls } = makeDeps({ assertCanApprove: async () => { throw new Error('Not authorized') } })
   await assert.rejects(preparePr40ManagedApproval('request-1', deps), /Not authorized/)
   assert.deepEqual(calls, ['auth', 'request'])
+})
+
+test('PR40 cannot build a nonempty option payload without database source ID', async () => {
+  const { deps } = makeDeps({ loadUserOptions: async () => [{ ...option, id: undefined }] })
+  await assert.rejects(preparePr40ManagedApproval('request-1', deps), /source identity missing/)
 })

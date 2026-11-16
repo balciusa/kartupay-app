@@ -76,7 +76,7 @@ export async function preparePr40ManagedApprovalFromSession(
     loadUserOptions: async userId => {
       const { data, error } = await supabaseAdmin
         .from('user_payment_options')
-        .select('type, label, value, priority, is_active')
+        .select('id, type, label, value, priority, is_active')
         .eq('user_id', userId)
         .eq('is_active', true)
       if (error) throw error

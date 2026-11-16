@@ -19,6 +19,10 @@ export type Pr40ManagedApprovalCommand = {
     label: string
     value: string
     priority: number
+    source_option_id: string
+    source_value: string
+    source_label: string | null
+    source_priority: number | null
   }>
 }
 
@@ -59,8 +63,9 @@ export async function preparePr40ManagedApproval(
     p_project_id: request.project_id,
     p_request_id: request.id,
     p_actor_user_id: actorId,
-    p_validated_options: planned.map(({ type, label, value, priority }) => ({
-      type, label, value, priority,
-    })),
+    p_validated_options: planned.map(({ type, label, value, priority, provenance }) => {
+      if (!provenance?.source_option_id) throw new Error('Payment option source identity missing')
+      return { type, label, value, priority, ...provenance }
+    }),
   }
 }

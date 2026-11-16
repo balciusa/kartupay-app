@@ -48,6 +48,8 @@ DECLARE
   options_written integer := 0;
   transfers_written integer := 0;
   inserted_count integer;
+  opt record;
+  source_ok boolean;
 BEGIN
   IF p_project_id IS NULL OR p_request_id IS NULL OR p_actor_user_id IS NULL
     OR jsonb_typeof(p_validated_options) IS DISTINCT FROM 'array' THEN
@@ -89,6 +91,34 @@ BEGIN
       OR (o.type='iban' AND btrim(o.label)='')
       OR o.priority IS NULL OR o.priority<0
   ) THEN RAISE EXCEPTION 'Invalid payment option payload' USING ERRCODE='22023'; END IF;
+
+  -- Reject stale/tampered source records while holding a row-share lock.
+  -- This makes each supplied option provably tied to an ACTIVE DB row belonging
+  -- to the stored request owner, not to the actor/client.
+  -- JS validation is still responsible for canonical destination formatting.
+  FOR opt IN SELECT * FROM jsonb_to_recordset(p_validated_options) AS o(
+    type text,label text,value text,priority integer,
+    source_option_id uuid,source_value text,source_label text,
+    source_priority integer
+  ) LOOP
+    IF opt.source_option_id IS NULL OR opt.source_value IS NULL THEN
+      RAISE EXCEPTION 'Payment option source identity missing'
+        USING ERRCODE='22023';
+    END IF;
+    SELECT true INTO source_ok FROM public.user_payment_options u
+      WHERE u.id=opt.source_option_id
+        AND u.user_id=req.requester_user_id
+        AND u.is_active IS TRUE
+        AND u.type=opt.type
+        AND u.value=opt.source_value
+        AND u.label IS NOT DISTINCT FROM opt.source_label
+        AND u.priority IS NOT DISTINCT FROM opt.source_priority
+      FOR SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Payment option source changed or is not owned by requester'
+        USING ERRCODE='22023';
+    END IF;
+  END LOOP;
 
   SELECT * INTO member FROM public.participants
     WHERE project_id=p_project_id AND user_id=req.requester_user_id;
