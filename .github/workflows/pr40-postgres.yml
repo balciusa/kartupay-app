@@ -29,3 +29,5 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Run two-session capacity and rollback smoke
         run: bash scripts/pr40-postgres-smoke.sh
+      - name: Race managed approvals and canceled projects
+        run: bash scripts/pr40-postgres-concurrency-extra.sh
