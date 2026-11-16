@@ -33,3 +33,5 @@ jobs:
         run: bash scripts/pr40-postgres-concurrency-extra.sh
       - name: Verify raw-writer and reactivation capacity enforcement
         run: bash scripts/pr40-postgres-capacity-guard.sh
+      - name: Validate date selection trigger and concurrent finalization
+        run: bash scripts/pr40-postgres-date-parity.sh
