@@ -29,16 +29,19 @@ BEGIN
  result:=public.pr40_approve_managed_membership_atomic('22222222-2222-4222-8222-222222222222','22222222-0000-4000-8000-000000000001','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','[]'::jsonb);
  IF result->>'outcome'<>'request_not_pending' OR (SELECT count(*) FROM public.activity_logs WHERE project_id='22222222-2222-4222-8222-222222222222')<>2 THEN RAISE EXCEPTION 'Retry duplicated effects'; END IF;
 END $t$;
+INSERT INTO public.user_payment_options(id,user_id,type,label,value,priority,is_active)
+VALUES ('33333333-0000-4000-8000-000000000099','eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee','revolut','BOOM','https://revolut.me/example',1,true);
 CREATE FUNCTION public.pr40_fail_option() RETURNS trigger LANGUAGE plpgsql AS $f$
 BEGIN IF NEW.label='BOOM' THEN RAISE EXCEPTION 'intentional failure'; END IF; RETURN NEW; END $f$;
 CREATE TRIGGER pr40_fail_option BEFORE INSERT ON public.payment_options FOR EACH ROW EXECUTE FUNCTION public.pr40_fail_option();
 SQL
 
-if psql -X -v ON_ERROR_STOP=1 -c "select public.pr40_approve_managed_membership_atomic('33333333-3333-4333-8333-333333333333','33333333-0000-4000-8000-000000000001','cccccccc-cccc-4ccc-8ccc-cccccccccccc','[{\"type\":\"revolut\",\"label\":\"BOOM\",\"value\":\"https://revolut.me/example\",\"priority\":1}]'::jsonb)" >/tmp/pr40-injected.out 2>&1; then
+if psql -X -v ON_ERROR_STOP=1 -c "select public.pr40_approve_managed_membership_atomic('33333333-3333-4333-8333-333333333333','33333333-0000-4000-8000-000000000001','cccccccc-cccc-4ccc-8ccc-cccccccccccc','[{\"type\":\"revolut\",\"label\":\"BOOM\",\"value\":\"https://revolut.me/example\",\"priority\":1,\"source_option_id\":\"33333333-0000-4000-8000-000000000099\",\"source_value\":\"https://revolut.me/example\",\"source_label\":\"BOOM\",\"source_priority\":1}]'::jsonb)" >/tmp/pr40-injected.out 2>&1; then
  echo 'ERROR: failure injection was not triggered'
  exit 1
 fi
 
+grep -q 'intentional failure' /tmp/pr40-injected.out || { echo 'Expected injected payment-options error, got:'; cat /tmp/pr40-injected.out; exit 1; }
 psql -X -v ON_ERROR_STOP=1 <<'SQL'
 DO $t$ BEGIN
  IF (SELECT count(*) FROM public.participants WHERE project_id='33333333-3333-4333-8333-333333333333')<>1 OR (SELECT status FROM public.join_requests WHERE id='33333333-0000-4000-8000-000000000001')<>'pending' OR (SELECT count(*) FROM public.activity_logs WHERE project_id='33333333-3333-4333-8333-333333333333')<>0 THEN RAISE EXCEPTION 'Partial financial state after failed transaction'; END IF;
