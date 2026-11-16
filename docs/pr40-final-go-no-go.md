@@ -1,8 +1,11 @@
 # PR40 final GO / NO-GO gate
 
-Date: 2026-11-16  
-PR: #40 (`codex/pr40-atomic-capacity-reservation`)  
-Base inspected: `235ce5d62f464c711509c984e5374366e9d66443`  
+Date: 2026-11-16
+
+PR: #40 (`codex/pr40-atomic-capacity-reservation`)
+
+Base inspected: `235ce5d62f464c711509c984e5374366e9d66443`
+
 Starting head inspected: `45acfe13f6a743ee01571a2c524995efad880a88`
 
 ## Decision
