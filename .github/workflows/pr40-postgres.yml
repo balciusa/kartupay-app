@@ -1,0 +1,31 @@
+name: PR40 isolated PostgreSQL smoke
+on:
+  pull_request:
+    paths:
+      - 'docs/sql/pr40_*'
+      - 'scripts/pr40-postgres-*'
+      - '.github/workflows/pr40-postgres.yml'
+  workflow_dispatch:
+jobs:
+  atomic-reservation:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: pr40_test_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Run two-session capacity and rollback smoke
+        run: bash scripts/pr40-postgres-smoke.sh
