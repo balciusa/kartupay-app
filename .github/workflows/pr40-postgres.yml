@@ -35,3 +35,5 @@ jobs:
         run: bash scripts/pr40-postgres-capacity-guard.sh
       - name: Validate date selection trigger and concurrent finalization
         run: bash scripts/pr40-postgres-date-parity.sh
+      - name: Reject impersonation unauthorized and stale join requests
+        run: bash scripts/pr40-postgres-security-negative.sh
