@@ -133,6 +133,46 @@ SQL
 echo 'PR40 payment option source ownership / staleness PASS'
 
 
+
+# Negative output-integrity control: source is genuinely active and owned,
+# but submitted normalized destination points to another account.
+psql -X -v ON_ERROR_STOP=1 <<'SQL'
+DO $test$
+DECLARE payload jsonb; failed boolean := false;
+BEGIN
+ IF public.pr40_expected_option_value('revolut','@owner') IS DISTINCT FROM 'https://revolut.me/owner'
+ OR public.pr40_expected_option_value('revolut','revolut.me/owner') IS DISTINCT FROM 'https://revolut.me/owner'
+ OR public.pr40_expected_option_value('iban','GB82 WEST 1234 5698 7654 32') IS DISTINCT FROM 'GB82WEST12345698765432'
+ OR public.pr40_expected_option_value('swedbank','https://swedbank.lt') IS DISTINCT FROM 'https://swedbank.lt/'
+ OR public.pr40_expected_option_value('revolut','https://evil.example/u') IS NOT NULL
+ OR public.pr40_expected_option_value('swedbank','https://swedbank.lt.evil.example/path') IS NOT NULL THEN
+  RAISE EXCEPTION 'Conservative payment canonicalization smoke failed';
+ END IF;
+
+ payload:=jsonb_build_array(jsonb_build_object(
+  'type','revolut','label','Recipient',
+  'value','https://revolut.me/attacker','priority',1,
+  'source_option_id','c1111111-0000-4000-8000-000000000010',
+  'source_value','@owner','source_label','Recipient','source_priority',1));
+ BEGIN
+  PERFORM public.pr40_approve_managed_membership_atomic(
+   'c1111111-1111-4111-8111-111111111111',
+   'c1111111-0000-4000-8000-000000000002',
+   'c1111111-0000-4000-8000-000000000001',payload);
+ EXCEPTION WHEN invalid_parameter_value THEN failed:=true;
+ END;
+ IF NOT failed THEN RAISE EXCEPTION 'Forged payment destination accepted'; END IF;
+ IF EXISTS (SELECT 1 FROM public.participants
+   WHERE project_id='c1111111-1111-4111-8111-111111111111' AND role='member')
+ OR EXISTS(SELECT 1 FROM public.payment_options po
+   JOIN public.participants p ON p.id=po.participant_id
+   WHERE p.project_id='c1111111-1111-4111-8111-111111111111') THEN
+  RAISE EXCEPTION 'Forged payment option left partial state';
+ END IF;
+END $test$;
+SQL
+echo 'PR40 forged destination rejection PASS'
+
 # Positive control: an unchanged active option owned by the requester should
 # pass the same provenance check, otherwise all negative cases are meaningless.
 psql -X -v ON_ERROR_STOP=1 <<'SQL'
