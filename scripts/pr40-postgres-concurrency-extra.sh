@@ -32,20 +32,14 @@ BEGIN
 END $test$;
 SQL
 
-# Use advisory lock as a handshake to deterministically signal that session
-# cancel has acquired its project row lock before approval is submitted.
-# The session writes the ready marker after SELECT FOR UPDATE.
-psql -X -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
-CREATE TABLE public.pr40_test_barrier(name text primary key,ready boolean not null);
-INSERT INTO public.pr40_test_barrier VALUES ('cancel',false);
-SQL
-
+# Separate psql client signals AFTER the SELECT FOR UPDATE acquired the lock.
+rm -f /tmp/pr40-cancel-lock-acquired
 # A dedicated connection holds the project row lock and cancels on commit.
 psql -X -v ON_ERROR_STOP=1 <<'SQL' >/tmp/pr40-cancel-session.log 2>&1 &
 BEGIN;
 SELECT id FROM public.projects
  WHERE id='55555555-5555-4555-8555-555555555555' FOR UPDATE;
--- Notify test through PostgreSQL advisory lock not needed: query pg_locks.
+\! touch /tmp/pr40-cancel-lock-acquired
 SELECT pg_sleep(3);
 UPDATE public.projects SET canceled_at=clock_timestamp(),status='canceled'
  WHERE id='55555555-5555-4555-8555-555555555555';
@@ -53,9 +47,16 @@ COMMIT;
 SQL
 cancel_pid=$!
 
-# Wait for the test project's row lock to be held. At least one second
-# ensures the SELECT FOR UPDATE has started on the dedicated session.
-sleep 1
+# Bounded synchronization: avoid flaky ordering based on sleep durations.
+for i in $(seq 1 100); do
+ if [[ -f /tmp/pr40-cancel-lock-acquired ]]; then break; fi
+ sleep 0.05
+done
+if [[ ! -f /tmp/pr40-cancel-lock-acquired ]]; then
+ echo 'Cancellation lock handshake did not complete'
+ wait "$cancel_pid" || true
+ exit 1
+fi
 
 # Approval must block on the project lock, then fail closed after cancellation.
 if psql -X -v ON_ERROR_STOP=1 -c \
