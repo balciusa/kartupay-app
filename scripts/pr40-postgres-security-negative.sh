@@ -131,3 +131,30 @@ BEGIN
 END $test$;
 SQL
 echo 'PR40 payment option source ownership / staleness PASS'
+
+
+-- Positive control: an unchanged active option owned by the requester should
+-- pass the same provenance check, otherwise all negative cases are meaningless.
+psql -X -v ON_ERROR_STOP=1 <<'SQL'
+DO $test$
+DECLARE payload jsonb; approved jsonb;
+BEGIN
+ payload:=jsonb_build_array(jsonb_build_object(
+  'type','revolut','label','Recipient',
+  'value','https://revolut.me/owner','priority',1,
+  'source_option_id','c1111111-0000-4000-8000-000000000010',
+  'source_value','@owner','source_label','Recipient','source_priority',1));
+ approved:=public.pr40_approve_managed_membership_atomic(
+   'c1111111-1111-4111-8111-111111111111',
+   'c1111111-0000-4000-8000-000000000002',
+   'c1111111-0000-4000-8000-000000000001',payload);
+ IF approved->>'outcome'<>'reserved' OR
+ (SELECT count(*) FROM public.payment_options po
+    JOIN public.participants p ON po.participant_id=p.id
+    WHERE p.user_id='c1111111-0000-4000-8000-000000000002'
+      AND po.value='https://revolut.me/owner')<>1 THEN
+   RAISE EXCEPTION 'Valid source was not accepted with canonicalized destination';
+ END IF;
+END $test$;
+SQL
+echo 'PR40 source ownership positive control PASS'
