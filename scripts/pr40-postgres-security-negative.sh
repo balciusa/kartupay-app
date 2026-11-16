@@ -133,8 +133,8 @@ SQL
 echo 'PR40 payment option source ownership / staleness PASS'
 
 
--- Positive control: an unchanged active option owned by the requester should
--- pass the same provenance check, otherwise all negative cases are meaningless.
+# Positive control: an unchanged active option owned by the requester should
+# pass the same provenance check, otherwise all negative cases are meaningless.
 psql -X -v ON_ERROR_STOP=1 <<'SQL'
 DO $test$
 DECLARE payload jsonb; approved jsonb;
