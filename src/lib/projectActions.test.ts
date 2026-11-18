@@ -937,10 +937,10 @@ test('pending join retries keep one occurrence while a later re-request gets a n
   assert.equal(f.enqueuedJoinNotifications[0].requestedAt, f.enqueuedJoinNotifications[1].requestedAt)
 
   f.tables.join_requests[0].status = 'rejected'
-  f.tables.join_requests[0].created_at = '2020-01-01T00:00:00.000Z'
   await f.actions.requestJoin('project')
-  assert.notEqual(f.tables.join_requests[0].created_at, '2020-01-01T00:00:00.000Z')
+  assert.notEqual(f.tables.join_requests[0].created_at, firstOccurrence)
   assert.notEqual(f.enqueuedJoinNotifications[2].requestedAt, firstOccurrence)
+  assert.equal(f.enqueuedJoinNotifications[2].requestedAt, f.tables.join_requests[0].created_at)
 })
 
 test('public managed join keeps the existing pending approval behavior', async () => {
