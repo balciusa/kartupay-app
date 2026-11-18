@@ -27,8 +27,8 @@ export type Pr40ManagedApprovalCommand = {
 }
 
 /**
- * Prepares an RPC command from server-resolved, authenticated identity
- * and server-loaded records. This does NOT execute SQL or change runtime.
+ * Prepares the atomic RPC command from server-resolved authenticated identity
+ * and server-loaded records.
  *
  * Important: RPC must independently recheck actor permission, pending status,
  * project finance-mode, capacity and request ownership under the project lock.

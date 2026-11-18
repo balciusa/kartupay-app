@@ -18,6 +18,10 @@ import { getProjectStatusUiKey } from '@/lib/projectStatusUi'
 import { canManageProjectJoinRequests } from '@/lib/projectJoinRequests'
 import { isProjectCanceled } from '@/lib/projectInvite'
 import { cleanupParticipantTransport } from '@/lib/projectTransportServer'
+import {
+  approveProjectMembershipFromSession,
+  reserveDirectMembershipFromSession,
+} from '@/lib/atomicMembershipServer'
 import { buildExtraDueRows } from '@/lib/extraPayments'
 import {
   validatePaymentRecipientInput,
@@ -2200,51 +2204,10 @@ export async function requestJoin(projectId: string) {
 
 
   if (getProjectJoinStrategy({ isPublic: project.is_public, financeMode: project.finance_mode }) === 'direct_membership') {
-    if (project.max_participants) {
-      const capacityQuery = supabaseAdmin
-        .from('participants')
-        .select('id', { count: 'exact', head: true })
-        .eq('project_id', projectId)
-        .is('left_at', null)
-      const { count, error: capacityError } = await capacityQuery
-      if (capacityError) throw capacityError
-      if ((count ?? 0) >= project.max_participants) {
-        return { ok: false as const, blocked: true as const, error: 'Project capacity has been reached' }
-      }
+    const reservation = await reserveDirectMembershipFromSession(projectId)
+    if (reservation.outcome === 'full') {
+      return { ok: false as const, blocked: true as const, error: 'Project capacity has been reached' }
     }
-
-    let participantId = existing?.id ?? null
-    if (participantId) {
-      const { error: reactivateError } = await supabaseAdmin
-        .from('participants')
-        .update({ left_at: null })
-        .eq('id', participantId)
-      if (reactivateError) throw reactivateError
-    } else {
-      const { data: inserted, error: insertError } = await supabaseAdmin
-        .from('participants')
-        .insert({ project_id: projectId, user_id: uid, role: 'member' })
-        .select('id')
-        .single()
-      if (insertError || !inserted?.id) throw insertError || new Error('Failed to join project')
-      participantId = inserted.id
-    }
-
-    await supabaseAdmin
-      .from('join_requests')
-      .update({ status: 'approved' })
-      .eq('project_id', projectId)
-      .eq('requester_user_id', uid)
-
-    await recordProjectActivity({
-      projectId,
-      entryType: 'participant_joined',
-      actorUserId: uid,
-      actorParticipantId: participantId,
-      targetUserId: uid,
-      targetParticipantId: participantId,
-      metadata: { direct_join: true, finance_mode: 'none' },
-    })
 
     revalidatePath(`/project/${projectId}`)
     return { ok: true as const, joined: true as const }
@@ -2431,220 +2394,14 @@ export async function createLateJoinTransfers(
 
 export async function approveJoinRequest(requestId: string) {
   'use server'
-  const managerId = await getCurrentUserId()
-  if (!managerId) throw new Error('You must be signed in')
-
-  const { data: req, error: reqErr } = await supabaseAdmin
-    .from('join_requests')
-    .select('id, project_id, requester_user_id, status')
-    .eq('id', requestId)
-    .single()
-  if (reqErr || !req) throw new Error('Join request not found')
-
-  const { project } = await requireActiveJoinRequestManager(req.project_id, managerId)
-  if (isProjectCanceled(project)) {
-    throw new Error('This project is no longer active')
-  }
-  const { actorUserId, actorParticipantId } = await getActiveParticipantContext(req.project_id, managerId)
-
-  if (req.status !== 'pending') {
-    revalidatePath(`/project/${req.project_id}`)
+  const result = await approveProjectMembershipFromSession(requestId)
+  if (result.outcome === 'full') throw new Error('Project capacity has been reached')
+  if (result.outcome === 'request_not_pending') {
+    revalidatePath(`/project/${result.project_id}`)
     return
   }
-
-  // Check for existing participant (including those who left)
-  const { data: participantExisting, error: existingErr } = await supabaseAdmin
-    .from('participants')
-    .select('id, left_at, role')
-    .eq('project_id', req.project_id)
-    .eq('user_id', req.requester_user_id)
-    .maybeSingle()
-  
-  if (existingErr) {
-    console.error('[approveJoinRequest] Error checking existing participant:', existingErr)
-    throw existingErr
-  }
-
-  if (!participantExisting || participantExisting.left_at) {
-    const { data: capacityProject, error: capacityProjectError } = await supabaseAdmin
-      .from('projects')
-      .select('max_participants, date_mode, selected_date_option_id')
-      .eq('id', req.project_id)
-      .maybeSingle()
-    if (capacityProjectError || !capacityProject) throw capacityProjectError || new Error('Project not found')
-    if (capacityProject.max_participants) {
-      const capacityQuery = supabaseAdmin
-        .from('participants')
-        .select('id', { count: 'exact', head: true })
-        .eq('project_id', req.project_id)
-        .is('left_at', null)
-      const { count, error: capacityError } = await capacityQuery
-      if (capacityError) throw capacityError
-      if ((count ?? 0) >= capacityProject.max_participants) {
-        throw new Error('Project capacity has been reached')
-      }
-    }
-  }
-
-  let participantId = participantExisting?.id as string | undefined
-  
-  if (!participantId) {
-    // Create new participant
-    console.log('[approveJoinRequest] Creating new participant for user', req.requester_user_id)
-    const { data: inserted, error: insertErr } = await supabaseAdmin
-      .from('participants')
-      .insert({
-        project_id: req.project_id,
-        user_id: req.requester_user_id,
-        role: 'member',
-      })
-      .select('id')
-      .single()
-    if (insertErr || !inserted?.id) {
-      console.error('[approveJoinRequest] Failed to create participant:', insertErr)
-      throw insertErr || new Error('Failed to create participant')
-    }
-    participantId = inserted.id
-    console.log('[approveJoinRequest] Created new participant', { participantId, userId: req.requester_user_id })
-  } else if (participantExisting?.left_at) {
-    // Reactivate participant who left
-    console.log('[approveJoinRequest] Reactivating participant who left', { participantId, left_at: participantExisting.left_at })
-    const { error: reactErr } = await supabaseAdmin
-      .from('participants')
-      .update({ left_at: null })
-      .eq('id', participantId)
-    if (reactErr) {
-      console.error('[approveJoinRequest] Failed to reactivate participant:', reactErr)
-      throw reactErr
-    }
-    console.log('[approveJoinRequest] Reactivated participant', participantId)
-    
-    // Verify reactivation
-    const { data: verify } = await supabaseAdmin
-      .from('participants')
-      .select('id, left_at')
-      .eq('id', participantId)
-      .single()
-    console.log('[approveJoinRequest] Verification after reactivate:', verify)
-  } else {
-    console.log('[approveJoinRequest] Participant already active', { participantId, left_at: participantExisting?.left_at })
-  }
-
-  if (!participantId) {
-    throw new Error('Failed to get or create participant')
-  }
-
-  const financeMode = await getProjectFinanceMode(req.project_id)
-  if (financeMode === 'managed') {
-    await clonePaymentOptionsForParticipant(participantId, req.requester_user_id)
-  }
-
-  const lateJoinResult = financeMode === 'managed'
-    ? await createLateJoinTransfers(req.project_id, participantId, {
-        skipAuth: true,
-        skipRevalidate: true,
-      })
-    : {
-        processed: false,
-        recipientsCount: 0,
-        perPersonCents: 0,
-        upsertedCount: 0,
-        reason: 'finance_disabled',
-      }
-  if (lateJoinResult.processed) {
-    console.log('[approveJoinRequest] Late join distribution', {
-      requestId,
-      projectId: req.project_id,
-      participantId,
-      recipientsCount: lateJoinResult.recipientsCount,
-      perPersonCents: lateJoinResult.perPersonCents,
-    })
-    console.log('[approveJoinRequest] Late join upserted rows', {
-      requestId,
-      upsertedCount: lateJoinResult.upsertedCount,
-    })
-  } else {
-    console.log('[approveJoinRequest] Late join skipped', {
-      requestId,
-      projectId: req.project_id,
-      reason: lateJoinResult.reason,
-    })
-  }
-
-  const { error: updErr } = await supabaseAdmin
-    .from('join_requests')
-    .update({
-      status: 'approved',
-    })
-    .eq('id', requestId)
-  if (updErr) {
-    console.error('[approveJoinRequest] Failed to update request status:', updErr)
-    throw updErr
-  }
-  try {
-    await markJoinRequestNotificationsResolved(req.project_id, req.id)
-  } catch (error) {
-    console.error('[approveJoinRequest] Failed to resolve join notifications', { requestId: req.id, error })
-  }
-
-  await recordProjectActivity({
-    projectId: req.project_id,
-    entryType: 'join_request_approved',
-    actorUserId,
-    actorParticipantId,
-    targetUserId: req.requester_user_id,
-    targetParticipantId: participantId,
-    joinRequestId: req.id,
-  })
-
-  await recordProjectActivity({
-    projectId: req.project_id,
-    entryType: 'participant_joined',
-    actorUserId,
-    actorParticipantId,
-    targetUserId: req.requester_user_id,
-    targetParticipantId: participantId,
-    joinRequestId: req.id,
-    metadata: {
-      via_join_request: true,
-    },
-  })
-
-  if (lateJoinResult.processed && lateJoinResult.upsertedCount > 0) {
-    await recordProjectActivity({
-      projectId: req.project_id,
-      entryType: 'late_transfer_created',
-      actorUserId,
-      actorParticipantId,
-      targetUserId: req.requester_user_id,
-      targetParticipantId: participantId,
-      joinRequestId: req.id,
-      metadata: {
-        recipients_count: lateJoinResult.recipientsCount,
-        per_person_cents: lateJoinResult.perPersonCents,
-        created_transfers_count: lateJoinResult.upsertedCount,
-      },
-    })
-  }
-
-  // Verify participant is active
-  const { data: verifyParticipant } = await supabaseAdmin
-    .from('participants')
-    .select('id, left_at, role')
-    .eq('id', participantId)
-    .single()
-  
-  console.log('[approveJoinRequest] Final verification:', {
-    requestId,
-    participantId,
-    participantActive: verifyParticipant?.left_at === null,
-    participantRole: verifyParticipant?.role,
-    requesterUserId: req.requester_user_id
-  })
-
-  console.log('[approveJoinRequest] Request approved, participant active', { requestId, participantId })
-  revalidatePath(`/project/${req.project_id}`)
-  redirect(`/project/${req.project_id}`)
+  revalidatePath(`/project/${result.project_id}`)
+  redirect(`/project/${result.project_id}`)
 }
 
 export async function rejectJoinRequest(requestId: string) {

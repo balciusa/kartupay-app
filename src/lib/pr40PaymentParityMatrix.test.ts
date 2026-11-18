@@ -7,10 +7,12 @@ import {
   validateAndNormalizePaymentLink,
 } from './paymentRecipient.ts'
 
-const candidateSql = readFileSync(
-  new URL('../../docs/sql/pr40_managed_approval_candidate.sql', import.meta.url),
+const migrationSql = readFileSync(
+  new URL('../../supabase/migrations/20261116205555_atomic_membership_and_managed_approval.sql', import.meta.url),
   'utf8'
 )
+const adapter = readFileSync(new URL('./pr40ManagedApprovalServer.ts', import.meta.url), 'utf8')
+const planner = readFileSync(new URL('./pr40PaymentOptionPlan.ts', import.meta.url), 'utf8')
 
 test('PR40 TypeScript golden matrix covers supported Revolut forms and URL attacks', () => {
   const accepted = [
@@ -62,8 +64,10 @@ test('PR40 TypeScript golden matrix covers IBAN checksum, length and Unicode NFC
   assert.equal(normalizePaymentRecipientName('Jose\u0301   García'), 'José García')
 })
 
-test('PR40 SQL verifier remains deliberately non-equivalent and therefore blocks runtime cutover', () => {
-  assert.match(candidateSql, /Not full JS URL\/NFC parity/)
-  assert.match(candidateSql, /unsupported valid encodings fail closed/)
-  assert.doesNotMatch(candidateSql, /validateIBAN|WrongIBANChecksum|decodeURIComponent|normalize\('NFC'\)/)
+test('PR40 keeps one TypeScript validator and binds its output to locked source rows', () => {
+  assert.match(planner, /validatePaymentRecipientInput/)
+  assert.match(adapter, /preparePr40ManagedApprovalFromAuthorizedContext\(context\)/)
+  assert.match(migrationSql, /TypeScript-validated, source-bound payment recipients/)
+  assert.match(migrationSql, /source\.id = option_row\.source_option_id[\s\S]*source\.user_id = request_row\.requester_user_id[\s\S]*for share/i)
+  assert.doesNotMatch(migrationSql, /expected_option_value|validateiban|decodeuricomponent/i)
 })

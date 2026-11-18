@@ -41,15 +41,14 @@ for (const input of cases) {
   })
 }
 
-test('review-only RPC does not change rejected requests into approved requests', () => {
-  const candidate = readFileSync(
-    new URL('../../docs/sql/pr40_atomic_capacity_candidate.sql', import.meta.url),
+test('atomic migration approves only the locked pending request', () => {
+  const migration = readFileSync(
+    new URL('../../supabase/migrations/20261116205555_atomic_membership_and_managed_approval.sql', import.meta.url),
     'utf8'
   )
-  assert.match(candidate, /UPDATE public\.join_requests SET status = 'approved'[\s\S]*?AND status = 'pending'/)
-  assert.doesNotMatch(candidate, /status <> 'approved'/)
-  assert.match(candidate, /WHERE id = p_project_id FOR UPDATE/)
-  assert.match(candidate, /left_at IS NULL/)
-  assert.match(candidate, /Managed-finance approval not yet supported/)
-  assert.match(candidate, /REVOKE ALL ON FUNCTION/)
+  assert.match(migration, /update public\.join_requests[\s\S]*?set status = 'approved'[\s\S]*?where id = request_row\.id and status = 'pending'/i)
+  assert.doesNotMatch(migration, /status <> 'approved'/i)
+  assert.match(migration, /where id = p_project_id[\s\S]*?for update/i)
+  assert.match(migration, /left_at is null/i)
+  assert.match(migration, /revoke all on function public\.approve_managed_membership_atomic/i)
 })

@@ -59,8 +59,13 @@ Before implementation, obtain:
 5. Event idempotency: exactly one participant_joined and join_request_approved per newly successful approval; no duplicates on retries.
 6. Production protected historical financial snapshots and refund records unchanged.
 
-## Important correction for the current candidate
+## Resolution in the deployable PR40 migration
 
-The existing *review-only* `docs/sql/pr40_atomic_capacity_candidate.sql` deliberately rejects managed finance approval. It must **not** be promoted as a general-purpose RPC yet. As written, it also does not insert activity events or perform a comprehensive check for other membership-writer bypasses. Its `request_not_pending` response is intentional and must not be interpreted as an approved request. An already-active member awaiting approval needs specific product/finance acceptance tests.
+The obsolete review-only candidates were removed. The deployable migration now
+keeps managed membership, canonical option copies, late transfers, request state,
+notifications and activity in one transaction. TypeScript is the sole payment
+destination format validator; the database locks and verifies every requester-owned
+source snapshot. Full-chain tests cover newly active, already-active/reactivated,
+retry, rollback, cancellation and final-seat contention cases.
 
-**Gate: no migration; no runtime cutover; no merge until all this passes.**
+**Gate: migration and runtime must ship together after review; no Production migration or merge was performed by this task.**

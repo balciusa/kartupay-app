@@ -28,11 +28,9 @@ export type Pr40PaymentOptionInsert = {
 }
 
 /**
- * Candidate for PR40 finance parity testing ONLY; no runtime consumers.
- * Builds a deterministic and canonicalized clone plan without DB writes.
- * Pair deduplication happens AFTER validation, unlike the legacy caller.
- * A DB transaction or reviewed unique constraint remains mandatory for
- * concurrency safety. Do not treat this pure helper as an atomic write.
+ * Builds the canonical payment-recipient snapshot passed to the atomic
+ * managed-approval RPC. TypeScript remains the only destination-format
+ * validator; the database binds this output to locked source rows.
  */
 export function planPr40PaymentOptionClone(
   participantId: string,

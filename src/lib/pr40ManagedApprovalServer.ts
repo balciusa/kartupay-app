@@ -1,8 +1,6 @@
 import 'server-only'
 
-import { getCurrentUserId } from './supabaseServer'
 import { supabaseAdmin } from './supabaseAdmin'
-import { canManageProjectJoinRequests } from './projectJoinRequests'
 import {
   preparePr40ManagedApproval,
   type Pr40ManagedApprovalCommand,
@@ -10,59 +8,33 @@ import {
   type Pr40Membership,
 } from './pr40ManagedApprovalCommand'
 import type { Pr40ExistingOption, Pr40UserOption } from './pr40PaymentOptionPlan'
+import {
+  executeManagedApprovalRpc,
+  type AtomicMembershipResult,
+  type MembershipApprovalContext,
+} from './atomicMembershipRpc'
 
 /**
- * DORMANT adapter: never imported by a server action or route yet.
- * No RPC is invoked here and it is NOT a runtime cutover.
- *
- * The only user input is requestId. The actor comes from the verified
- * Supabase auth.getUser() session; requester and payment options are loaded
- * using the server-only service-role client.
- *
- * Concurrency: data can change between these reads and the eventual RPC.
- * The RPC must re-authorize under the project lock and implement a reviewed
- * strategy for staleness/option provenance before runtime use.
+ * The request, actor and approval permission come from the service-only
+ * authorization context RPC, which derives the actor from auth.getUser() on
+ * the server adapter. Only then are requester payment options loaded.
+ * The RPC re-authorizes and locks each source row, so a concurrent change
+ * causes the complete approval transaction to fail rather than accepting a
+ * stale or substituted destination.
  */
-export async function preparePr40ManagedApprovalFromSession(
-  requestId: string
+export async function preparePr40ManagedApprovalFromAuthorizedContext(
+  context: MembershipApprovalContext
 ): Promise<Pr40ManagedApprovalCommand> {
-  return preparePr40ManagedApproval(requestId, {
-    authenticatedActorId: getCurrentUserId,
-    loadRequest: async id => {
-      const { data, error } = await supabaseAdmin
-        .from('join_requests')
-        .select('id, project_id, requester_user_id, status')
-        .eq('id', id)
-        .maybeSingle()
-      if (error) throw error
-      return (data as Pr40PendingRequest | null) ?? null
-    },
-    assertCanApprove: async (projectId, actorId) => {
-      const { data: project, error: projectError } = await supabaseAdmin
-        .from('projects')
-        .select('is_public, collector_participant_id, status, canceled_at')
-        .eq('id', projectId)
-        .maybeSingle()
-      if (projectError) throw projectError
-      if (!project) throw new Error('Project not found')
-      if (project.canceled_at || ['canceled', 'cancelled'].includes(String(project.status ?? '').trim().toLowerCase())) {
-        throw new Error('Project is no longer active')
-      }
-      const { data: actor, error: actorError } = await supabaseAdmin
-        .from('participants')
-        .select('id, role')
-        .eq('project_id', projectId)
-        .eq('user_id', actorId)
-        .is('left_at', null)
-        .maybeSingle()
-      if (actorError) throw actorError
-      if (!canManageProjectJoinRequests({
-        isPublic: project.is_public,
-        participantId: actor?.id,
-        participantRole: actor?.role,
-        collectorParticipantId: project.collector_participant_id,
-      })) throw new Error('Not authorized')
-    },
+  const request: Pr40PendingRequest = {
+    id: context.request_id,
+    project_id: context.project_id,
+    requester_user_id: context.requester_user_id,
+    status: context.status,
+  }
+  return preparePr40ManagedApproval(context.request_id, {
+    authenticatedActorId: async () => context.actor_user_id,
+    loadRequest: async id => id === context.request_id ? request : null,
+    assertCanApprove: async () => {},
     loadMember: async (projectId, userId) => {
       const { data, error } = await supabaseAdmin
         .from('participants')
@@ -91,4 +63,11 @@ export async function preparePr40ManagedApprovalFromSession(
       return (data ?? []) as Pr40ExistingOption[]
     },
   })
+}
+
+export async function approvePr40ManagedApprovalFromAuthorizedContext(
+  context: MembershipApprovalContext
+): Promise<AtomicMembershipResult> {
+  const command = await preparePr40ManagedApprovalFromAuthorizedContext(context)
+  return executeManagedApprovalRpc(supabaseAdmin, command)
 }

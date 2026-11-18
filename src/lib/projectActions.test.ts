@@ -46,6 +46,7 @@ function fixture() {
     user_payment_options: [], payment_options: [],
   }
   const writes: string[] = []
+  const atomicCalls: string[] = []
   const activityEvents: Array<Record<string, unknown>> = []
   const failures = new Map<string, { code: string; message: string }>()
   const missingColumns = new Set<string>()
@@ -189,6 +190,57 @@ function fixture() {
     '@/lib/projectJoinRequests': joinRequests,
     '@/lib/projectInvite': projectInvite,
     '@/lib/projectTransportServer': { cleanupParticipantTransport: async () => true },
+    '@/lib/atomicMembershipServer': {
+      reserveDirectMembershipFromSession: async (projectId: string) => {
+        atomicCalls.push(`direct:${projectId}`)
+        const project = tables.projects.find(row => row.id === projectId)
+        const member = tables.participants.find(row => row.project_id === projectId && row.user_id === currentUserId)
+        const activeCount = tables.participants.filter(row => row.project_id === projectId && row.left_at === null).length
+        if ((!member || member.left_at) && project?.max_participants && activeCount >= Number(project.max_participants)) {
+          return { outcome: 'full', project_id: projectId }
+        }
+        if (member) member.left_at = null
+        else tables.participants.push({ id: `atomic-${tables.participants.length}`, project_id: projectId, user_id: currentUserId, role: 'member', left_at: null })
+        return { outcome: 'reserved', project_id: projectId }
+      },
+      approveProjectMembershipFromSession: async (requestId: string) => {
+        atomicCalls.push(`approve:${requestId}`)
+        if (!currentUserId) throw new Error('You must be signed in')
+        const request = tables.join_requests.find(row => row.id === requestId)
+        if (!request) throw new Error('Join request not found')
+        const project = tables.projects.find(row => row.id === request.project_id)
+        if (!project) throw new Error('Project not found')
+        if (project.canceled_at || project.aborted_at || ['canceled', 'cancelled'].includes(String(project.status).trim().toLowerCase())) {
+          throw new Error('This project is no longer active')
+        }
+        const actor = tables.participants.find(row => row.project_id === request.project_id && row.user_id === currentUserId && row.left_at === null)
+        if (!joinRequests.canManageProjectJoinRequests({
+          isPublic: project.is_public,
+          participantId: typeof actor?.id === 'string' ? actor.id : null,
+          participantRole: typeof actor?.role === 'string' ? actor.role : null,
+          collectorParticipantId: typeof project.collector_participant_id === 'string' ? project.collector_participant_id : null,
+        })) throw new Error('Not authorized')
+        if (request.status !== 'pending') return { outcome: 'request_not_pending', project_id: String(request.project_id) }
+        let member = tables.participants.find(row => row.project_id === request.project_id && row.user_id === request.requester_user_id)
+        const activeCount = tables.participants.filter(row => row.project_id === request.project_id && row.left_at === null).length
+        if ((!member || member.left_at) && project?.max_participants && activeCount >= Number(project.max_participants)) {
+          return { outcome: 'full', project_id: String(request.project_id) }
+        }
+        if (member) member.left_at = null
+        else {
+          member = { id: `atomic-${tables.participants.length}`, project_id: request.project_id, user_id: request.requester_user_id, role: 'member', left_at: null }
+          tables.participants.push(member)
+        }
+        request.status = 'approved'
+        resolvedJoinNotifications.push({ projectId: String(request.project_id), requestId })
+        tables.project_notifications
+          .filter(row => row.project_id === request.project_id && (row.metadata as Record<string, unknown> | undefined)?.join_request_id === requestId)
+          .forEach(row => { row.read_at = '2026-09-28T12:00:00.000Z' })
+        activityEvents.push({ projectId: request.project_id, entryType: 'join_request_approved' })
+        activityEvents.push({ projectId: request.project_id, entryType: 'participant_joined' })
+        return { outcome: 'reserved', project_id: String(request.project_id), participant_id: member.id }
+      },
+    },
     '@/lib/projectStatusUi': statusUi,
     '@/lib/projectDateSelection': dateSelection,
     '@/lib/projectEventDuration': eventDuration,
@@ -267,6 +319,7 @@ function fixture() {
   return {
     tables,
     writes,
+    atomicCalls,
     activityEvents,
     failures,
     missingColumns,
@@ -823,7 +876,7 @@ test('public finance-none direct join reactivates a previous participant immedia
 
   assert.deepEqual(result, { ok: true, joined: true })
   assert.equal(f.tables.participants[0].left_at, null)
-  assert.match(f.writes.join(','), /participants:update/)
+  assert.deepEqual(f.atomicCalls, ['direct:project'])
   assert.equal(f.tables.join_requests.length, 0)
 })
 
@@ -946,8 +999,7 @@ test('private organizer can approve when legacy schema has no aborted_at', async
 
   assert.equal(f.tables.join_requests[0].status, 'approved')
   assert.equal(f.tables.participants.some(row => row.user_id === 'requester' && row.left_at === null), true)
-  assert.equal(f.selects.some(query => query.table === 'projects' && query.fields?.includes('aborted_at')), true)
-  assert.equal(f.selects.some(query => query.table === 'projects' && !query.fields?.includes('aborted_at')), true)
+  assert.deepEqual(f.atomicCalls, ['approve:request'])
 })
 
 test('private organizer can reject when legacy schema has no aborted_at', async () => {
