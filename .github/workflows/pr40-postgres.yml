@@ -1,0 +1,51 @@
+name: PR40 full-chain PostgreSQL gate
+on:
+  pull_request:
+    paths:
+      - 'scripts/pr40-postgres-*'
+      - 'supabase/migrations/**'
+      - 'supabase/tests/pr40_*'
+      - '.github/workflows/pr40-postgres.yml'
+  workflow_dispatch:
+jobs:
+  atomic-reservation:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: pr40_test_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install application dependencies
+        run: npm ci
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Apply complete migration chain and run atomic membership gate
+        run: bash scripts/pr40-postgres-full-chain.sh
+      - name: Start PostgREST against the migrated database
+        run: >-
+          docker run -d --name pr40-postgrest --network host
+          -e PGRST_DB_URI=postgres://postgres:pr40_test_only@127.0.0.1:5432/pr40_full_chain
+          -e PGRST_DB_SCHEMAS=public
+          -e PGRST_DB_ANON_ROLE=anon
+          -e PGRST_JWT_SECRET=pr40-local-integration-secret-32-bytes-minimum
+          postgrest/postgrest:v12.2.12
+      - name: Run real Supabase client runtime integration
+        env:
+          PR40_POSTGREST_URL: http://127.0.0.1:3000
+          PR40_JWT_SECRET: pr40-local-integration-secret-32-bytes-minimum
+        run: node --experimental-transform-types scripts/pr40-runtime-integration.mjs

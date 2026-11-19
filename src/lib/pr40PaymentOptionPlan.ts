@@ -1,0 +1,83 @@
+import {
+  validatePaymentRecipientInput,
+  type PaymentRecipientType,
+} from './paymentRecipient.ts'
+
+export type Pr40UserOption = {
+  id?: string
+  type: string
+  label: string | null
+  value: string
+  priority: number | null
+  is_active: boolean | null
+}
+
+export type Pr40ExistingOption = {
+  type: string
+  value: string
+}
+
+export type Pr40PaymentOptionInsert = {
+  participant_id: string
+  type: PaymentRecipientType
+  label: string
+  value: string
+  priority: number
+  is_active: true
+  provenance?: { source_option_id: string; source_value: string; source_label: string | null; source_priority: number | null }
+}
+
+/**
+ * Builds the canonical payment-recipient snapshot passed to the atomic
+ * managed-approval RPC. TypeScript remains the only destination-format
+ * validator; the database binds this output to locked source rows.
+ */
+export function planPr40PaymentOptionClone(
+  participantId: string,
+  options: Pr40UserOption[],
+  existing: Pr40ExistingOption[]
+): Pr40PaymentOptionInsert[] {
+  const keys = new Set<string>()
+  for (const row of existing) {
+    try {
+      const parsed = validatePaymentRecipientInput({
+        type: row.type,
+        value: row.value,
+        // Recipient name is required for IBAN; matching an existing
+        // IBAN can be safely normalized without validating its label.
+        recipientName: row.type === 'iban' ? 'Existing recipient' : '',
+      })
+      keys.add(JSON.stringify([parsed.type, parsed.value]))
+    } catch {
+      // Preserve exact values to avoid duplicating pre-existing invalid rows.
+      keys.add(JSON.stringify([row.type, row.value]))
+    }
+  }
+  const planned: Pr40PaymentOptionInsert[] = []
+  for (const option of options) {
+    if (option.is_active !== true) continue
+    try {
+      const parsed = validatePaymentRecipientInput({
+        type: option.type,
+        recipientName: option.label,
+        value: option.value,
+      })
+      const key = JSON.stringify([parsed.type, parsed.value])
+      if (keys.has(key)) continue
+      keys.add(key)
+      planned.push({
+        participant_id: participantId,
+        type: parsed.type,
+        label: parsed.label,
+        value: parsed.value,
+        priority: option.priority ?? 1,
+        is_active: true,
+        ...(option.id ? { provenance: { source_option_id: option.id, source_value: option.value, source_label: option.label, source_priority: option.priority } } : {}),
+      })
+    } catch {
+      // Match the legacy validatedPaymentOptionsForStorage behavior:
+      // invalid recipient options do not become stored rows.
+    }
+  }
+  return planned
+}
